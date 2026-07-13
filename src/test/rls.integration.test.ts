@@ -133,4 +133,84 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(data!.number).toBe(1)
     })
   })
+
+  describe("user B cannot reach user A's data", () => {
+    // RLS FILTERS — it does not raise. An unauthorised update returns success
+    // with zero rows. Asserting `error === null` would pass on a wide-open
+    // database. Every assertion below counts rows.
+
+    it('B cannot SELECT any of it', async () => {
+      const project = await b.from('projects').select('id').eq('id', projectA)
+      const sprint = await b.from('sprints').select('id').eq('id', sprintA)
+      const ticket = await b.from('tickets').select('id').eq('id', ticketA)
+
+      expect(project.data).toEqual([])
+      expect(sprint.data).toEqual([])
+      expect(ticket.data).toEqual([])
+
+      // Positive control: A can. Without this, the three assertions above also
+      // pass when the fixture was never created.
+      const asA = await a.from('projects').select('id').eq('id', projectA)
+      expect(asA.data).toHaveLength(1)
+    })
+
+    it('B cannot UPDATE any of it', async () => {
+      const project = await b.from('projects').update({ name: 'pwned' }).eq('id', projectA).select()
+      const sprint = await b.from('sprints').update({ name: 'pwned' }).eq('id', sprintA).select()
+      const ticket = await b.from('tickets').update({ summary: 'pwned' }).eq('id', ticketA).select()
+
+      expect(project.data).toEqual([])
+      expect(sprint.data).toEqual([])
+      expect(ticket.data).toEqual([])
+
+      // Positive control: the same update, as A, changes exactly one row.
+      const asA = await a
+        .from('tickets')
+        .update({ summary: 'renamed by its owner' })
+        .eq('id', ticketA)
+        .select()
+      expect(asA.data).toHaveLength(1)
+      expect(asA.data![0]!.summary).toBe('renamed by its owner')
+    })
+
+    it('B cannot DELETE any of it', async () => {
+      const ticket = await b.from('tickets').delete().eq('id', ticketA).select()
+      const sprint = await b.from('sprints').delete().eq('id', sprintA).select()
+      const project = await b.from('projects').delete().eq('id', projectA).select()
+
+      expect(ticket.data).toEqual([])
+      expect(sprint.data).toEqual([])
+      expect(project.data).toEqual([])
+
+      // Positive control: it is all still there, seen by its owner.
+      const stillThere = await a.from('tickets').select('id').eq('id', ticketA)
+      expect(stillThere.data).toHaveLength(1)
+    })
+
+    // WITH CHECK, not USING. The asymmetry between them is the classic RLS hole,
+    // and only an INSERT can find it: a policy that filters reads but not writes
+    // would let B plant rows inside A's project.
+    it("B cannot INSERT a ticket into A's project", async () => {
+      const { data, error } = await b
+        .from('tickets')
+        .insert({ project_id: projectA, summary: 'planted by B' })
+        .select()
+
+      expect(error).not.toBeNull()
+      expect(data).toBeNull()
+
+      // And nothing landed.
+      const asA = await a.from('tickets').select('id').eq('project_id', projectA)
+      expect(asA.data!.length).toBe(2) // the fixture ticket and the KEY-2 one
+    })
+
+    it("B cannot INSERT a sprint into A's project", async () => {
+      const { error } = await b
+        .from('sprints')
+        .insert({ project_id: projectA, name: 'planted by B' })
+        .select()
+
+      expect(error).not.toBeNull()
+    })
+  })
 })
