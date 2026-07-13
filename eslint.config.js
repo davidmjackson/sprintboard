@@ -21,6 +21,13 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // A leading underscore marks something declared for its side effect on the
+      // type system rather than its value — e.g. the compile-time assertions in
+      // domain.ts, which exist only to fail the build when they stop holding.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { varsIgnorePattern: '^_', argsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
     },
   },
   // shadcn/ui components are vendored from the registry. Lint them for real

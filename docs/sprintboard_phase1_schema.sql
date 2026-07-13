@@ -19,11 +19,14 @@ create table profiles (
   created_at   timestamptz not null default now()
 );
 
--- Auto-create a profile row on signup (runs as definer to bypass RLS at signup)
+-- Auto-create a profile row on signup (runs as definer to bypass RLS at signup).
+-- search_path is empty, not `public`: a definer function inherits the caller's
+-- search_path unless pinned, so an attacker who can create objects in a schema
+-- ahead of it could shadow `profiles`. Every reference below is schema-qualified.
 create or replace function handle_new_user()
 returns trigger
 language plpgsql
-security definer set search_path = public
+security definer set search_path = ''
 as $$
 begin
   insert into public.profiles (id, display_name)
@@ -31,6 +34,12 @@ begin
   return new;
 end;
 $$;
+
+-- PostgREST exposes every function in `public` as an RPC endpoint, so this one
+-- is reachable at /rest/v1/rpc/handle_new_user. Postgres already refuses to run
+-- a trigger function called directly, so the grant is not exploitable — but a
+-- definer function callable by anon has no business being granted at all.
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
 create trigger on_auth_user_created
   after insert on auth.users
@@ -61,9 +70,11 @@ create table project_counters (
 
 -- Create the counter row whenever a project is created
 create or replace function create_project_counter()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = ''
+as $$
 begin
-  insert into project_counters (project_id) values (new.id);
+  insert into public.project_counters (project_id) values (new.id);
   return new;
 end;
 $$;
@@ -169,18 +180,20 @@ create index tickets_epic_idx    on tickets(parent_epic_id);
 -- the intended failure, but it will not be obvious from the error.
 -- ============================================================
 create or replace function assign_ticket_key()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = ''
+as $$
 declare
   v_key text;
   v_num int;
 begin
   -- Atomic increment under row lock. Concurrent inserts serialise here.
-  update project_counters
+  update public.project_counters
      set last_number = last_number + 1
    where project_id = new.project_id
    returning last_number into v_num;
 
-  select key into v_key from projects where id = new.project_id;
+  select key into v_key from public.projects where id = new.project_id;
 
   new.number := v_num;
   new.key    := v_key || '-' || v_num;
@@ -195,8 +208,13 @@ create trigger on_ticket_insert
 -- ============================================================
 -- Blocked flag sync  (keeps the 3 fields aligned deterministically)
 -- ============================================================
+-- search_path is pinned empty on the trigger functions below too. They touch no
+-- tables and now() lives in pg_catalog (always implicitly searched), so an empty
+-- path costs nothing and settles the linter.
 create or replace function sync_blocked_fields()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = ''
+as $$
 begin
   if new.is_blocked and not coalesce(old.is_blocked, false) then
     new.blocked_since := now();            -- just became blocked
@@ -216,7 +234,9 @@ create trigger on_ticket_blocked_change
 -- updated_at maintenance
 -- ============================================================
 create or replace function set_updated_at()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = ''
+as $$
 begin
   new.updated_at := now();
   return new;
