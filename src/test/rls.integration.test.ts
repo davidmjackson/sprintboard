@@ -73,10 +73,18 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   })
 
   // sprintA is otherwise write-only in this file: it exists so a later task
-  // (user-B isolation) can attempt to reach it. Read it here so the fixture is
-  // asserted, and so noUnusedLocals doesn't fail the build in the meantime.
-  it("creates A's fixture sprint", () => {
-    expect(sprintA).toBeTruthy()
+  // (user-B isolation) can attempt to reach it. This asserts a real property
+  // of the fixture (ownership + the schema's status default) rather than
+  // just reading sprintA to satisfy noUnusedLocals.
+  it("creates A's fixture sprint, belonging to A's project and defaulting to status 'future'", async () => {
+    const { data, error } = await a
+      .from('sprints')
+      .select('project_id, status')
+      .eq('id', sprintA)
+      .single()
+    expect(error).toBeNull()
+    expect(data!.project_id).toBe(projectA)
+    expect(data!.status).toBe('future')
   })
 
   describe('the S1.2 triggers, finally executed rather than merely catalogued', () => {
@@ -85,7 +93,13 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     it('create_project_counter made a counter row, and it tracks the last number', async () => {
-      const { data, error } = await a.from('project_counters').select('last_number')
+      // Scoped to the fixture project: counters_owner's RLS returns every
+      // project user A owns, not just this run's, so an unfiltered select
+      // would flake (or worse, vacuously pass) against leftover projects.
+      const { data, error } = await a
+        .from('project_counters')
+        .select('last_number')
+        .eq('project_id', projectA)
       expect(error).toBeNull()
       expect(data).toHaveLength(1)
       expect(data![0]!.last_number).toBe(1)
