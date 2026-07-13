@@ -7,6 +7,13 @@
 --        custom fields, teams/roles.
 -- ============================================================
 
+-- All or nothing. RLS is enabled ~240 lines below the first CREATE TABLE, so a
+-- partial apply is the dangerous outcome: tables exist, `anon` is granted on
+-- them, and no policy guards them. The SQL editor wraps a multi-statement query
+-- in an implicit transaction, but `psql -f` without --single-transaction does
+-- not, and each statement would autocommit. Be explicit.
+begin;
+
 -- ---------- Extensions ----------
 create extension if not exists "pgcrypto";  -- gen_random_uuid()
 
@@ -20,9 +27,12 @@ create table profiles (
 );
 
 -- Auto-create a profile row on signup (runs as definer to bypass RLS at signup).
--- search_path is empty, not `public`: a definer function inherits the caller's
--- search_path unless pinned, so an attacker who can create objects in a schema
--- ahead of it could shadow `profiles`. Every reference below is schema-qualified.
+--
+-- search_path is pinned empty because a definer function otherwise inherits the
+-- CALLER's search_path, and a role able to create objects in a schema searched
+-- first could shadow `profiles`. No such role exists here — anon and
+-- authenticated hold CREATE on no schema — so this is defence in depth against a
+-- future grant, not a live hole. Every reference below is schema-qualified.
 create or replace function handle_new_user()
 returns trigger
 language plpgsql
@@ -35,10 +45,12 @@ begin
 end;
 $$;
 
--- PostgREST exposes every function in `public` as an RPC endpoint, so this one
--- is reachable at /rest/v1/rpc/handle_new_user. Postgres already refuses to run
--- a trigger function called directly, so the grant is not exploitable — but a
--- definer function callable by anon has no business being granted at all.
+-- A SECURITY DEFINER function in `public` that anon can EXECUTE is worth removing
+-- on principle. It was never actually reachable: PostgREST excludes functions
+-- returning `trigger` from its RPC schema, and Postgres refuses to call a trigger
+-- function directly anyway. (Supabase's linter flags it regardless, and is right
+-- to — the grant is pointless.) service_role keeps EXECUTE: it bypasses RLS by
+-- design and never ships to the browser.
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 
 create trigger on_auth_user_created
@@ -111,8 +123,15 @@ create unique index sprints_one_active_per_project
 create table tickets (
   id             uuid primary key default gen_random_uuid(),
   project_id     uuid not null references projects(id) on delete cascade,
-  number         int  not null,                 -- the N in PROJECTKEY-N
-  key            text not null,                 -- e.g. SPB-14
+  -- Both are owned by the assign_ticket_key BEFORE INSERT trigger, which always
+  -- overwrites them. The defaults exist purely so the column is not "required"
+  -- in the generated TypeScript Insert type — without them, the type system
+  -- demands a key from the client, which is how you end up generating keys
+  -- client-side. The trigger still assigns NULL when the counter update matches
+  -- no row (a cross-tenant insert), and NOT NULL then aborts the statement.
+  -- That abort is a security property. Do not add a default that hides it.
+  number         int  not null default 0,       -- the N in PROJECTKEY-N
+  key            text not null default '',      -- e.g. SPB-14
   summary        text not null,
   description    text,
   type           text not null default 'story'
@@ -206,6 +225,34 @@ create trigger on_ticket_insert
   for each row execute function assign_ticket_key();
 
 -- ============================================================
+-- Ticket key immutability
+--
+-- assign_ticket_key only fires BEFORE INSERT, so nothing stopped an owner (or a
+-- bug) from UPDATE-ing key or number to anything at all, desyncing them from
+-- project_counters and destroying the PROJECTKEY-N invariant. RLS does not help:
+-- tickets_owner grants the owner FOR ALL over their own rows. Owner-scoped means
+-- the damage is self-inflicted, but CLAUDE.md treats the key as an invariant, and
+-- Rung 2 AI traceability will rely on it.
+--
+-- Silently restoring beats raising: a PATCH that includes the whole row (as a
+-- naive client will) should not fail merely for echoing the key back unchanged.
+-- ============================================================
+create or replace function freeze_ticket_key()
+returns trigger language plpgsql
+set search_path = ''
+as $$
+begin
+  new.key    := old.key;
+  new.number := old.number;
+  return new;
+end;
+$$;
+
+create trigger on_ticket_key_freeze
+  before update on tickets
+  for each row execute function freeze_ticket_key();
+
+-- ============================================================
 -- Blocked flag sync  (keeps the 3 fields aligned deterministically)
 -- ============================================================
 -- search_path is pinned empty on the trigger functions below too. They touch no
@@ -297,3 +344,5 @@ create policy tickets_owner on tickets
   with check (exists (select 1 from projects p
                  where p.id = tickets.project_id
                    and p.owner_id = auth.uid()));
+
+commit;

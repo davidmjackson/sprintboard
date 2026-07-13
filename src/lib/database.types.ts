@@ -164,9 +164,9 @@ export type Database = {
           description?: string | null
           id?: string
           is_blocked?: boolean
-          key: string
+          key?: string
           labels?: string[]
-          number: number
+          number?: number
           parent_epic_id?: string | null
           project_id: string
           sprint_id?: string | null

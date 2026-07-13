@@ -28,5 +28,8 @@
 
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Tests live alongside the code they cover but are typechecked by
+     tsconfig.test.json, which gives them node types. */
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test"]
 }

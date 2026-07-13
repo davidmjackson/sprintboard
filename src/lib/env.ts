@@ -1,33 +1,48 @@
 import { z } from 'zod'
 
 /**
- * The service-role key must never reach the browser. Documenting that is not
- * enforcement, so we detect it and refuse to boot.
+ * The service-role key must never reach the browser.
  *
- * Two shapes exist. Modern Supabase keys are prefixed (`sb_secret_…` vs
- * `sb_publishable_…`). Legacy keys are JWTs whose payload carries a `role`
- * claim, so we decode the payload — no signature check, we are not verifying
- * the token, only reading what it admits about itself.
+ * READ THIS BEFORE TRUSTING THE CHECKS BELOW. They run at BOOT. Vite inlines
+ * every `VITE_*` variable into the bundle at BUILD time — so if a service-role
+ * key is in the environment when `vite build` runs, it is already sitting in
+ * dist/assets/*.js and readable by anyone, whatever this file then does. Refusing
+ * to boot limits the blast radius; it does not prevent the leak.
+ *
+ * The control that actually prevents it is `scripts/check-bundle.mjs`, which
+ * greps the built bundle and fails `npm run build`. This file is the second line.
  */
-export function isServiceRoleKey(key: string): boolean {
-  if (key.startsWith('sb_secret_')) return true
 
+/** The claims a Supabase legacy (JWT) key admits about itself. No signature check
+ *  — we are not verifying the token, only reading what it says it is. */
+function readJwtRole(key: string): string | undefined {
   const payload = key.split('.')[1]
-  if (payload === undefined) return false
+  if (payload === undefined) return undefined
 
   try {
     const json: unknown = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-    return (
-      typeof json === 'object' &&
-      json !== null &&
-      'role' in json &&
-      (json as { role: unknown }).role === 'service_role'
-    )
+    if (typeof json !== 'object' || json === null || !('role' in json)) return undefined
+    const role = (json as { role: unknown }).role
+    return typeof role === 'string' ? role : undefined
   } catch {
-    // Not a JWT we can read. Fall through: the prefix check already ran, and a
-    // key we cannot parse is not evidence of a service-role key.
-    return false
+    return undefined
   }
+}
+
+/** Modern keys are prefixed (`sb_secret_…`); legacy keys are JWTs with a role claim. */
+export function isServiceRoleKey(key: string): boolean {
+  return key.startsWith('sb_secret_') || readJwtRole(key) === 'service_role'
+}
+
+/**
+ * An ALLOWLIST, deliberately. The previous version asked "does this look like a
+ * service-role key?" and let everything else through — so an unrecognised or
+ * future privileged key format would pass. This asks the opposite question, and
+ * therefore fails closed: a key we cannot positively identify as browser-safe is
+ * rejected, and the fix is to teach this function, not to shrug.
+ */
+export function isPublishableKey(key: string): boolean {
+  return key.startsWith('sb_publishable_') || readJwtRole(key) === 'anon'
 }
 
 const envSchema = z.object({
@@ -37,10 +52,19 @@ const envSchema = z.object({
   VITE_SUPABASE_ANON_KEY: z
     .string()
     .min(1, 'VITE_SUPABASE_ANON_KEY is required')
+    // Ordered: the service-role case gets its own message because the remedy is
+    // different and urgent — the key is already compromised.
     .refine(
       (key) => !isServiceRoleKey(key),
-      'VITE_SUPABASE_ANON_KEY looks like a SERVICE-ROLE key. It must never ship to the browser: ' +
-        'it bypasses RLS entirely. Use the anon / publishable key, and rotate the one you just leaked.',
+      'VITE_SUPABASE_ANON_KEY is a SERVICE-ROLE key. It bypasses RLS entirely and must never ' +
+        'reach the browser. If you have run `npm run build` with it set, it is already in the ' +
+        'bundle: ROTATE IT NOW, then use the anon / publishable key.',
+    )
+    .refine(
+      (key) => isPublishableKey(key),
+      'VITE_SUPABASE_ANON_KEY is not recognisably a publishable key. Expected an ' +
+        '`sb_publishable_…` key or a JWT with role "anon". Refusing to boot rather than ' +
+        'guess: an unrecognised key could be privileged.',
     ),
 })
 
