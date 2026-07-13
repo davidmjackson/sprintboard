@@ -60,11 +60,20 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
   afterAll(async () => {
     if (!hasRlsCredentials) return
-    // Owner-scoped RLS means each client can only delete its own rows — which is
-    // exactly the guarantee under test, so cleanup is also a final assertion.
-    await a.from('projects').delete().eq('id', projectA)
-    await a.auth.signOut()
-    await b.auth.signOut()
+    try {
+      // Owner-scoped RLS means each client can only delete its own rows — which
+      // is exactly the guarantee under test, so cleanup is also a final
+      // assertion. A silent zero-row delete here would leak a project + sprint +
+      // tickets + counter row into the shared database on every run, forever.
+      const { data, error } = await a.from('projects').delete().eq('id', projectA).select()
+      expect(error).toBeNull()
+      expect(data).toHaveLength(1)
+    } finally {
+      // Sign-outs must still happen even if the assertions above throw, and
+      // must not mask whatever failure happened earlier in the suite.
+      await a.auth.signOut()
+      await b.auth.signOut()
+    }
   }, 30_000)
 
   it('signs in as two distinct users', () => {
@@ -182,6 +191,16 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(asA.data![0]!.summary).toBe('renamed by its owner')
     })
 
+    // Every negative assertion above uses client `b`. An anonymous client would
+    // also see nothing and pass all of them — proving nothing about isolation.
+    // This proves B's own JWT actually reaches PostgREST: B can see exactly
+    // their own profile row, and no one else's.
+    it("B's requests carry B's own identity (data-plane positive control)", async () => {
+      const { data, error } = await b.from('profiles').select('id')
+      expect(error).toBeNull()
+      expect(data).toEqual([{ id: userBId }])
+    })
+
     it('B cannot DELETE any of it', async () => {
       const ticket = await b.from('tickets').delete().eq('id', ticketA).select()
       const sprint = await b.from('sprints').delete().eq('id', sprintA).select()
@@ -205,8 +224,16 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .insert({ project_id: projectA, summary: 'planted by B' })
         .select()
 
-      expect(error).not.toBeNull()
       expect(data).toBeNull()
+      // OBSERVED against the live database: 42501 (RLS violation on
+      // tickets_owner's WITH CHECK), not 23502. Postgres evaluates RLS before
+      // table constraints, so the RLS violation fires first even though
+      // assign_ticket_key (SECURITY INVOKER) would independently fail here too:
+      // B's RLS makes the project_counters UPDATE match zero rows, leaving
+      // `number` NULL. If a future change ever surfaced 23502 instead, that
+      // would mean RLS stopped firing first — re-verify against the DB, don't
+      // just widen this assertion.
+      expect(error!.code).toBe('42501')
 
       // And nothing landed.
       const asA = await a.from('tickets').select('id').eq('project_id', projectA)
@@ -214,12 +241,17 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     it("B cannot INSERT a sprint into A's project", async () => {
-      const { error } = await b
+      const { data, error } = await b
         .from('sprints')
         .insert({ project_id: projectA, name: 'planted by B' })
         .select()
 
-      expect(error).not.toBeNull()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: sprints_owner WITH CHECK.
+
+      // And nothing landed.
+      const asA = await a.from('sprints').select('id').eq('project_id', projectA)
+      expect(asA.data!.length).toBe(1) // only the fixture sprint
     })
   })
 })

@@ -18,9 +18,10 @@ export default defineConfig(({ mode }) => ({
     // repo copies, inside the repo. Without this, vitest collects their test
     // files too and reports double the tests, all passing, from stale code.
     exclude: [...configDefaults.exclude, '**/.claude/**'],
-    // Empty prefix = load EVERY variable, not just VITE_*. This reaches the test
-    // process only. Test credentials must never be VITE_-prefixed: Vite inlines
-    // those into the production bundle, which would ship a password to visitors.
-    env: loadEnv(mode, process.cwd(), ''),
+    // Only these prefixes are loaded into the test process — not the developer's
+    // entire shell environment. Test credentials must never be VITE_-prefixed:
+    // Vite inlines those into the production bundle, which would ship a password
+    // to visitors. check-bundle.mjs is the backstop if that rule is ever broken.
+    env: loadEnv(mode, process.cwd(), ['VITE_', 'RLS_TEST_']),
   },
 }))

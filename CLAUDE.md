@@ -62,6 +62,13 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 - RLS still holds (two-user isolation test green).
 - One PR, squash merged. Jira issue moved to Done only after merge.
 
+**CI must run `npm test`, never `npm run test:unit`.** `test:unit` excludes the
+RLS integration suite and needs no secrets — it is a local fast-loop
+convenience only. If CI is wired to `test:unit`, the RLS suite silently never
+runs, CI stays green, and the "RLS still holds" line above is quietly unmet on
+every future PR. CI needs the `RLS_TEST_{A,B}_{EMAIL,PASSWORD}` secrets
+configured for `npm test` to actually exercise isolation rather than skip it.
+
 ---
 
 ## Jira tracking
