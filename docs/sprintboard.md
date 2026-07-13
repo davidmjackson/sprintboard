@@ -15,7 +15,7 @@ skeleton and a fully populated board.
 
 ## Step 1: Create the Jira board
 - Target Jira project: confirm with me if it is not already set. Do not guess.
-- Create all 8 epics from the backlog, then create the 31 stories, each linked
+- Create all 8 epics from the backlog, then create the 30 stories, each linked
   to its parent epic.
 - Verify the board columns map to To Do, In Progress, In Review, Done. Adjust
   the Jira workflow if needed. Do not change the app's fixed columns.
@@ -45,7 +45,7 @@ Story-specific notes:
 - Do not disable or bypass the guard hooks.
 
 ## Definition of done for this session
-- All 8 epics and 31 stories exist in Jira, correctly linked, all in To Do
+- All 8 epics and 30 stories exist in Jira, correctly linked, all in To Do
   except the E1 issues you complete.
 - E1 stories are merged and their Jira issues are Done.
 - App runs locally, CI is green, the RLS two-user test passes.
