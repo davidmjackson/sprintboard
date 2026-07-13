@@ -1,0 +1,10 @@
+# Planning docs and the schema are authored by hand and reviewed as prose.
+# Prettier reflows them into noisy diffs that bury real changes.
+docs/
+CLAUDE.md
+*.sql
+
+dist/
+coverage/
+node_modules/
+package-lock.json
