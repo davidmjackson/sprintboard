@@ -1,8 +1,9 @@
 {
   "mcpServers": {
-    "composio": {
+    "composio": { "type": "http", "url": "https://connect.composio.dev/mcp" },
+    "supabase": {
       "type": "http",
-      "url": "https://connect.composio.dev/mcp"
+      "url": "https://mcp.supabase.com/mcp?project_ref=xcnmyhozmcopcpxlagrk&read_only=true"
     }
   }
 }
