@@ -160,7 +160,11 @@ board, quality. Points use a light Fibonacci scale.
 
 ### S5.1 Backlog list view
 - **Points:** 2 | **Labels:** backlog
-- **AC:** the backlog shows tickets with no sprint or not in the active sprint.
+- The backlog is exactly `sprint_id is null`. It is deliberately not "anything
+  outside the active sprint" — that would drag every Done ticket from every past
+  sprint back into the backlog and contradict S6.4, which retains sprint history.
+- **AC:** the backlog shows tickets with no sprint (`sprint_id is null`).
+- **AC:** a Done ticket in a completed sprint does not appear in the backlog.
 - **AC:** each row shows key, summary, type, points, assignee, blocked marker.
 
 ### S5.2 Create ticket directly into backlog
@@ -241,5 +245,5 @@ board, quality. Points use a light Fibonacci scale.
 E1 → E2 → E3 → E4 → E5 → E6 → E7, with E8 running alongside from S1.3 onward.
 
 ## Rough size
-31 stories, roughly 68 points. Expect the board to move fastest through E5 and
+30 stories, 66 points. Expect the board to move fastest through E5 and
 E7 once E4 (tickets) is solid, since those reuse the ticket work.

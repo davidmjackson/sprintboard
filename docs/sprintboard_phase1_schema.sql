@@ -83,7 +83,11 @@ create table sprints (
   status      text not null default 'future' check (status in ('future','active','complete')),
   start_date  timestamptz,
   end_date    timestamptz,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+
+  -- Redundant on its own (id is already the PK). Exists so tickets can point at
+  -- a sprint with a COMPOSITE fk and prove it belongs to the same project.
+  constraint sprints_id_project_unique unique (id, project_id)
 );
 
 -- Phase 1 lean rule: at most one active sprint per project
@@ -108,8 +112,8 @@ create table tickets (
   story_points   int,
   acceptance_criteria text,
   labels         text[] not null default '{}',
-  sprint_id      uuid references sprints(id) on delete set null,   -- null = backlog
-  parent_epic_id uuid references tickets(id)  on delete set null,  -- story/bug/task -> epic
+  sprint_id      uuid,   -- null = backlog.        Composite fk below.
+  parent_epic_id uuid,   -- story/bug/task -> epic. Composite fk below.
 
   -- Epic-only fields. Feed the Rung 2 AI decomposition feature.
   context        text,
@@ -123,7 +127,32 @@ create table tickets (
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
 
-  constraint tickets_project_number_unique unique (project_id, number)
+  constraint tickets_project_number_unique unique (project_id, number),
+
+  -- Lets an epic be referenced by a composite fk (see tickets_epic_fk).
+  constraint tickets_id_project_unique unique (id, project_id),
+
+  -- Cross-project integrity. A plain fk to sprints(id) would happily let an owner
+  -- of two projects park a ticket in the OTHER project's sprint; carrying
+  -- project_id into the fk makes that unrepresentable rather than merely
+  -- discouraged. sprint_id/parent_epic_id stay nullable: under MATCH SIMPLE a
+  -- null in any fk column skips the check, so backlog and epic-less tickets pass.
+  --
+  -- The column list on `set null` is required, not stylistic: an unqualified
+  -- `on delete set null` nulls EVERY fk column, and project_id is not null, so
+  -- deleting a sprint would abort. Needs Postgres 15 or newer.
+  constraint tickets_sprint_fk foreign key (sprint_id, project_id)
+    references sprints (id, project_id) on delete set null (sprint_id),
+  constraint tickets_epic_fk foreign key (parent_epic_id, project_id)
+    references tickets (id, project_id) on delete set null (parent_epic_id),
+
+  -- The blocked trigger keeps these three aligned, but a trigger is not a
+  -- guarantee against a direct write. CLAUDE.md requires both edges.
+  constraint tickets_blocked_coherent check (
+    (is_blocked     and blocked_reason is not null and blocked_since is not null)
+    or
+    (not is_blocked and blocked_reason is null     and blocked_since is null)
+  )
 );
 
 create index tickets_project_idx on tickets(project_id);
@@ -132,6 +161,12 @@ create index tickets_epic_idx    on tickets(parent_epic_id);
 
 -- ============================================================
 -- Ticket key generation  (atomic, race-safe)
+--
+-- Deliberately NOT security definer: it runs as the caller, so the update below
+-- is only permitted by the `counters_owner` RLS policy. Atomicity therefore
+-- rests on that policy continuing to grant the owner a write. If anyone ever
+-- narrows counters_owner to read-only, ticket creation breaks here — that is
+-- the intended failure, but it will not be obvious from the error.
 -- ============================================================
 create or replace function assign_ticket_key()
 returns trigger language plpgsql as $$
