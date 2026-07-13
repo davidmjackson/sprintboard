@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
@@ -56,6 +56,15 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     if (tErr) throw new Error(`Fixture: could not create A's ticket: ${tErr.message}`)
     ticketA = ticket.id
     ticketAKey = ticket.key
+  }, 30_000)
+
+  afterAll(async () => {
+    if (!hasRlsCredentials) return
+    // Owner-scoped RLS means each client can only delete its own rows — which is
+    // exactly the guarantee under test, so cleanup is also a final assertion.
+    await a.from('projects').delete().eq('id', projectA)
+    await a.auth.signOut()
+    await b.auth.signOut()
   }, 30_000)
 
   it('signs in as two distinct users', () => {
