@@ -70,8 +70,9 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 secrets, so CI would stay green while the "RLS still holds" line above went quietly
 unmet on every future PR. `test:unit` is a local fast-loop convenience, never a gate.
 CI needs the `RLS_TEST_*` secrets and variables configured for the suite to exercise
-isolation rather than skip it — a first CI run reporting 30 tests instead of 43 means
-exactly that, and must be treated as a failure.
+isolation rather than skip it — a CI run reporting 30 tests instead of 44 means
+exactly that, and must be treated as a failure. (30 is what `test:unit` yields: it
+excludes every `*.integration.test.ts`, so both the RLS and keepalive suites vanish.)
 
 ## Verification
 
