@@ -6,7 +6,12 @@ import tseslint from 'typescript-eslint'
 import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'node_modules'] },
+  // `.claude/**`: Claude Code puts subagent git worktrees under .claude/worktrees/ —
+  // full repo copies, inside the repo. Without this, ESLint lints their .ts files with
+  // this project's tsconfig and every one fails to resolve, so a worktree agent running
+  // in the background turns `npm run lint` red with dozens of bogus parse errors.
+  // vite.config.ts already excludes the same path from vitest, for the same reason.
+  { ignores: ['dist', 'coverage', 'node_modules', '.claude/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
