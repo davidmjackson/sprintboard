@@ -16,29 +16,43 @@ export const RLS_USERS: Record<RlsUser, { email?: string; password?: string }> =
 const SUPABASE_URL = credential('VITE_SUPABASE_URL')
 const SUPABASE_ANON_KEY = credential('VITE_SUPABASE_ANON_KEY')
 
+/** The keepalive needs only the public config — no test-user credentials. */
+export const hasSupabaseConfig = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+
 export const hasRlsCredentials = Boolean(
-  SUPABASE_URL &&
-  SUPABASE_ANON_KEY &&
+  hasSupabaseConfig &&
   RLS_USERS.A.email &&
   RLS_USERS.A.password &&
   RLS_USERS.B.email &&
   RLS_USERS.B.password,
 )
 
+/** The public project config, or a loud failure. */
+export function supabaseConfig(): { url: string; anonKey: string } {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. See .env.example.')
+  }
+  return { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY }
+}
+
 /**
  * A missing secret must never look like a pass. Locally we skip loudly; in CI we
- * refuse to run at all, because a silently-skipped security test reports safety
- * it has not established.
+ * refuse to run at all, because a silently-skipped check reports safety — or
+ * liveness — it has not established.
  */
-export function assertCredentialsOrExplain(): void {
-  if (hasRlsCredentials) return
-
-  const message =
-    'RLS integration test cannot run: missing VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, ' +
-    'or the RLS_TEST_{A,B}_{EMAIL,PASSWORD} credentials. See .env.example.'
-
+function requireOrExplain(ok: boolean, suite: string, message: string): void {
+  if (ok) return
   if (process.env.CI) throw new Error(`${message}\nRefusing to skip in CI.`)
-  console.warn(`\n  SKIPPING the RLS isolation suite.\n  ${message}\n`)
+  console.warn(`\n  SKIPPING ${suite}.\n  ${message}\n`)
+}
+
+export function assertCredentialsOrExplain(): void {
+  requireOrExplain(
+    hasRlsCredentials,
+    'the RLS isolation suite',
+    'RLS integration test cannot run: missing VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, ' +
+      'or the RLS_TEST_{A,B}_{EMAIL,PASSWORD} credentials. See .env.example.',
+  )
 }
 
 /** A fresh, signed-in client. Sessions are not persisted: each client is one user. */
