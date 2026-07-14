@@ -1,12 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import {
-  assertSupabaseConfigOrExplain,
-  hasSupabaseConfig,
-  supabaseConfig,
-} from './supabase-clients'
-
-assertSupabaseConfigOrExplain()
+import { supabaseConfig } from './supabase-clients'
 
 /**
  * The exact contract the cron-job.org keepalive depends on. `/rest/v1/` is NOT
@@ -16,8 +10,16 @@ assertSupabaseConfigOrExplain()
  */
 const KEEPALIVE_PATH = '/rest/v1/tickets?select=id&limit=1'
 
-describe.skipIf(!hasSupabaseConfig)('Supabase keepalive contract', () => {
-  it('answers 200 with a JSON array, proving Postgres ran the query', async () => {
+/**
+ * No skip. Unlike the RLS test users, which a casual contributor may
+ * legitimately not have locally, `VITE_SUPABASE_URL` and
+ * `VITE_SUPABASE_ANON_KEY` are required for the app to boot at all — `npm run
+ * dev` will not start without them. There is no developer state where they are
+ * absent but a green run here would be meaningful, so `supabaseConfig()` throws
+ * rather than letting this suite skip. A liveness probe has no legitimate skip.
+ */
+describe('Supabase keepalive contract', () => {
+  it('answers 200 with a JSON array, proving the anon path still returns a result set', async () => {
     const { url, anonKey } = supabaseConfig()
 
     const response = await fetch(`${url}${KEEPALIVE_PATH}`, {
@@ -26,11 +28,13 @@ describe.skipIf(!hasSupabaseConfig)('Supabase keepalive contract', () => {
 
     expect(response.status).toBe(200)
 
-    // A 200 alone is not proof of life — a cached edge response would return one
-    // forever while the database slept. PostgREST returns a result SET; its
-    // errors return an object. An array means Postgres actually ran the query.
-    // The array is empty because RLS filters an anonymous caller to zero rows,
-    // which is the success signal, not a failure.
+    // PostgREST returns a result SET on success and an error OBJECT on failure
+    // (e.g. the 401 body `/rest/v1/` gives anon). An array proves the anon
+    // contract this cron depends on still holds — it is not evidence of
+    // liveness by itself (a cached response would also be an array); liveness
+    // is the external cron's job, not this test's. The array is empty because
+    // RLS filters an anonymous caller to zero rows, which is the success
+    // signal, not a failure.
     const body: unknown = await response.json()
     expect(Array.isArray(body)).toBe(true)
   })

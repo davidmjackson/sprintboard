@@ -55,15 +55,6 @@ export function assertCredentialsOrExplain(): void {
   )
 }
 
-export function assertSupabaseConfigOrExplain(): void {
-  requireOrExplain(
-    hasSupabaseConfig,
-    'the keepalive contract test',
-    'Keepalive contract test cannot run: missing VITE_SUPABASE_URL or ' +
-      'VITE_SUPABASE_ANON_KEY. See .env.example.',
-  )
-}
-
 /** A fresh, signed-in client. Sessions are not persisted: each client is one user. */
 export async function signIn(user: RlsUser): Promise<SupabaseClient<Database>> {
   const { email, password } = RLS_USERS[user]
