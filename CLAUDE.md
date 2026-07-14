@@ -23,6 +23,43 @@ Parity with Jira is not the goal. A clean working slice plus defensible AI is.
 
 If a task appears to require a parked feature, stop and flag it. Do not build it.
 
+## Forward compatibility: keep the Rung 3 doors open. Do not walk through them.
+
+Rung 3 will want: Kanban *and* Scrum projects, a configurable sprint cadence, custom
+fields, custom columns, and custom statuses mapped to those columns. **None of that is
+built now.** The rules below exist so it stays *cheap* later — they are hedges already in
+the code, and each one is easy to undo by accident while thinking you are tidying up.
+
+- **Never use a Postgres `ENUM`.** `ticket.status`, `ticket.type`, `sprint.status` and
+  `project_type` are all `text` + a `check` constraint, deliberately. Widening a check is
+  one line; altering an enum type is a painful migration. Converting these to a
+  `create type … as enum` would look like an improvement. **It is the single most damaging
+  change anyone could make to this schema.**
+- **`projects.project_type` already exists** (`check (project_type in ('scrum'))`). Kanban
+  is one line: add `'kanban'` to that check. Do not add it until Rung 3.
+- **Status, type and column definitions live in `src/lib/domain.ts` and nowhere else.**
+  Never inline the four column names in a component, a filter, or a badge-colour map.
+  When columns become dynamic, one module changes instead of fifteen.
+- **Core ticket fields stay real columns.** `story_points`, `assignee_id`, `status` etc.
+  are first-class and must remain so. Custom fields will be **additive** — new tables
+  alongside, never a reshaping of `tickets`. This is what Jira itself does: system fields
+  are columns, only custom ones go in a flexible store. It is the right end state, not a
+  shortcut to undo.
+- **Ticket keys are already project-scoped** (`unique (project_id, number)`) and **blocked
+  is a flag, not a column.** Both survive custom workflows unchanged. Preserve them.
+
+**The one genuinely deep door is RLS, and it is not on the feature list.** Every policy on
+every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions means
+rewriting *all* of them to a membership check — the security boundary of the whole app.
+The safety net is already built: the two-user isolation suite runs live against the real
+database on every PR, so a mistake in that migration goes **red**. Do not weaken it.
+
+**Why we are not hedging further.** There is no production data and no user base, so almost
+every schema decision is reversible at near-zero cost. The real risk to this project is
+premature generalisation, not a missing abstraction: a half-built workflow engine with no
+AI on top is a *worse* portfolio piece than a tight Scrum board that works. Build the
+slice. The doors are open; leave them that way and walk through them at Rung 3.
+
 ---
 
 ## Stack
