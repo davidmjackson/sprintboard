@@ -70,8 +70,8 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 secrets, so CI would stay green while the "RLS still holds" line above went quietly
 unmet on every future PR. `test:unit` is a local fast-loop convenience, never a gate.
 CI needs the `RLS_TEST_*` secrets and variables configured for the suite to exercise
-isolation rather than skip it — a CI run reporting 30 tests instead of 44 means
-exactly that, and must be treated as a failure. (30 is what `test:unit` yields: it
+isolation rather than skip it — a CI run reporting 37 tests instead of 51 means
+exactly that, and must be treated as a failure. (37 is what `test:unit` yields: it
 excludes every `*.integration.test.ts`, so both the RLS and keepalive suites vanish.)
 
 ## Verification
@@ -116,9 +116,12 @@ A cron-job.org job keeps it awake. Configured 2026-07-14, verified by test run:
 | Healthy response | `200` with body `[]` |
 
 The empty array is RLS filtering an anonymous caller to zero rows. That is the
-success signal, not an error: RLS is evaluated *inside* Postgres, so an array proves
-the database woke up and ran the query. A 200 alone would not — a cached edge
-response returns one forever while the database sleeps.
+success signal, not an error: PostgREST returns a result set (an array) on success
+and an error object on failure, so the array proves the anon contract this cron
+depends on is intact, rather than a `401`/`404`. It does not by itself prove the
+database is awake right now — a cached response would also be an array — that is
+the external cron's job; the repo's job is keeping the contract from rotting
+underneath it.
 
 **Do not point the cron at `/rest/v1/`.** It returns 401 for the anon key ("Only the
 `service_role` API key can be used"), and the only way to make it work is to ship the
