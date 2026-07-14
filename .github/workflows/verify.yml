@@ -1,0 +1,63 @@
+name: verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# This job reads code and runs checks. It writes nothing.
+permissions:
+  contents: read
+
+# Superseded runs are deliberately NOT cancelled. The RLS integration suite creates
+# real rows in the shared Supabase project and removes them in afterAll. Cancelling a
+# run mid-suite strands a project, its sprint, its tickets and its counter row in the
+# live database — permanently, on every cancelled run. A wasted CI minute is cheaper
+# than leaked fixtures.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The job name below is the exact status check the `main` ruleset requires.
+  #
+  # Do NOT add any of the following to this job. Each one is a way for the gate to
+  # report success without having verified anything:
+  #
+  #   if:               a skipped job concludes as `skipped`, and GitHub accepts
+  #                     `skipped` as satisfying a required check. The gate would go
+  #                     green having run nothing. This is the dangerous one.
+  #   strategy.matrix:  renames the check to `verify (20)`, so the required context
+  #                     `verify` never reports.
+  #   paths: filters:   stop the workflow firing for PRs that touch only excluded
+  #                     files.
+  #
+  # A check that never reports fails closed (the merge is blocked), so those last two
+  # are loud rather than silent — but all three disarm the gate.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # The single gate. Identical to what a developer runs locally, by construction:
+      # there is one definition of it, in package.json, and both sides call it.
+      - name: npm run verify
+        run: npm run verify
+        env:
+          # Public by design — these ship to every browser in dist/. See .env.example.
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          RLS_TEST_A_EMAIL: ${{ vars.RLS_TEST_A_EMAIL }}
+          RLS_TEST_B_EMAIL: ${{ vars.RLS_TEST_B_EMAIL }}
+          # Actually secret.
+          RLS_TEST_A_PASSWORD: ${{ secrets.RLS_TEST_A_PASSWORD }}
+          RLS_TEST_B_PASSWORD: ${{ secrets.RLS_TEST_B_PASSWORD }}
