@@ -100,8 +100,32 @@ Claude Code CLI owns the Jira board through the Atlassian connector.
   open, Done on merge. Done means the DoD is met, not just that code was written.
 
 ## Infrastructure
-Supabase free tier pauses on inactivity. A cron-job.org schedule hits the
-Supabase REST API every 2 to 3 days. Keep it documented here and live.
+Supabase free tier pauses a project after ~7 days of inactivity. That is no longer
+a nuisance: the live RLS suite is a required CI check, so **a paused database blocks
+every merge** — including the PR that would fix it.
+
+A cron-job.org job keeps it awake. Configured 2026-07-14, verified by test run:
+
+| | |
+|---|---|
+| URL | `https://xcnmyhozmcopcpxlagrk.supabase.co/rest/v1/tickets?select=id&limit=1` |
+| Method | `GET`, header `apikey: <VITE_SUPABASE_ANON_KEY>` |
+| Schedule | Daily, 06:00 UTC |
+| On failure | Email notification enabled — this is the only monitoring, do not disable it |
+| Healthy response | `200` with body `[]` |
+
+The empty array is RLS filtering an anonymous caller to zero rows. That is the
+success signal, not an error: RLS is evaluated *inside* Postgres, so an array proves
+the database woke up and ran the query. A 200 alone would not — a cached edge
+response returns one forever while the database sleeps.
+
+**Do not point the cron at `/rest/v1/`.** It returns 401 for the anon key ("Only the
+`service_role` API key can be used"), and the only way to make it work is to ship the
+service-role key to a third party. It is the endpoint you will instinctively reach
+for. Don't.
+
+`src/test/keepalive.integration.test.ts` asserts this exact contract on every PR, so
+the endpoint cannot rot underneath the cron. `npm run keepalive` triggers it manually.
 
 ## Key files
 - `sprintboard_phase1_schema.sql` — the database schema.
