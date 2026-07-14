@@ -62,12 +62,31 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 - RLS still holds (two-user isolation test green).
 - One PR, squash merged. Jira issue moved to Done only after merge.
 
-**CI must run `npm test`, never `npm run test:unit`.** `test:unit` excludes the
-RLS integration suite and needs no secrets — it is a local fast-loop
-convenience only. If CI is wired to `test:unit`, the RLS suite silently never
-runs, CI stays green, and the "RLS still holds" line above is quietly unmet on
-every future PR. CI needs the `RLS_TEST_{A,B}_{EMAIL,PASSWORD}` secrets
-configured for `npm test` to actually exercise isolation rather than skip it.
+**CI runs `npm run verify`, and that is the gate.** It is a required status check on
+`main`: a red run blocks the merge, and there are no bypass actors. `verify` includes
+`npm test`, which includes the live RLS integration suite.
+
+**Never wire CI to `npm run test:unit`.** It excludes the RLS suite and needs no
+secrets, so CI would stay green while the "RLS still holds" line above went quietly
+unmet on every future PR. `test:unit` is a local fast-loop convenience, never a gate.
+CI needs the `RLS_TEST_*` secrets and variables configured for the suite to exercise
+isolation rather than skip it — a first CI run reporting 30 tests instead of 43 means
+exactly that, and must be treated as a failure.
+
+## Verification
+
+Two "green" checks have been reported on this project that were not green. Both had
+the same shape: the check that ran was not the check that was claimed.
+
+- **Verification means `npm run verify`.** Never a hand-assembled subset, never a
+  proxy. `tsc --noEmit` is not `npm run build` — it passed on a branch whose build was
+  red. CI runs this same command, so local and CI cannot drift.
+- **Compare against `origin/*`, and fetch first.** A stale local `main` made a correct
+  squash-merge look like it had landed an empty tree.
+- **Never truncate output you are using as evidence.** `git show --stat | head` hid the
+  file list behind a long commit message and manufactured a false alarm.
+- **A surprising result is a hypothesis, not a finding.** Before acting on or reporting
+  something alarming, re-derive it a second, independent way.
 
 ---
 
