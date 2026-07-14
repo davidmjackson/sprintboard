@@ -1,0 +1,79 @@
+name: verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# This job reads code and runs checks. It writes nothing.
+permissions:
+  contents: read
+
+# The group is a constant, not per-ref, and that's on purpose. The RLS suite writes
+# fixture rows — including a project key drawn from a space of only 1296 values — to
+# one shared live Supabase project, as one shared user. Two runs on different refs
+# (two PRs, or a PR run overlapping the post-merge push-to-main run) executing at the
+# same time can collide on the `projects.key` unique constraint and turn a good
+# branch red. A single global group serializes every run, across every ref, so only
+# one is ever touching the live database at a time.
+#
+# Superseded runs are deliberately NOT cancelled. The RLS integration suite creates
+# real rows in the shared Supabase project and removes them in afterAll. Cancelling a
+# run mid-suite strands a project, its sprint, its tickets and its counter row in the
+# live database — permanently, on every cancelled run. A wasted CI minute is cheaper
+# than leaked fixtures.
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+jobs:
+  # The job name below is the exact status check the `main` ruleset requires.
+  #
+  # Do NOT add any of the following to this job. Each one is a way for the gate to
+  # report success without having verified anything:
+  #
+  #   if:               a skipped job concludes as `skipped`, and GitHub accepts
+  #                     `skipped` as satisfying a required check. The gate would go
+  #                     green having run nothing. This is the dangerous one.
+  #   strategy.matrix:  renames the check to `verify (20)`, so the required context
+  #                     `verify` never reports.
+  #   paths: filters:   stop the workflow firing for PRs that touch only excluded
+  #                     files.
+  #
+  # A check that never reports fails closed (the merge is blocked), so those last two
+  # are loud rather than silent — but all three disarm the gate.
+  #
+  # And the reason this comment matters more than it looks: for a `pull_request`
+  # event, GitHub runs the workflow as defined in the PR's OWN head commit. So a PR
+  # that adds `if:` to this job makes THAT PR's `verify` check conclude `skipped` —
+  # which satisfies the required check. It merges, and the gate is disarmed for every
+  # PR after it. The pull request that disarms this gate is not itself gated by it.
+  # Nothing downstream will catch that. Treat any diff touching this job as a change
+  # to the project's security posture.
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # The single gate. Identical to what a developer runs locally, by construction:
+      # there is one definition of it, in package.json, and both sides call it.
+      - name: npm run verify
+        run: npm run verify
+        env:
+          # Public by design — these ship to every browser in dist/. See .env.example.
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          RLS_TEST_A_EMAIL: ${{ vars.RLS_TEST_A_EMAIL }}
+          RLS_TEST_B_EMAIL: ${{ vars.RLS_TEST_B_EMAIL }}
+          # Actually secret.
+          RLS_TEST_A_PASSWORD: ${{ secrets.RLS_TEST_A_PASSWORD }}
+          RLS_TEST_B_PASSWORD: ${{ secrets.RLS_TEST_B_PASSWORD }}

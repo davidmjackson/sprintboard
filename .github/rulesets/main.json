@@ -1,0 +1,42 @@
+{
+  "id": 18912697,
+  "name": "main: require PR and passing verify",
+  "target": "branch",
+  "source_type": "Repository",
+  "source": "davidmjackson/sprintboard",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "exclude": [], "include": ["~DEFAULT_BRANCH"] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [{ "context": "verify" }]
+      }
+    }
+  ],
+  "node_id": "RRS_lACqUmVwb3NpdG9yec5Nc2MNzgEglbk",
+  "created_at": "2026-07-14T07:24:29.301+01:00",
+  "updated_at": "2026-07-14T07:24:29.330+01:00",
+  "bypass_actors": [],
+  "current_user_can_bypass": "never",
+  "_links": {
+    "self": { "href": "https://api.github.com/repos/davidmjackson/sprintboard/rulesets/18912697" },
+    "html": { "href": "https://github.com/davidmjackson/sprintboard/rules/18912697" }
+  }
+}
