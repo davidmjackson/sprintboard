@@ -19,3 +19,6 @@ test-results/
 # Editor / OS
 .DS_Store
 *.local
+
+# Claude Code agent worktrees
+.claude/worktrees/
