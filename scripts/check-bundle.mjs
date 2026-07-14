@@ -24,6 +24,10 @@ const FORBIDDEN = [
   // surrounding claims, because base64 aligns every 3 bytes / 4 chars.
   { pattern: /cm9sZSI6InNlcnZpY2Vfcm9sZS/, what: 'a base64-encoded service_role JWT claim' },
   { pattern: /SUPABASE_SERVICE_ROLE_KEY/, what: 'a service-role key environment variable' },
+  {
+    pattern: /VITE_RLS_TEST_[A-Z_]+/,
+    what: 'an RLS test-user credential (must never be VITE_-prefixed — Vite inlines it into the bundle)',
+  },
 ]
 
 function walk(dir) {
