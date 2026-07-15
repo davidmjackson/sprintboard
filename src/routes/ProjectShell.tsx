@@ -57,14 +57,6 @@ export function ProjectShell() {
   const loadingTickets = loaded?.projectId !== project.id
   const tickets = loadingTickets ? [] : loaded.tickets
 
-  async function refetch() {
-    try {
-      setLoaded({ projectId: project!.id, tickets: await listTickets(project!.id) })
-    } catch {
-      // keep the current list on a transient failure
-    }
-  }
-
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
       'border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
@@ -84,14 +76,15 @@ export function ProjectShell() {
           <CreateTicketDialog
             projectId={project.id}
             onCreated={(ticket) => {
-              // Optimistic insert so the new ticket shows immediately; the background
-              // refetch then reconciles ordering (same pattern as project creation).
+              // A new ticket always carries the highest number, so appending it keeps
+              // the number order the board and backlog use — no refetch needed. That
+              // also avoids a stale-response race: an unguarded refetch resolving after
+              // a project switch would clobber the new project's list.
               setLoaded((prev) =>
                 prev && prev.projectId === project.id
                   ? { projectId: prev.projectId, tickets: [...prev.tickets, ticket] }
                   : prev,
               )
-              void refetch()
             }}
           />
         </div>

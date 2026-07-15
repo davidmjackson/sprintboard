@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { Ticket, TicketType } from './domain'
+import type { Ticket, TicketInsert, TicketType } from './domain'
 
 /**
  * Create a ticket in a project.
@@ -23,6 +23,9 @@ export async function createTicket(input: {
   labels?: string[]
   acceptanceCriteria?: string
 }): Promise<CreateTicketResult> {
+  // `satisfies TicketInsert` binds the write to the guard type (Omit key/number), so a
+  // future edit that adds `key` or `number` here fails to compile at the call site —
+  // making the "unrepresentable from the client" guarantee structural, not just a doc.
   const { data, error } = await supabase
     .from('tickets')
     .insert({
@@ -33,7 +36,7 @@ export async function createTicket(input: {
       story_points: input.storyPoints ?? null,
       labels: input.labels ?? [],
       acceptance_criteria: input.acceptanceCriteria ?? null,
-    })
+    } satisfies TicketInsert)
     .select()
     .single()
 

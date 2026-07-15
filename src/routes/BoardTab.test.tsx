@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 
@@ -41,11 +41,17 @@ describe('BoardTab', () => {
     expect(headings).toEqual(['To Do', 'In Progress', 'In Review', 'Done'])
   })
 
-  it('places each ticket in its status column and shows its key and summary', () => {
+  it('places each ticket in its own status column, not merely on the page', () => {
     renderTab(BoardTab)
-    expect(screen.getByText('MP-1')).toBeInTheDocument()
-    expect(screen.getByText('Do the todo')).toBeInTheDocument()
-    expect(screen.getByText('Ship it')).toBeInTheDocument()
+    const todo = screen.getByRole('heading', { name: 'To Do' }).closest('section')!
+    const done = screen.getByRole('heading', { name: 'Done' }).closest('section')!
+    // Scoped to the section, so a status→column mapping bug fails here rather than
+    // passing because the text is present somewhere on the page.
+    expect(within(todo).getByText('MP-1')).toBeInTheDocument()
+    expect(within(todo).getByText('Do the todo')).toBeInTheDocument()
+    expect(within(done).getByText('MP-2')).toBeInTheDocument()
+    expect(within(done).getByText('Ship it')).toBeInTheDocument()
+    expect(within(todo).queryByText('Ship it')).not.toBeInTheDocument()
   })
 
   it('shows an empty state in columns with no tickets', () => {

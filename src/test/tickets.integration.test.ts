@@ -81,5 +81,11 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
 
     expect(error).not.toBeNull()
     expect(data).toBeNull()
+
+    // Independent no-row check, not just "nothing was returned": as the owner, confirm
+    // no such row exists. `data === null` alone follows mechanically from a non-null
+    // error and would not distinguish a rejected insert from an RLS-filtered RETURNING.
+    const { data: rows } = await a.from('tickets').select('summary').eq('project_id', projectId)
+    expect((rows ?? []).some((r) => r.summary === 'Intruder')).toBe(false)
   }, 30_000)
 })
