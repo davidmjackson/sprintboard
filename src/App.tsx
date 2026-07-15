@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { RequireAuth } from '@/routes/RequireAuth'
 import { SignupPage } from '@/routes/SignupPage'
 import { LoginPage } from '@/routes/LoginPage'
+import { CreateProjectDialog } from '@/routes/CreateProjectDialog'
 
 /**
  * The route table. Public auth routes, then everything else behind the auth guard.
@@ -42,6 +43,7 @@ function BoardPlaceholder() {
         <span className="font-semibold tracking-tight">Sprintboard</span>
         <div className="flex items-center gap-3">
           {user?.email ? <span className="text-muted-foreground text-sm">{user.email}</span> : null}
+          <CreateProjectDialog />
           <Button
             variant="outline"
             size="sm"
