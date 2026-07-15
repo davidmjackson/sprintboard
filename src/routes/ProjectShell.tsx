@@ -25,22 +25,24 @@ export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
   const { projectId } = useParams()
   const project = loading ? undefined : projects.find((p) => p.id === projectId)
+  const activeProjectId = project?.id
 
-  const [tickets, setTickets] = useState<Ticket[]>([])
-  const [loadingTickets, setLoadingTickets] = useState(true)
+  // The loaded set is tagged with the project it belongs to. That makes "loading" a
+  // derived fact — "this project's fetch has not landed yet" — so the effect never
+  // resets loading synchronously, and switching projects can never flash the previous
+  // project's tickets under the new header.
+  const [loaded, setLoaded] = useState<{ projectId: string; tickets: Ticket[] } | null>(null)
 
   useEffect(() => {
-    if (!project) return
+    if (!activeProjectId) return
     let active = true
-    setLoadingTickets(true)
-    listTickets(project.id)
-      .then((t) => active && setTickets(t))
-      .catch(() => {}) // an empty board is the acceptable failure mode here
-      .finally(() => active && setLoadingTickets(false))
+    listTickets(activeProjectId)
+      .then((tickets) => active && setLoaded({ projectId: activeProjectId, tickets }))
+      .catch(() => active && setLoaded({ projectId: activeProjectId, tickets: [] }))
     return () => {
       active = false
     }
-  }, [project?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeProjectId])
 
   if (loading) {
     return (
@@ -52,9 +54,12 @@ export function ProjectShell() {
 
   if (!project) return <Navigate to="/" replace />
 
+  const loadingTickets = loaded?.projectId !== project.id
+  const tickets = loadingTickets ? [] : loaded.tickets
+
   async function refetch() {
     try {
-      setTickets(await listTickets(project!.id))
+      setLoaded({ projectId: project!.id, tickets: await listTickets(project!.id) })
     } catch {
       // keep the current list on a transient failure
     }
@@ -81,7 +86,11 @@ export function ProjectShell() {
             onCreated={(ticket) => {
               // Optimistic insert so the new ticket shows immediately; the background
               // refetch then reconciles ordering (same pattern as project creation).
-              setTickets((prev) => [...prev, ticket])
+              setLoaded((prev) =>
+                prev && prev.projectId === project.id
+                  ? { projectId: prev.projectId, tickets: [...prev.tickets, ticket] }
+                  : prev,
+              )
               void refetch()
             }}
           />

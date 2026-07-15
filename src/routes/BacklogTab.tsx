@@ -27,7 +27,9 @@ export function BacklogTab() {
     <ul className="divide-y rounded-lg border">
       {tickets.map((ticket) => (
         <li key={ticket.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-          <span className="text-muted-foreground w-16 shrink-0 font-mono text-xs">{ticket.key}</span>
+          <span className="text-muted-foreground w-16 shrink-0 font-mono text-xs">
+            {ticket.key}
+          </span>
           <span className="text-muted-foreground w-14 shrink-0 text-xs uppercase">
             {TICKET_TYPE_LABELS[ticket.type]}
           </span>

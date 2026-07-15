@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
@@ -12,7 +13,7 @@ const TICKETS = [
 ] as never
 
 function renderTab(
-  Tab: () => JSX.Element,
+  Tab: ComponentType,
   ctx: ProjectShellContext = {
     project: {} as never,
     tickets: TICKETS,

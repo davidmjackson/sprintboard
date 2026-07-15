@@ -17,7 +17,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 
 const CreateTicketSchema = z.object({
   summary: z
@@ -27,11 +34,13 @@ const CreateTicketSchema = z.object({
     .max(200, 'Keep the summary to 200 characters or fewer'),
   type: z.enum([...TICKET_TYPES] as [TicketType, ...TicketType[]]),
   description: z.string().trim().max(2000).optional(),
-  // Empty input means "no estimate": map '' to undefined before coercing to a number.
-  storyPoints: z.preprocess(
-    (v) => (v === '' || v == null ? undefined : v),
-    z.coerce.number().int('Whole numbers only').min(0, 'Cannot be negative').max(999).optional(),
-  ),
+  // Kept a string on the form (so the input stays controlled); parsed to a number at
+  // submit. Empty means "no estimate". Digits only, ≤ 3, so it stays a sane int.
+  storyPoints: z
+    .string()
+    .trim()
+    .regex(/^\d{0,3}$/, 'Whole numbers only')
+    .optional(),
   labels: z.string().optional(),
   acceptanceCriteria: z.string().trim().max(2000).optional(),
 })
@@ -88,7 +97,7 @@ export function CreateTicketDialog({
       summary: parsed.summary,
       type: parsed.type,
       description: parsed.description?.trim() || undefined,
-      storyPoints: parsed.storyPoints,
+      storyPoints: parsed.storyPoints ? Number(parsed.storyPoints) : undefined,
       labels: parseLabels(parsed.labels),
       acceptanceCriteria: parsed.acceptanceCriteria?.trim() || undefined,
     })
@@ -112,9 +121,7 @@ export function CreateTicketDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create a ticket</DialogTitle>
-          <DialogDescription>
-            It gets the next key in this project automatically.
-          </DialogDescription>
+          <DialogDescription>It gets the next key in this project automatically.</DialogDescription>
         </DialogHeader>
 
         <Form {...form}>
