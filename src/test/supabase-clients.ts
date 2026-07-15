@@ -84,6 +84,17 @@ export function adminClient(): SupabaseClient<Database> {
   })
 }
 
+/** A fresh anon client, not signed in — the browser's client. Used by the signup
+ *  suite to drive `auth.signUp` exactly as a visitor would. */
+export function anonClient(): SupabaseClient<Database> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. See .env.example.')
+  }
+  return createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  })
+}
+
 /** A fresh, signed-in client. Sessions are not persisted: each client is one user. */
 export async function signIn(user: RlsUser): Promise<SupabaseClient<Database>> {
   const { email, password } = RLS_USERS[user]

@@ -114,9 +114,21 @@ needs no secrets, so CI would stay green while the "RLS still holds" line above 
 quietly unmet on every future PR. `test:unit` is a local fast-loop convenience, never
 a gate. CI needs the `RLS_TEST_*` **and** `SUPABASE_SERVICE_ROLE_KEY` secrets/variables
 configured for the suites to exercise isolation and signup rather than skip them — a
-CI run reporting 47 tests instead of 63 means exactly that, and must be treated as a
-failure. (47 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
+CI run reporting 54 tests instead of 71 means exactly that, and must be treated as a
+failure. (54 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
 the RLS, keepalive **and** signup suites vanish.)
+
+## Deep review for security-boundary changes
+
+Every story gets the standard two-reviewer pass (peer + security) on PR open. **In
+addition, run a deep multi-agent review** — many independent lenses, each finding
+adversarially verified — for any change that touches a **security boundary**:
+authentication, RLS / tenant isolation, secret handling, or the CI gate workflow
+itself. These are the diffs where one missed defect is expensive, and the project has
+form here: a 48-agent adversarial pass once caught a broken `check-bundle` control that
+four conventional reviews missed. **Read the KILLED findings, not just the survivors** —
+majority-vote has discarded a correct finding before. Skip the deep pass for low-risk
+diffs (docs, copy, pure refactors already covered by tests); it is not free.
 
 ## Verification
 

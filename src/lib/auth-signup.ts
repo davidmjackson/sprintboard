@@ -11,8 +11,13 @@ import type { AuthResponse } from '@supabase/supabase-js'
  *
  * Handling both makes the message correct without the client needing to know which
  * mode the project is in.
+ *
+ * The confirmation-OFF case keys on the stable machine code `user_already_exists`
+ * first — `error.message` is free text GoTrue may reword or localise, so the
+ * substring match is only a fallback for older servers.
  */
 export function isDuplicateSignup({ data, error }: AuthResponse): boolean {
-  if (error) return /already registered/i.test(error.message)
+  if (error)
+    return error.code === 'user_already_exists' || /already registered/i.test(error.message)
   return Array.isArray(data.user?.identities) && data.user.identities.length === 0
 }

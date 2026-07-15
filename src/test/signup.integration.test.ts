@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { afterAll, describe, expect, it } from 'vitest'
-import { adminClient, assertServiceRoleOrExplain, hasServiceRoleKey } from './supabase-clients'
+import {
+  adminClient,
+  anonClient,
+  assertServiceRoleOrExplain,
+  hasServiceRoleKey,
+} from './supabase-clients'
+import { isDuplicateSignup } from '@/lib/auth-signup'
 
 assertServiceRoleOrExplain()
 
@@ -71,5 +77,21 @@ describe.skipIf(!hasServiceRoleKey)('S2.1 signup creates a profile', () => {
     const email = freshEmail()
     const id = await createUser(email, 'Ada Lovelace')
     expect(await profileDisplayName(id)).toBe('Ada Lovelace')
+  }, 30_000)
+
+  // Duplicate-email detection is the most GoTrue-version-dependent logic in the
+  // story, and the component tests only feed it hand-built responses. This exercises
+  // the real browser `auth.signUp` against a real existing email, so isDuplicateSignup
+  // is pinned to whatever shape GoTrue actually returns. It is deliberately
+  // setting-independent: confirmation ON yields the empty-`identities` mask,
+  // confirmation OFF yields the `user_already_exists` error — isDuplicateSignup must
+  // return true either way.
+  it('detects a real duplicate signup against live GoTrue', async () => {
+    const email = freshEmail()
+    await createUser(email) // the pre-existing account (tracked for cleanup)
+
+    const result = await anonClient().auth.signUp({ email, password: 'password123' })
+
+    expect(isDuplicateSignup(result)).toBe(true)
   }, 30_000)
 })
