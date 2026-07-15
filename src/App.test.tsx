@@ -35,6 +35,8 @@ const h = vi.hoisted(() => {
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
+    // AppLayout lists projects on mount; give it an empty list.
+    from: () => ({ select: () => ({ order: () => Promise.resolve({ data: [], error: null }) }) }),
     auth: {
       getSession: h.getSession,
       onAuthStateChange: h.onAuthStateChange,
@@ -80,7 +82,8 @@ describe('routing and the auth guard', () => {
     // A refresh is a remount: getSession() reads the persisted session.
     h.state.session = SESSION
     renderAt('/')
-    expect(await screen.findByText(/You are signed in/)).toBeInTheDocument()
+    // The authed shell renders (its Log out control), not the login screen.
+    expect(await screen.findByRole('button', { name: 'Log out' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Log in' })).not.toBeInTheDocument()
   })
 
@@ -89,8 +92,7 @@ describe('routing and the auth guard', () => {
     const user = userEvent.setup()
     renderAt('/')
 
-    await screen.findByText(/You are signed in/)
-    await user.click(screen.getByRole('button', { name: 'Log out' }))
+    await user.click(await screen.findByRole('button', { name: 'Log out' }))
 
     expect(h.signOut).toHaveBeenCalledOnce()
     expect(await screen.findByRole('heading', { name: 'Log in' })).toBeInTheDocument()

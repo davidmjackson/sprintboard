@@ -32,3 +32,20 @@ export async function createProject(input: {
 
   return { ok: true, project: data as Project }
 }
+
+/**
+ * The caller's own projects, name-ordered for a stable nav.
+ *
+ * No owner filter is needed or wanted: the `projects_owner` RLS policy already scopes
+ * `select` to `owner_id = auth.uid()`, so this returns exactly the signed-in user's
+ * projects and never another tenant's — the isolation is the database's, proven live.
+ */
+export async function listProjects(): Promise<Project[]> {
+  const { data, error } = await supabase
+    .from('projects')
+    .select()
+    .order('name', { ascending: true })
+
+  if (error) throw new Error(`Could not load projects: ${error.message}`)
+  return (data ?? []) as Project[]
+}
