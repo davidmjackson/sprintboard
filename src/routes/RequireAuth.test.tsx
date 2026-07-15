@@ -46,6 +46,17 @@ describe('RequireAuth', () => {
     expect(screen.queryByText('LOGIN SCREEN')).not.toBeInTheDocument()
   })
 
+  it('does not bounce an already-authenticated user while the session is still loading', () => {
+    // The reason the loading branch exists: a logged-in user must not be redirected
+    // to /login before `loading` clears. This pins that property directly.
+    setAuth({ ...SIGNED_IN, loading: true })
+    renderGuard('/')
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByText('LOGIN SCREEN')).not.toBeInTheDocument()
+    expect(screen.queryByText('PROTECTED HOME')).not.toBeInTheDocument()
+  })
+
   it('redirects an unauthenticated visitor from a protected route to /login', () => {
     setAuth({ session: null })
     renderGuard('/')
