@@ -25,7 +25,11 @@ export function AppLayout() {
   const [loading, setLoading] = useState(true)
 
   const refetch = useCallback(async () => {
-    setProjects(await listProjects())
+    try {
+      setProjects(await listProjects())
+    } catch {
+      // Keep the current list on a transient failure — same posture as the mount load.
+    }
   }, [])
 
   useEffect(() => {
@@ -70,8 +74,13 @@ export function AppLayout() {
 
         <CreateProjectDialog
           onCreated={(project) => {
-            void refetch()
+            // Insert optimistically so the navigation lands on the new project
+            // immediately. refetch is a round-trip; navigating before it resolves would
+            // hit ProjectView with a stale list and bounce the user home. The
+            // background refetch then reconciles ordering.
+            setProjects((prev) => [...prev, project])
             navigate(`/projects/${project.id}`)
+            void refetch()
           }}
         />
 
