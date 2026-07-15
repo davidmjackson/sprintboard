@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { Ticket, TicketInsert, TicketType } from './domain'
+import type { Ticket, TicketInsert, TicketType, TicketUpdate } from './domain'
 
 /**
  * Create a ticket in a project.
@@ -60,4 +60,26 @@ export async function listTickets(projectId: string): Promise<Ticket[]> {
 
   if (error) throw new Error(`Could not load tickets: ${error.message}`)
   return (data ?? []) as Ticket[]
+}
+
+/**
+ * Update a ticket's editable fields. `key`, `number`, `id`, `project_id` and the
+ * timestamps are excluded by `TicketUpdate`, so the immutable and trigger-owned columns
+ * cannot be sent. `updated_at` is refreshed by the `tickets_set_updated_at` trigger, so
+ * the returned row carries the new timestamp. RLS (`tickets_owner`) scopes the write
+ * through the owned project: a cross-tenant update matches zero rows, `.single()` then
+ * errors, and we report the single non-user-correctable `'unknown'`.
+ */
+export type UpdateTicketResult = { ok: true; ticket: Ticket } | { ok: false; error: 'unknown' }
+
+export async function updateTicket(id: string, patch: TicketUpdate): Promise<UpdateTicketResult> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .update(patch)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return { ok: false, error: 'unknown' }
+  return { ok: true, ticket: data as Ticket }
 }
