@@ -47,6 +47,19 @@ export const SPRINT_STATUSES = [
   'complete',
 ] as const satisfies readonly SprintStatus[]
 
+/**
+ * Human-readable board-column labels, keyed by status. This is the single home for
+ * the four column names — CLAUDE.md forbids inlining them in a component, filter, or
+ * badge-colour map. The `Record<TicketStatus, string>` type makes it exhaustive by
+ * construction: a new status cannot be added without giving it a label here.
+ */
+export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
+  todo: 'To Do',
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  done: 'Done',
+}
+
 /* ------------------------------------------------------------------ *
  * Compile-time guards. Exported so they are "used" — `noUnusedLocals`
  * rejects an unreferenced type alias, and the `_`-prefix exemption

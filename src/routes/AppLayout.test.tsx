@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AppLayout } from './AppLayout'
 import { ProjectsHome } from './ProjectsHome'
-import { ProjectView } from './ProjectView'
+import { ProjectShell } from './ProjectShell'
+import { BoardTab } from './BoardTab'
+import { BacklogTab } from './BacklogTab'
 import { createProject, listProjects } from '@/lib/projects'
 
 vi.mock('@/lib/auth-context', () => ({
@@ -28,7 +30,11 @@ function renderApp(path: string) {
       <Routes>
         <Route element={<AppLayout />}>
           <Route path="/" element={<ProjectsHome />} />
-          <Route path="/projects/:projectId" element={<ProjectView />} />
+          <Route path="/projects/:projectId" element={<ProjectShell />}>
+            <Route index element={<Navigate to="board" replace />} />
+            <Route path="board" element={<BoardTab />} />
+            <Route path="backlog" element={<BacklogTab />} />
+          </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
@@ -66,7 +72,7 @@ describe('AppLayout project nav', () => {
     await user.click(await screen.findByRole('link', { name: /Apple/ }))
 
     expect(await screen.findByRole('heading', { name: /Apple/ })).toBeInTheDocument()
-    expect(screen.getByText(/Board and Backlog arrive/)).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Board' })).toBeInTheDocument()
   })
 
   it('restores the selected project from the URL on load (survives a refresh)', async () => {
@@ -81,7 +87,7 @@ describe('AppLayout project nav', () => {
     renderApp('/projects/not-mine')
 
     expect(await screen.findByText(/Select a project from the left/)).toBeInTheDocument()
-    expect(screen.queryByText(/Board and Backlog arrive/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Board' })).not.toBeInTheDocument()
   })
 
   it('opens a freshly created project immediately, before the nav refetch resolves', async () => {

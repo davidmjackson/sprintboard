@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   SPRINT_STATUSES,
   TICKET_STATUSES,
+  TICKET_STATUS_LABELS,
   TICKET_TYPES,
   isSprintStatus,
   isTicketStatus,
@@ -117,6 +118,23 @@ describe('domain vocabulary matches the database check constraints', () => {
   it('project_type is scrum only — kanban is Rung 3', () => {
     const projectTypes: ProjectType[] = ['scrum']
     expect(checkConstraintValues('projects', 'project_type')).toEqual(projectTypes)
+  })
+})
+
+describe('board column labels', () => {
+  it('has a label for every ticket status', () => {
+    for (const status of TICKET_STATUSES) {
+      expect(TICKET_STATUS_LABELS[status]).toBeTruthy()
+    }
+  })
+
+  it('labels the four fixed columns in the expected words', () => {
+    expect(TICKET_STATUS_LABELS).toEqual({
+      todo: 'To Do',
+      in_progress: 'In Progress',
+      in_review: 'In Review',
+      done: 'Done',
+    })
   })
 })
 
