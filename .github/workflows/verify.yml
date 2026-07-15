@@ -77,3 +77,6 @@ jobs:
           # Actually secret.
           RLS_TEST_A_PASSWORD: ${{ secrets.RLS_TEST_A_PASSWORD }}
           RLS_TEST_B_PASSWORD: ${{ secrets.RLS_TEST_B_PASSWORD }}
+          # Test-only admin key for the S2.1 signup suite. Server-side only, never
+          # VITE_-prefixed, so it is never inlined into the browser bundle.
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

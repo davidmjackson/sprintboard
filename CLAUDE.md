@@ -87,6 +87,12 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 
 ## Security rules (non-negotiable)
 - Anon key only in the browser. The service-role key must never ship client-side.
+  The S2.1 signup integration suite uses a service-role key, but **test-side only**:
+  `SUPABASE_SERVICE_ROLE_KEY` is **not** `VITE_`-prefixed, so Vite never inlines it
+  into the bundle; it lives in `.env.local` and the CI runner, never the browser.
+  `adminClient()` in `src/test/supabase-clients.ts` is the only consumer and app code
+  must never import it. `check-bundle.mjs` fails the build if any privileged key ever
+  reaches `dist/`.
 - Every table has RLS. Do not add a table without a policy.
 - Validate at both edges: zod on the client, constraints and checks in the database.
 - Guard hooks (SECRET FILE, DANGEROUS COMMAND, REMOTE WRITE, MCP WRITE) are
@@ -103,13 +109,14 @@ Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 `main`: a red run blocks the merge, and there are no bypass actors. `verify` includes
 `npm test`, which includes the live RLS integration suite.
 
-**Never wire CI to `npm run test:unit`.** It excludes the RLS suite and needs no
-secrets, so CI would stay green while the "RLS still holds" line above went quietly
-unmet on every future PR. `test:unit` is a local fast-loop convenience, never a gate.
-CI needs the `RLS_TEST_*` secrets and variables configured for the suite to exercise
-isolation rather than skip it — a CI run reporting 37 tests instead of 51 means
-exactly that, and must be treated as a failure. (37 is what `test:unit` yields: it
-excludes every `*.integration.test.ts`, so both the RLS and keepalive suites vanish.)
+**Never wire CI to `npm run test:unit`.** It excludes the integration suites and
+needs no secrets, so CI would stay green while the "RLS still holds" line above went
+quietly unmet on every future PR. `test:unit` is a local fast-loop convenience, never
+a gate. CI needs the `RLS_TEST_*` **and** `SUPABASE_SERVICE_ROLE_KEY` secrets/variables
+configured for the suites to exercise isolation and signup rather than skip them — a
+CI run reporting 46 tests instead of 62 means exactly that, and must be treated as a
+failure. (46 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
+the RLS, keepalive **and** signup suites vanish.)
 
 ## Verification
 
