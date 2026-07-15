@@ -55,6 +55,20 @@ function EditableText({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
 
+  // The view-mode "Edit …" button, so focus can be handed back to it when a field
+  // exits edit mode — otherwise the input unmounts and Radix's FocusScope drops focus
+  // to the dialog root, throwing keyboard/SR users to the top of the tab order.
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // Set by commit()/cancel() to request a refocus once the view-mode button is back in
+  // the DOM; a ref (not state) so setting it never itself triggers a render.
+  const refocusTriggerRef = useRef(false)
+  useEffect(() => {
+    if (!editing && refocusTriggerRef.current) {
+      refocusTriggerRef.current = false
+      triggerRef.current?.focus()
+    }
+  }, [editing])
+
   function start() {
     setDraft(value)
     setEditing(true)
@@ -63,11 +77,13 @@ function EditableText({
   function commit() {
     setEditing(false)
     onEditingChange?.(false)
+    refocusTriggerRef.current = true
     if (draft !== value) onCommit(draft)
   }
   function cancel() {
     setEditing(false)
     onEditingChange?.(false)
+    refocusTriggerRef.current = true
     setDraft(value)
   }
 
@@ -75,6 +91,7 @@ function EditableText({
     return (
       <button
         type="button"
+        ref={triggerRef}
         aria-label={`Edit ${ariaLabel}`}
         onClick={start}
         className={cn(
@@ -137,6 +154,17 @@ function pickFields<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T
   return out
 }
 
+/** Same rule as `CreateTicketDialog`'s zod schema (`^\d{0,3}$`, "Whole numbers only") —
+ *  the edit path has no `<form>`/zod, so it re-validates the same shape by hand. Empty
+ *  means "no estimate" (→ null); a non-negative whole number of up to 3 digits (→
+ *  Number); anything else (negative, decimal, non-numeric) is rejected. */
+function parseStoryPoints(raw: string): { ok: true; value: number | null } | { ok: false } {
+  const trimmed = raw.trim()
+  if (trimmed === '') return { ok: true, value: null }
+  if (!/^\d{0,3}$/.test(trimmed)) return { ok: false }
+  return { ok: true, value: Number(trimmed) }
+}
+
 export function TicketDetailDialog({
   ticket,
   currentUser,
@@ -185,17 +213,27 @@ export function TicketDetailDialog({
 
     onUpdated({ ...current, ...patch } as Ticket) // optimistic — merge onto the latest ticket
     const result = await updateTicket(current.id, patch)
+    // `ticketRef.current` may have moved on by the time this resolves — to a DIFFERENT
+    // ticket (the dialog switched tickets while this save was in flight) or to `null`
+    // (the dialog closed). Merging onto it unguarded would emit a wrong-identity object
+    // (or, for null, an id-less `{}`). Fall back to the commit-time `current` — which is
+    // always non-null and always has `id === current.id` — whenever the live ref no
+    // longer matches the ticket this save belongs to.
+    const base = ticketRef.current?.id === current.id ? ticketRef.current : current
     if (!result.ok) {
       // Revert only the fields this commit changed, merged onto whatever is latest NOW —
       // preserves any other field a concurrent commit has since applied.
-      onUpdated({ ...ticketRef.current!, ...revert } as Ticket)
+      onUpdated({ ...base, ...revert } as Ticket)
       setErrorFor({ ticketId: current.id, message: 'Could not save your change. Please try again.' })
     } else {
       // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
       // ticket — never swap in the whole `result.ticket`, which would clobber a
       // concurrent in-flight optimistic edit to a different field.
+      // NOTE: two in-flight saves to the SAME field resolving out of order can still
+      // reconcile/revert in the wrong order (last-resolved wins, not last-committed) —
+      // a known, deliberately deferred limitation.
       const reconciled = pickFields(result.ticket, keys)
-      onUpdated({ ...ticketRef.current!, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
+      onUpdated({ ...base, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
       setErrorFor(null)
     }
   }
@@ -313,7 +351,14 @@ export function TicketDetailDialog({
                 ariaLabel="story points"
                 numeric
                 placeholder="—"
-                onCommit={(v) => commit({ story_points: v.trim() === '' ? null : Number(v) })}
+                onCommit={(v) => {
+                  const parsed = parseStoryPoints(v)
+                  if (!parsed.ok) {
+                    setErrorFor({ ticketId: ticket.id, message: 'Whole numbers only' })
+                    return
+                  }
+                  commit({ story_points: parsed.value })
+                }}
                 onEditingChange={handleEditingChange}
               />
             </label>

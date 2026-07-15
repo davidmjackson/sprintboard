@@ -7,6 +7,13 @@ import type { Ticket } from '@/lib/domain'
 import * as tickets from '@/lib/tickets'
 import type { UpdateTicketResult } from '@/lib/tickets'
 
+/** A promise the test controls the resolution of, plus its resolver. */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
+
 vi.mock('@/lib/tickets', async (orig) => ({ ...(await orig<typeof tickets>()), updateTicket: vi.fn() }))
 const updateTicket = vi.mocked(tickets.updateTicket)
 
@@ -174,5 +181,105 @@ describe('TicketDetailDialog', () => {
     await userEvent.keyboard('{Escape}')
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
+  })
+
+  it('guards a rollback/reconcile against a ticket switch: onUpdated always carries the id of the ticket the save belongs to', async () => {
+    const ticketB: Ticket = { ...base, id: 't2', key: 'MP-2', summary: 'Ticket B' }
+    const { promise, resolve } = deferred<UpdateTicketResult>()
+    updateTicket.mockReturnValue(promise)
+    const onUpdated = vi.fn()
+    const { rerender } = render(
+      <TicketDetailDialog ticket={base} currentUser={user} onOpenChange={() => {}} onUpdated={onUpdated} />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), 'Renamed A{Enter}')
+
+    // Optimistic onUpdated has fired for ticket A; the save itself is still pending.
+    expect(onUpdated).toHaveBeenCalledTimes(1)
+    expect(onUpdated.mock.calls[0]![0]).toMatchObject({ id: 't1' })
+
+    // Same mounted instance, switched to a DIFFERENT ticket while A's save is in flight —
+    // this is exactly what selecting another row on the board does.
+    rerender(
+      <TicketDetailDialog ticket={ticketB} currentUser={user} onOpenChange={() => {}} onUpdated={onUpdated} />,
+    )
+
+    resolve({ ok: true, ticket: { ...base, summary: 'Renamed A', updated_at: '2026-07-15T00:05:00Z' } })
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(2))
+
+    // Every onUpdated call must carry ticket A's identity — never a ticket-B-identity
+    // object (id t2) carrying ticket A's reconciled data.
+    for (const call of onUpdated.mock.calls) {
+      expect(call[0]).toMatchObject({ id: 't1' })
+    }
+  })
+
+  it('guards a rollback/reconcile against the dialog closing (ticket becomes null) mid-save', async () => {
+    const { promise, resolve } = deferred<UpdateTicketResult>()
+    updateTicket.mockReturnValue(promise)
+    const onUpdated = vi.fn()
+    const { rerender } = render(
+      <TicketDetailDialog ticket={base} currentUser={user} onOpenChange={() => {}} onUpdated={onUpdated} />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), 'Renamed A{Enter}')
+    expect(onUpdated).toHaveBeenCalledTimes(1)
+
+    // Dialog closes (parent sets ticket to null) while the save is still in flight.
+    rerender(<TicketDetailDialog ticket={null} currentUser={user} onOpenChange={() => {}} onUpdated={onUpdated} />)
+
+    resolve({ ok: true, ticket: { ...base, summary: 'Renamed A', updated_at: '2026-07-15T00:06:00Z' } })
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(2))
+
+    // Never an id-less `{}`-spread object — identity and other fields must survive.
+    const reconciled = onUpdated.mock.calls[1]![0] as Ticket
+    expect(reconciled.id).toBe('t1')
+    expect(reconciled.type).toBeDefined()
+    expect(reconciled.labels).toBeDefined()
+  })
+
+  it('rejects negative or decimal story points without saving, then accepts a valid whole number', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, story_points: 8 } })
+    render(<TicketDetailDialog ticket={base} currentUser={user} onOpenChange={() => {}} onUpdated={() => {}} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
+    await userEvent.type(screen.getByRole('spinbutton', { name: /story points/i }), '-5{Enter}')
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/whole numbers only/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
+    await userEvent.clear(screen.getByRole('spinbutton', { name: /story points/i }))
+    await userEvent.type(screen.getByRole('spinbutton', { name: /story points/i }), '3.5{Enter}')
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/whole numbers only/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
+    await userEvent.clear(screen.getByRole('spinbutton', { name: /story points/i }))
+    await userEvent.type(screen.getByRole('spinbutton', { name: /story points/i }), '8{Enter}')
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { story_points: 8 }))
+  })
+
+  it('returns focus to the field trigger button after commit (Enter) and after cancel (Escape)', async () => {
+    render(<TicketDetailDialog ticket={base} currentUser={user} onOpenChange={() => {}} onUpdated={() => {}} />)
+
+    // Commit path.
+    const editSummaryBtn = screen.getByRole('button', { name: /edit summary/i })
+    await userEvent.click(editSummaryBtn)
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), '{Enter}')
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /edit summary/i })),
+    )
+
+    // Cancel path.
+    const editDescriptionBtn = screen.getByRole('button', { name: /edit description/i })
+    await userEvent.click(editDescriptionBtn)
+    await userEvent.type(screen.getByRole('textbox', { name: /^description$/i }), 'X{Escape}')
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /edit description/i })),
+    )
   })
 })
