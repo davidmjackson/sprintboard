@@ -5,12 +5,14 @@ import { AppLayout } from '@/routes/AppLayout'
 import { SignupPage } from '@/routes/SignupPage'
 import { LoginPage } from '@/routes/LoginPage'
 import { ProjectsHome } from '@/routes/ProjectsHome'
-import { ProjectView } from '@/routes/ProjectView'
+import { ProjectShell } from '@/routes/ProjectShell'
+import { BoardTab } from '@/routes/BoardTab'
+import { BacklogTab } from '@/routes/BacklogTab'
 
 /**
  * The route table. Public auth routes, then the authenticated shell (`AppLayout`, with
- * the project nav) wrapping the project routes. The board tabs inside a project arrive
- * with S3.3.
+ * the project nav) wrapping the project routes. Inside a project, the shell carries the
+ * Board and Backlog tabs as nested routes, so the chosen tab lives in the URL.
  */
 export default function App() {
   return (
@@ -21,7 +23,11 @@ export default function App() {
       <Route element={<RequireAuth />}>
         <Route element={<AppLayout />}>
           <Route path="/" element={<ProjectsHome />} />
-          <Route path="/projects/:projectId" element={<ProjectView />} />
+          <Route path="/projects/:projectId" element={<ProjectShell />}>
+            <Route index element={<Navigate to="board" replace />} />
+            <Route path="board" element={<BoardTab />} />
+            <Route path="backlog" element={<BacklogTab />} />
+          </Route>
           {/* Unknown authed paths fall back to the home landing. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
