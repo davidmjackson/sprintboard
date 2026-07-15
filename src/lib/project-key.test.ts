@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { deriveProjectKey, isValidProjectKey, PROJECT_KEY_PATTERN } from './project-key'
@@ -18,10 +20,23 @@ describe('isValidProjectKey', () => {
     expect(isValidProjectKey(k)).toBe(false)
   })
 
-  it('mirrors the database projects_key_format constraint exactly', () => {
-    // If this string drifts from the schema, the DB will reject keys the client
-    // accepted (or vice-versa). Kept identical on purpose.
-    expect(PROJECT_KEY_PATTERN.source).toBe('^[A-Z][A-Z0-9]{1,3}$')
+  it('mirrors the live database projects_key_format constraint', () => {
+    // Read the actual DDL, not a copy of the string — a hardcoded literal here would
+    // stay green while a widened `projects_key_format` (e.g. for Rung 3) let the DB
+    // and client diverge. This is the same drift guard domain.test.ts applies to the
+    // check-constraint enums. (domain.test.ts also fails on any appended ALTER TABLE,
+    // which would otherwise let the create-table regex read here go stale.)
+    const schemaPath = join(
+      import.meta.dirname,
+      '..',
+      '..',
+      'docs',
+      'sprintboard_phase1_schema.sql',
+    )
+    const schema = readFileSync(schemaPath, 'utf8')
+    const match = /projects_key_format check \(key ~ '([^']*)'\)/.exec(schema)
+    expect(match?.[1], 'projects_key_format check constraint not found in schema').toBeDefined()
+    expect(PROJECT_KEY_PATTERN.source).toBe(match![1])
   })
 })
 
@@ -40,6 +55,10 @@ describe('deriveProjectKey', () => {
 
   it('strips a leading digit so the key starts with a letter', () => {
     expect(deriveProjectKey('project x2')).toBe('PX')
+  })
+
+  it('keeps the letters of a digit-led single word rather than dropping them', () => {
+    expect(deriveProjectKey('0123abc')).toBe('ABC')
   })
 
   it('caps initials at four characters', () => {

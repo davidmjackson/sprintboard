@@ -29,8 +29,11 @@ export function deriveProjectKey(name: string): string {
     .filter(Boolean)
   if (words.length === 0) return ''
 
-  const raw = words.length === 1 ? words[0]!.slice(0, 3) : words.map((w) => w[0]).join('')
+  const source = words.length === 1 ? words[0]! : words.map((w) => w[0]!).join('')
 
-  // The key must start with a letter; drop any leading digits, then cap at 4.
-  return raw.replace(/^[0-9]+/, '').slice(0, 4)
+  // Drop leading digits BEFORE taking the prefix — the key must start with a letter,
+  // and stripping first keeps the letters a digit-led name still has (0123abc -> ABC,
+  // not ''). Single word takes its first characters; multi-word takes its initials.
+  const letters = source.replace(/^[0-9]+/, '')
+  return letters.slice(0, words.length === 1 ? 3 : 4)
 }

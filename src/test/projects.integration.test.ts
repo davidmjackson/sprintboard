@@ -16,17 +16,20 @@ assertCredentialsOrExplain()
 function runKey(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
   const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)]!
-  return `P${pick()}${pick()}`
+  return `P${pick()}${pick()}${pick()}`
 }
 
 describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
   let a: SupabaseClient<Database>
   let userAId: string
+  let userBId: string
   const createdIds: string[] = []
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = (await a.auth.getUser()).data.user!.id
+    const b = await signIn('B')
+    userBId = (await b.auth.getUser()).data.user!.id
   }, 30_000)
 
   afterAll(async () => {
@@ -76,5 +79,20 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
       .select()
       .single()
     expect(error?.code).toBe('23514')
+  }, 30_000)
+
+  it('rejects a project whose owner_id is spoofed to another user (RLS -> 42501)', async () => {
+    // The client sets owner_id, but the projects RLS policy's `with check
+    // (owner_id = auth.uid())` is the boundary: signed in as A, you cannot create a
+    // project owned by B, whatever you send. This is the security property S3.1 rests
+    // on, pinned live at the feature. No row is created, so nothing to clean up.
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userBId, name: 'Spoofed', key: runKey() })
+      .select()
+      .single()
+
+    expect(error?.code).toBe('42501')
+    expect(data).toBeNull()
   }, 30_000)
 })

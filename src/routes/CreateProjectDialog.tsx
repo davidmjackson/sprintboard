@@ -28,7 +28,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 
-export const CreateProjectSchema = z.object({
+const CreateProjectSchema = z.object({
   name: z
     .string()
     .trim()
@@ -41,7 +41,7 @@ export const CreateProjectSchema = z.object({
       'Key must be 2–4 characters: start with a letter, uppercase letters and digits only',
     ),
 })
-export type CreateProjectValues = z.infer<typeof CreateProjectSchema>
+type CreateProjectValues = z.infer<typeof CreateProjectSchema>
 
 /**
  * Create-project dialog. The key auto-suggests from the name (via `deriveProjectKey`)
