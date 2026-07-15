@@ -60,6 +60,18 @@ export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
   done: 'Done',
 }
 
+/**
+ * Human-readable ticket-type labels, keyed by type. Same rule as
+ * `TICKET_STATUS_LABELS`: type display names live only here (CLAUDE.md). Typed as an
+ * exhaustive `Record<TicketType, string>` so a new type cannot ship without a label.
+ */
+export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
+  epic: 'Epic',
+  story: 'Story',
+  bug: 'Bug',
+  task: 'Task',
+}
+
 /* ------------------------------------------------------------------ *
  * Compile-time guards. Exported so they are "used" — `noUnusedLocals`
  * rejects an unreferenced type alias, and the `_`-prefix exemption

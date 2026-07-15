@@ -6,6 +6,7 @@ import {
   TICKET_STATUSES,
   TICKET_STATUS_LABELS,
   TICKET_TYPES,
+  TICKET_TYPE_LABELS,
   isSprintStatus,
   isTicketStatus,
   isTicketType,
@@ -135,6 +136,18 @@ describe('board column labels', () => {
       in_review: 'In Review',
       done: 'Done',
     })
+  })
+})
+
+describe('ticket type labels', () => {
+  it('has a label for every ticket type', () => {
+    for (const type of TICKET_TYPES) {
+      expect(TICKET_TYPE_LABELS[type]).toBeTruthy()
+    }
+  })
+
+  it('labels the four types in the expected words', () => {
+    expect(TICKET_TYPE_LABELS).toEqual({ epic: 'Epic', story: 'Story', bug: 'Bug', task: 'Task' })
   })
 })
 

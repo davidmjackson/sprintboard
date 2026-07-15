@@ -1,23 +1,48 @@
+import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Outlet, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
-import type { Project } from '@/lib/domain'
+import type { Project, Ticket } from '@/lib/domain'
+import { listTickets } from '@/lib/tickets'
 import { cn } from '@/lib/utils'
+import { CreateTicketDialog } from './CreateTicketDialog'
 
-/** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>.
- *  The tabs don't need it yet; E4 will load tickets scoped to `project.id`. */
-export type ProjectShellContext = { project: Project }
+/** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>. */
+export type ProjectShellContext = {
+  project: Project
+  tickets: Ticket[]
+  loadingTickets: boolean
+}
 
 /**
- * The project shell, addressed by `:projectId` — so a refresh keeps you here, and the
+ * The project shell, addressed by `:projectId` — a refresh keeps you here, and the
  * chosen tab (a nested route) survives too. The project is looked up in the RLS-scoped
- * list the layout already loaded; an id that isn't in that list (another owner's, or a
- * deleted one) is not the user's to see, so we send them home rather than reveal
- * anything. Board and Backlog render inside the <Outlet>.
+ * list the layout already loaded; an id not in that list is not the user's to see, so
+ * we send them home. The shell owns the project's ticket list and shares it with both
+ * tabs, so Board and Backlog stay in sync and the list is fetched once.
  */
 export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
   const { projectId } = useParams()
+  const project = loading ? undefined : projects.find((p) => p.id === projectId)
+  const activeProjectId = project?.id
+
+  // The loaded set is tagged with the project it belongs to. That makes "loading" a
+  // derived fact — "this project's fetch has not landed yet" — so the effect never
+  // resets loading synchronously, and switching projects can never flash the previous
+  // project's tickets under the new header.
+  const [loaded, setLoaded] = useState<{ projectId: string; tickets: Ticket[] } | null>(null)
+
+  useEffect(() => {
+    if (!activeProjectId) return
+    let active = true
+    listTickets(activeProjectId)
+      .then((tickets) => active && setLoaded({ projectId: activeProjectId, tickets }))
+      .catch(() => active && setLoaded({ projectId: activeProjectId, tickets: [] }))
+    return () => {
+      active = false
+    }
+  }, [activeProjectId])
 
   if (loading) {
     return (
@@ -27,8 +52,10 @@ export function ProjectShell() {
     )
   }
 
-  const project = projects.find((p) => p.id === projectId)
   if (!project) return <Navigate to="/" replace />
+
+  const loadingTickets = loaded?.projectId !== project.id
+  const tickets = loadingTickets ? [] : loaded.tickets
 
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -41,10 +68,26 @@ export function ProjectShell() {
   return (
     <div className="flex min-h-svh flex-col">
       <header className="flex flex-col gap-3 border-b px-8 pt-6">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
-          {project.name}
-        </h1>
+        <div className="flex items-start justify-between gap-4">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
+            {project.name}
+          </h1>
+          <CreateTicketDialog
+            projectId={project.id}
+            onCreated={(ticket) => {
+              // A new ticket always carries the highest number, so appending it keeps
+              // the number order the board and backlog use — no refetch needed. That
+              // also avoids a stale-response race: an unguarded refetch resolving after
+              // a project switch would clobber the new project's list.
+              setLoaded((prev) =>
+                prev && prev.projectId === project.id
+                  ? { projectId: prev.projectId, tickets: [...prev.tickets, ticket] }
+                  : prev,
+              )
+            }}
+          />
+        </div>
         <nav className="flex gap-4">
           <NavLink to="board" className={tabClass}>
             Board
@@ -55,7 +98,7 @@ export function ProjectShell() {
         </nav>
       </header>
       <div className="flex-1 p-8">
-        <Outlet context={{ project } satisfies ProjectShellContext} />
+        <Outlet context={{ project, tickets, loadingTickets } satisfies ProjectShellContext} />
       </div>
     </div>
   )
