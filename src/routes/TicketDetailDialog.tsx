@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Pencil } from 'lucide-react'
 
 import { updateTicket } from '@/lib/tickets'
@@ -39,7 +39,7 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
  *  across every editable field in the dialog, so the whole modal reads as "click
  *  anything to edit it" without a single instructional sentence. */
 function EditableText({
-  value, ariaLabel, multiline, numeric, placeholder, heading, onCommit,
+  value, ariaLabel, multiline, numeric, placeholder, heading, onCommit, onEditingChange,
 }: {
   value: string
   ariaLabel: string
@@ -48,6 +48,9 @@ function EditableText({
   placeholder?: string
   heading?: boolean
   onCommit: (next: string) => void
+  /** Reports edit-mode transitions up to the dialog, so it can tell Radix's Escape
+   *  handler "a field is mid-edit — cancel the field, don't close the dialog." */
+  onEditingChange?: (editing: boolean) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
@@ -55,13 +58,16 @@ function EditableText({
   function start() {
     setDraft(value)
     setEditing(true)
+    onEditingChange?.(true)
   }
   function commit() {
     setEditing(false)
+    onEditingChange?.(false)
     if (draft !== value) onCommit(draft)
   }
   function cancel() {
     setEditing(false)
+    onEditingChange?.(false)
     setDraft(value)
   }
 
@@ -122,6 +128,15 @@ function EditableText({
  * Assignee is deliberately `{ Unassigned, current user }` — Phase 1 is single-owner, and
  * widening the profiles read would leak every user's email.
  */
+/** Copies only `keys` from `source` into a new object, typed exactly like `Pick<T, K>`.
+ *  Used to capture/apply a FIELD-SCOPED slice of a ticket for optimistic rollback and
+ *  reconcile, instead of ever swapping in a whole (possibly stale) ticket object. */
+function pickFields<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>
+  for (const key of keys) out[key] = source[key]
+  return out
+}
+
 export function TicketDetailDialog({
   ticket,
   currentUser,
@@ -138,19 +153,49 @@ export function TicketDetailDialog({
   // forbids deriving state that way).
   const [errorFor, setErrorFor] = useState<{ ticketId: string; message: string } | null>(null)
 
+  // How many fields are currently mid-edit. Read by `onEscapeKeyDown` below: Radix
+  // dismisses the whole dialog on Escape at the document level (capture phase), which
+  // would fire even while a field's own input has focus. When this is > 0 we
+  // preventDefault the dialog dismissal — the field's own Esc handler still cancels
+  // just that field's edit (see `EditableText.cancel`).
+  const [editingCount, setEditingCount] = useState(0)
+  function handleEditingChange(editing: boolean) {
+    setEditingCount((count) => count + (editing ? 1 : -1))
+  }
+
+  // The freshest ticket, readable from inside an in-flight async `commit()` closure.
+  // Without this, a rollback/reconcile that fires after a concurrent edit to a
+  // DIFFERENT field would merge against the ticket as it was when `commit` was
+  // *called*, silently discarding that concurrent edit.
+  const ticketRef = useRef<Ticket | null>(ticket)
+  // Ref writes must happen outside render (the project's react-hooks/refs rule forbids
+  // writing `.current` during render), so this syncs after commit rather than inline.
+  useEffect(() => {
+    ticketRef.current = ticket
+  })
+
   if (!ticket) return null
 
   const error = errorFor?.ticketId === ticket.id ? errorFor.message : null
 
   async function commit(patch: TicketUpdate) {
-    const prev = ticket!
-    onUpdated({ ...prev, ...patch } as Ticket) // optimistic — instant
-    const result = await updateTicket(prev.id, patch)
+    const current = ticketRef.current!
+    const keys = Object.keys(patch) as (keyof TicketUpdate)[]
+    const revert = pickFields(current, keys) // pre-change values of ONLY the changed keys
+
+    onUpdated({ ...current, ...patch } as Ticket) // optimistic — merge onto the latest ticket
+    const result = await updateTicket(current.id, patch)
     if (!result.ok) {
-      onUpdated(prev) // rollback
-      setErrorFor({ ticketId: prev.id, message: 'Could not save your change. Please try again.' })
+      // Revert only the fields this commit changed, merged onto whatever is latest NOW —
+      // preserves any other field a concurrent commit has since applied.
+      onUpdated({ ...ticketRef.current!, ...revert } as Ticket)
+      setErrorFor({ ticketId: current.id, message: 'Could not save your change. Please try again.' })
     } else {
-      onUpdated(result.ticket) // reconcile DB-refreshed updated_at
+      // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
+      // ticket — never swap in the whole `result.ticket`, which would clobber a
+      // concurrent in-flight optimistic edit to a different field.
+      const reconciled = pickFields(result.ticket, keys)
+      onUpdated({ ...ticketRef.current!, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
       setErrorFor(null)
     }
   }
@@ -160,7 +205,14 @@ export function TicketDetailDialog({
 
   return (
     <Dialog open={ticket !== null} onOpenChange={onOpenChange}>
-      <DialogContent className="gap-0 p-0 sm:max-w-3xl">
+      <DialogContent
+        className="gap-0 p-0 sm:max-w-3xl"
+        onEscapeKeyDown={(e) => {
+          // A field is mid-edit: let its own handler cancel just that field (see
+          // EditableText.cancel) and keep the dialog open.
+          if (editingCount > 0) e.preventDefault()
+        }}
+      >
         <DialogHeader className="border-border/70 flex-row items-center gap-2 space-y-0 border-b px-6 py-4">
           <DialogTitle className="flex items-center gap-2.5 text-base font-normal">
             <span className="text-muted-foreground font-mono text-sm font-medium tracking-tight">
@@ -185,6 +237,7 @@ export function TicketDetailDialog({
               ariaLabel="summary"
               heading
               onCommit={(v) => commit({ summary: v })}
+              onEditingChange={handleEditingChange}
             />
 
             <div className="flex flex-col gap-1.5">
@@ -195,6 +248,7 @@ export function TicketDetailDialog({
                 multiline
                 placeholder="Add a description…"
                 onCommit={(v) => commit({ description: v.trim() || null })}
+                onEditingChange={handleEditingChange}
               />
             </div>
 
@@ -206,6 +260,7 @@ export function TicketDetailDialog({
                 multiline
                 placeholder="Add acceptance criteria…"
                 onCommit={(v) => commit({ acceptance_criteria: v.trim() || null })}
+                onEditingChange={handleEditingChange}
               />
             </div>
           </div>
@@ -259,6 +314,7 @@ export function TicketDetailDialog({
                 numeric
                 placeholder="—"
                 onCommit={(v) => commit({ story_points: v.trim() === '' ? null : Number(v) })}
+                onEditingChange={handleEditingChange}
               />
             </label>
 
@@ -269,6 +325,7 @@ export function TicketDetailDialog({
                 ariaLabel="labels"
                 placeholder="Add labels…"
                 onCommit={(v) => commit({ labels: parseLabels(v) })}
+                onEditingChange={handleEditingChange}
               />
             </label>
 
