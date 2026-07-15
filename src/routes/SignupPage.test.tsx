@@ -157,6 +157,25 @@ describe('SignupPage', () => {
     ).toBeInTheDocument()
   })
 
+  it('shows one generic message for an unexpected error, leaking no raw server text', async () => {
+    signUp.mockResolvedValue(
+      ok({ data: { user: null, session: null }, error: { message: 'email rate limit exceeded' } }),
+    )
+    const user = userEvent.setup()
+    renderSignup()
+
+    await user.type(screen.getByLabelText('Email'), 'new@example.com')
+    await user.type(screen.getByLabelText('Password'), 'password123')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong. Please try again.',
+    )
+    // The raw GoTrue string must not reach the user.
+    expect(screen.queryByText(/rate limit/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('AUTHED HOME')).not.toBeInTheDocument()
+  })
+
   it('tells the user to check their email when confirmation is required (no session)', async () => {
     signUp.mockResolvedValue(
       ok({ data: { user: { identities: [{ id: 'i1' }] }, session: null }, error: null }),

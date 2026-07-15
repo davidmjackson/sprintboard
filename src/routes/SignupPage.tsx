@@ -46,7 +46,10 @@ export function SignupPage() {
     }
 
     if (result.error) {
-      form.setError('root', { message: result.error.message || GENERIC_ERROR })
+      // Surface one generic message, never the raw GoTrue string: those can carry
+      // rate-limit internals or server-side rules and are not for end users. Field
+      // validation is already handled client-side by zod before submit.
+      form.setError('root', { message: GENERIC_ERROR })
       return
     }
 
