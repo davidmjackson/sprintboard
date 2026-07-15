@@ -1,23 +1,46 @@
+import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Outlet, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
-import type { Project } from '@/lib/domain'
+import type { Project, Ticket } from '@/lib/domain'
+import { listTickets } from '@/lib/tickets'
 import { cn } from '@/lib/utils'
+import { CreateTicketDialog } from './CreateTicketDialog'
 
-/** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>.
- *  The tabs don't need it yet; E4 will load tickets scoped to `project.id`. */
-export type ProjectShellContext = { project: Project }
+/** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>. */
+export type ProjectShellContext = {
+  project: Project
+  tickets: Ticket[]
+  loadingTickets: boolean
+}
 
 /**
- * The project shell, addressed by `:projectId` — so a refresh keeps you here, and the
+ * The project shell, addressed by `:projectId` — a refresh keeps you here, and the
  * chosen tab (a nested route) survives too. The project is looked up in the RLS-scoped
- * list the layout already loaded; an id that isn't in that list (another owner's, or a
- * deleted one) is not the user's to see, so we send them home rather than reveal
- * anything. Board and Backlog render inside the <Outlet>.
+ * list the layout already loaded; an id not in that list is not the user's to see, so
+ * we send them home. The shell owns the project's ticket list and shares it with both
+ * tabs, so Board and Backlog stay in sync and the list is fetched once.
  */
 export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
   const { projectId } = useParams()
+  const project = loading ? undefined : projects.find((p) => p.id === projectId)
+
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loadingTickets, setLoadingTickets] = useState(true)
+
+  useEffect(() => {
+    if (!project) return
+    let active = true
+    setLoadingTickets(true)
+    listTickets(project.id)
+      .then((t) => active && setTickets(t))
+      .catch(() => {}) // an empty board is the acceptable failure mode here
+      .finally(() => active && setLoadingTickets(false))
+    return () => {
+      active = false
+    }
+  }, [project?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -27,8 +50,15 @@ export function ProjectShell() {
     )
   }
 
-  const project = projects.find((p) => p.id === projectId)
   if (!project) return <Navigate to="/" replace />
+
+  async function refetch() {
+    try {
+      setTickets(await listTickets(project!.id))
+    } catch {
+      // keep the current list on a transient failure
+    }
+  }
 
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -41,10 +71,21 @@ export function ProjectShell() {
   return (
     <div className="flex min-h-svh flex-col">
       <header className="flex flex-col gap-3 border-b px-8 pt-6">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
-          {project.name}
-        </h1>
+        <div className="flex items-start justify-between gap-4">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
+            {project.name}
+          </h1>
+          <CreateTicketDialog
+            projectId={project.id}
+            onCreated={(ticket) => {
+              // Optimistic insert so the new ticket shows immediately; the background
+              // refetch then reconciles ordering (same pattern as project creation).
+              setTickets((prev) => [...prev, ticket])
+              void refetch()
+            }}
+          />
+        </div>
         <nav className="flex gap-4">
           <NavLink to="board" className={tabClass}>
             Board
@@ -55,7 +96,7 @@ export function ProjectShell() {
         </nav>
       </header>
       <div className="flex-1 p-8">
-        <Outlet context={{ project } satisfies ProjectShellContext} />
+        <Outlet context={{ project, tickets, loadingTickets } satisfies ProjectShellContext} />
       </div>
     </div>
   )

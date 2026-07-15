@@ -1,12 +1,21 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectShell } from './ProjectShell'
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import type { ProjectsContext } from './AppLayout'
+import { createTicket, listTickets } from '@/lib/tickets'
+
+vi.mock('@/lib/tickets', () => ({ listTickets: vi.fn(), createTicket: vi.fn() }))
+
+const mockList = vi.mocked(listTickets)
+beforeEach(() => {
+  mockList.mockReset().mockResolvedValue([])
+  vi.mocked(createTicket).mockReset()
+})
 
 const PROJECTS = [
   { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'scrum', created_at: '' },
@@ -52,14 +61,19 @@ describe('ProjectShell', () => {
     const user = userEvent.setup()
     renderShell('/projects/p1')
     await user.click(screen.getByRole('link', { name: 'Backlog' }))
-    expect(screen.getByText('No tickets yet.')).toBeInTheDocument()
+    expect(await screen.findByText('No tickets yet.')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
   })
 
-  it('restores the Backlog tab from a deep link on load (survives a refresh)', () => {
+  it('restores the Backlog tab from a deep link on load (survives a refresh)', async () => {
     renderShell('/projects/p1/backlog')
-    expect(screen.getByText('No tickets yet.')).toBeInTheDocument()
+    expect(await screen.findByText('No tickets yet.')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
+  })
+
+  it('shows a New ticket button for an open project', async () => {
+    renderShell('/projects/p1')
+    expect(await screen.findByRole('button', { name: 'New ticket' })).toBeInTheDocument()
   })
 
   it('sends you home if the project id is not in your list', () => {
