@@ -22,6 +22,12 @@ export default defineConfig(({ mode }) => ({
     // entire shell environment. Test credentials must never be VITE_-prefixed:
     // Vite inlines those into the production bundle, which would ship a password
     // to visitors. check-bundle.mjs is the backstop if that rule is ever broken.
-    env: loadEnv(mode, process.cwd(), ['VITE_', 'RLS_TEST_']),
+    //
+    // SUPABASE_SERVICE_ROLE_KEY is a test-only admin key used by the signup
+    // integration suite to read the auto-created profile and delete the throwaway
+    // user. It is deliberately NOT VITE_-prefixed, so Vite never inlines it — it
+    // exists in the test process (and CI's server-side runner) only, never the
+    // browser bundle.
+    env: loadEnv(mode, process.cwd(), ['VITE_', 'RLS_TEST_', 'SUPABASE_SERVICE_ROLE']),
   },
 }))

@@ -1,32 +1,45 @@
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { describe, expect, it, vi } from 'vitest'
+
 import App from './App'
+import { AuthProvider } from '@/lib/auth'
 
-// S1.1 AC: "shadcn/ui is wired and one sample component renders."
-describe('S1.1 scaffold', () => {
-  it('renders the app shell', () => {
-    render(<App />)
-    expect(screen.getByRole('heading', { name: 'Sprintboard' })).toBeInTheDocument()
-  })
+// The AuthProvider reads the session and subscribes; give it a signed-out client.
+vi.mock('@/lib/supabase', () => ({
+  supabase: {
+    auth: {
+      getSession: vi.fn().mockResolvedValue({ data: { session: null } }),
+      onAuthStateChange: vi.fn().mockReturnValue({
+        data: { subscription: { unsubscribe: vi.fn() } },
+      }),
+      signUp: vi.fn(),
+      signInWithPassword: vi.fn(),
+    },
+  },
+}))
 
-  it('renders a shadcn/ui Button, styled by its variant classes', () => {
-    render(<App />)
-    const button = screen.getByRole('button')
+function renderAt(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </MemoryRouter>,
+  )
+}
 
-    expect(button).toBeInTheDocument()
-    // Asserts the component came from shadcn rather than being a bare <button>:
-    // these classes are emitted by its cva variant config, not written by us.
+describe('routing and the auth guard', () => {
+  it('renders the signup form at /signup', async () => {
+    renderAt('/signup')
+    expect(await screen.findByRole('heading', { name: 'Create your account' })).toBeInTheDocument()
+    // S1.1's intent lives on: a shadcn Button, styled by its cva variants, renders.
+    const button = screen.getByRole('button', { name: 'Create account' })
     expect(button).toHaveClass('inline-flex', 'items-center', 'justify-center')
   })
 
-  it('is interactive, so React state is wired', async () => {
-    const user = userEvent.setup()
-    render(<App />)
-    const button = screen.getByRole('button')
-
-    expect(button).toHaveTextContent('Clicked 0 times')
-    await user.click(button)
-    expect(button).toHaveTextContent('Clicked 1 times')
+  it('redirects an unauthenticated visit to the board to /login', async () => {
+    renderAt('/')
+    expect(await screen.findByRole('heading', { name: 'Log in' })).toBeInTheDocument()
   })
 })

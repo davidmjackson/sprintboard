@@ -15,9 +15,13 @@ export const RLS_USERS: Record<RlsUser, { email?: string; password?: string }> =
 
 const SUPABASE_URL = credential('VITE_SUPABASE_URL')
 const SUPABASE_ANON_KEY = credential('VITE_SUPABASE_ANON_KEY')
+const SUPABASE_SERVICE_ROLE_KEY = credential('SUPABASE_SERVICE_ROLE_KEY')
 
 /** The keepalive needs only the public config — no test-user credentials. */
 export const hasSupabaseConfig = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+
+/** The signup integration suite needs an admin key to verify and clean up. */
+export const hasServiceRoleKey = Boolean(hasSupabaseConfig && SUPABASE_SERVICE_ROLE_KEY)
 
 export const hasRlsCredentials = Boolean(
   hasSupabaseConfig &&
@@ -53,6 +57,31 @@ export function assertCredentialsOrExplain(): void {
     'RLS integration test cannot run: missing VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, ' +
       'or the RLS_TEST_{A,B}_{EMAIL,PASSWORD} credentials. See .env.example.',
   )
+}
+
+export function assertServiceRoleOrExplain(): void {
+  requireOrExplain(
+    hasServiceRoleKey,
+    'the signup integration suite',
+    'Signup integration test cannot run: missing VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, ' +
+      'or SUPABASE_SERVICE_ROLE_KEY. See .env.example.',
+  )
+}
+
+/**
+ * A service-role admin client. Test-only: it bypasses RLS entirely, so it must
+ * NEVER be imported by application code — only by the integration suite, to read
+ * the auto-created profile and delete the throwaway signup user afterwards.
+ *
+ * Sessions are not persisted: the key IS the authorization.
+ */
+export function adminClient(): SupabaseClient<Database> {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('No service-role key. Set SUPABASE_SERVICE_ROLE_KEY. See .env.example.')
+  }
+  return createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  })
 }
 
 /** A fresh, signed-in client. Sessions are not persisted: each client is one user. */
