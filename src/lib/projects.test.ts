@@ -1,16 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createProject } from './projects'
+import { createProject, listProjects } from './projects'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
-// createProject calls supabase.from('projects').insert(...).select().single().
+// createProject calls from('projects').insert(...).select().single();
+// listProjects calls from('projects').select().order(...).
 const single = vi.fn()
+const order = vi.fn()
 beforeEach(() => {
   single.mockReset()
+  order.mockReset()
   vi.mocked(supabase.from).mockReturnValue({
     insert: () => ({ select: () => ({ single }) }),
+    select: () => ({ order }),
   } as unknown as ReturnType<typeof supabase.from>)
 })
 
@@ -45,5 +49,29 @@ describe('createProject', () => {
     single.mockResolvedValue({ data: null, error: { code: '23514', message: 'check violation' } })
 
     expect(await createProject(input)).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+describe('listProjects', () => {
+  it("returns the caller's projects", async () => {
+    const projects = [
+      { id: 'p1', name: 'A' },
+      { id: 'p2', name: 'B' },
+    ]
+    order.mockResolvedValue({ data: projects, error: null })
+
+    expect(await listProjects()).toEqual(projects)
+  })
+
+  it('returns an empty array when there are none', async () => {
+    order.mockResolvedValue({ data: null, error: null })
+
+    expect(await listProjects()).toEqual([])
+  })
+
+  it('throws on a query error', async () => {
+    order.mockResolvedValue({ data: null, error: { message: 'network' } })
+
+    await expect(listProjects()).rejects.toThrow(/Could not load projects/)
   })
 })

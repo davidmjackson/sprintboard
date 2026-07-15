@@ -21,18 +21,21 @@ function runKey(): string {
 
 describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
   let a: SupabaseClient<Database>
+  let b: SupabaseClient<Database>
   let userAId: string
   let userBId: string
   const createdIds: string[] = []
+  const bCreatedIds: string[] = []
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = (await a.auth.getUser()).data.user!.id
-    const b = await signIn('B')
+    b = await signIn('B')
     userBId = (await b.auth.getUser()).data.user!.id
   }, 30_000)
 
   afterAll(async () => {
+    for (const id of bCreatedIds) await b.from('projects').delete().eq('id', id)
     for (const id of createdIds) await a.from('projects').delete().eq('id', id)
   }, 30_000)
 
@@ -94,5 +97,31 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
 
     expect(error?.code).toBe('42501')
     expect(data).toBeNull()
+  }, 30_000)
+
+  it("lists only the caller's own projects, never another owner's (RLS select)", async () => {
+    // S3.2: the left-nav list is a plain select; RLS scopes it to the owner. Prove it
+    // with two real owners — A's list contains A's project and excludes B's.
+    const mine = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Mine', key: runKey() })
+      .select()
+      .single()
+    expect(mine.error).toBeNull()
+    createdIds.push(mine.data!.id)
+
+    const theirs = await b
+      .from('projects')
+      .insert({ owner_id: userBId, name: 'Theirs', key: runKey() })
+      .select()
+      .single()
+    expect(theirs.error).toBeNull()
+    bCreatedIds.push(theirs.data!.id)
+
+    const { data: list, error } = await a.from('projects').select('id')
+    expect(error).toBeNull()
+    const ids = (list ?? []).map((r) => r.id)
+    expect(ids).toContain(mine.data!.id)
+    expect(ids).not.toContain(theirs.data!.id)
   }, 30_000)
 })

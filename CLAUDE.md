@@ -114,9 +114,9 @@ needs no secrets, so CI would stay green while the "RLS still holds" line above 
 quietly unmet on every future PR. `test:unit` is a local fast-loop convenience, never
 a gate. CI needs the `RLS_TEST_*` **and** `SUPABASE_SERVICE_ROLE_KEY` secrets/variables
 configured for the suites to exercise isolation and signup rather than skip them — a
-CI run reporting 94 tests instead of 117 means exactly that, and must be treated as a
-failure. (94 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
-the RLS, keepalive, signup, login **and** project-creation suites vanish.)
+CI run reporting 102 tests instead of 126 means exactly that, and must be treated as a
+failure. (102 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
+the RLS, keepalive, signup, login **and** project suites vanish.)
 
 ## Deep review for security-boundary changes
 
