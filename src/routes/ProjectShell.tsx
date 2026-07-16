@@ -2,18 +2,37 @@ import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Outlet, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
-import type { Project, Ticket } from '@/lib/domain'
+import type { Project, Sprint, Ticket } from '@/lib/domain'
 import { listTickets } from '@/lib/tickets'
+import { listSprints } from '@/lib/sprints'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-context'
 import { CreateTicketDialog } from './CreateTicketDialog'
 import { TicketDetailDialog } from './TicketDetailDialog'
 
-/** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>. */
+/**
+ * The sprint read is genuinely three-state, unlike the ticket read below it in this file.
+ *
+ * That asymmetry is deliberate, not an oversight: the ticket read swallows a rejection into
+ * an empty list and derives `loadingTickets` purely from project-id tagging, so it
+ * *structurally cannot* represent "failed" — which is why a paused database renders as
+ * "Nothing in the backlog." rather than an error. That is known app-wide debt with its own
+ * story. New code does not inherit it, and hoisting sprints into this file must not launder
+ * the distinction away: `sprintsPhase` is a real discriminant and the `.catch()` records
+ * `failed`, never `[]`.
+ */
+export type SprintsPhase = 'loading' | 'loaded' | 'failed'
+
+/** What the shell hands to its Board/Backlog/Sprints tabs via the nested <Outlet context>. */
 export type ProjectShellContext = {
   project: Project
   tickets: Ticket[]
   loadingTickets: boolean
+  /** The project's sprints, newest first. `[]` while loading and when the read failed —
+   *  always read `sprintsPhase` before treating an empty list as "no sprints". */
+  sprints: Sprint[]
+  sprintsPhase: SprintsPhase
+  onSprintCreated: (sprint: Sprint) => void
   /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
    *  always exists) and shared, so a tab never reaches for the auth context itself and
    *  the detail dialog and the backlog row agree on who "you" is. */
@@ -29,6 +48,9 @@ export type ProjectShellContext = {
  * list the layout already loaded; an id not in that list is not the user's to see, so
  * we send them home. The shell owns the project's ticket list and shares it with both
  * tabs, so Board and Backlog stay in sync and the list is fetched once.
+ *
+ * It owns the sprint list for the same reason (S6.2): the Sprints tab renders it, and the
+ * detail dialog's sprint picker — rendered here, not in a tab — needs the same options.
  */
 export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
@@ -55,6 +77,31 @@ export function ProjectShell() {
     }
   }, [activeProjectId])
 
+  // Tagged with its project the same way, and for the same reason — but with a real `phase`,
+  // so a rejection is recorded as `failed` rather than being flattened into an empty list.
+  // "loading" stays derived ("neither result has landed for this project yet") rather than a
+  // synchronous `setState` at the top of the effect, which `react-hooks/set-state-in-effect`
+  // rejects as a cascading-render hazard.
+  const [sprintsLoaded, setSprintsLoaded] = useState<
+    | { projectId: string; phase: 'loaded'; sprints: Sprint[] }
+    | { projectId: string; phase: 'failed' }
+    | null
+  >(null)
+
+  useEffect(() => {
+    if (!activeProjectId) return
+    let active = true
+    listSprints(activeProjectId)
+      .then(
+        (sprints) =>
+          active && setSprintsLoaded({ projectId: activeProjectId, phase: 'loaded', sprints }),
+      )
+      .catch(() => active && setSprintsLoaded({ projectId: activeProjectId, phase: 'failed' }))
+    return () => {
+      active = false
+    }
+  }, [activeProjectId])
+
   if (loading) {
     return (
       <div className="flex min-h-svh items-center justify-center p-8">
@@ -67,6 +114,10 @@ export function ProjectShell() {
 
   const loadingTickets = loaded?.projectId !== project.id
   const tickets = loadingTickets ? [] : loaded.tickets
+
+  const currentSprints = sprintsLoaded?.projectId === project.id ? sprintsLoaded : null
+  const sprintsPhase: SprintsPhase = currentSprints?.phase ?? 'loading'
+  const sprints = currentSprints?.phase === 'loaded' ? currentSprints.sprints : []
 
   const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
 
@@ -84,6 +135,15 @@ export function ProjectShell() {
     setLoaded((prev) =>
       prev && prev.projectId === project.id
         ? { projectId: prev.projectId, tickets: prev.tickets.filter((t) => t.id !== id) }
+        : prev,
+    )
+
+  // Prepend: the list is newest-first, so a new sprint belongs at the top. A local mutation,
+  // not a refetch — the same reasoning as the append-on-create above.
+  const onSprintCreated = (sprint: Sprint) =>
+    setSprintsLoaded((prev) =>
+      prev && prev.projectId === project.id && prev.phase === 'loaded'
+        ? { projectId: prev.projectId, phase: 'loaded', sprints: [sprint, ...prev.sprints] }
         : prev,
     )
 
@@ -139,6 +199,9 @@ export function ProjectShell() {
               project,
               tickets,
               loadingTickets,
+              sprints,
+              sprintsPhase,
+              onSprintCreated,
               currentUser,
               onOpenTicket: (t) => setSelectedId(t.id),
               onTicketUpdated,
