@@ -136,11 +136,34 @@ export type TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number'>
 /** Same reasoning as TicketInsert, plus `id`/`project_id` (a ticket cannot change
  *  project) and the trigger-owned timestamps: `updated_at` is set by the
  *  `tickets_set_updated_at` trigger on every write, `created_at` is fixed at insert.
- *  Sending any of them is either overwritten or wrong, so make it untypeable. */
+ *  Sending any of them is either overwritten or wrong, so make it untypeable.
+ *
+ *  The three blocked fields are also excluded: they move together under an invariant
+ *  (`tickets_blocked_coherent`) that the free-form edit path must never half-apply.
+ *  `blocked_since` is trigger-owned (`sync_blocked_fields` stamps/clears it), and
+ *  `is_blocked`/`blocked_reason` are owned by the intent-named `blockTicket`/
+ *  `unblockTicket` calls, which enforce the app-layer "a reason is required" rule.
+ *  Sending them here would let a caller set `is_blocked` without a reason — the DB
+ *  check would then reject it. `TicketBlockUpdate` is the only shape that may. */
 export type TicketUpdate = Omit<
   TablesUpdate<'tickets'>,
-  'key' | 'number' | 'id' | 'project_id' | 'updated_at' | 'created_at'
+  | 'key'
+  | 'number'
+  | 'id'
+  | 'project_id'
+  | 'updated_at'
+  | 'created_at'
+  | 'is_blocked'
+  | 'blocked_reason'
+  | 'blocked_since'
 >
+
+/** The block/unblock write, and the ONLY shape that may touch the blocked fields.
+ *  `blocked_since` is omitted deliberately — `sync_blocked_fields` stamps it on block
+ *  and clears it (with `blocked_reason`) on unblock, so a client value is meaningless.
+ *  Block sends `{ is_blocked: true, blocked_reason }`; unblock sends `{ is_blocked:
+ *  false }` and lets the trigger clear the rest. */
+export type TicketBlockUpdate = Pick<TablesUpdate<'tickets'>, 'is_blocked' | 'blocked_reason'>
 
 export type ProjectInsert = TablesInsert<'projects'>
 export type SprintInsert = TablesInsert<'sprints'>

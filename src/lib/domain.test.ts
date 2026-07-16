@@ -81,6 +81,18 @@ describe('the trigger-owned ticket columns are unrepresentable from the client',
     const reproject: TicketUpdate = { project_id: 'other' }
     expect([rekey, reproject]).toHaveLength(2)
   })
+
+  it('rejects an update that touches a blocked field — those go through blockTicket', () => {
+    // The three blocked fields move together under tickets_blocked_coherent; the
+    // free-form edit path must never half-apply them. Only TicketBlockUpdate may.
+    // @ts-expect-error is_blocked is owned by blockTicket/unblockTicket.
+    const block: TicketUpdate = { is_blocked: true }
+    // @ts-expect-error blocked_reason is owned by blockTicket/unblockTicket.
+    const reason: TicketUpdate = { blocked_reason: 'x' }
+    // @ts-expect-error blocked_since is trigger-owned (sync_blocked_fields).
+    const since: TicketUpdate = { blocked_since: 'now' }
+    expect([block, reason, since]).toHaveLength(3)
+  })
 })
 
 describe('the schema parser can still see the whole truth', () => {

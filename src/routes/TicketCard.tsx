@@ -1,5 +1,6 @@
 import type { Ticket } from '@/lib/domain'
 import { TICKET_TYPE_LABELS } from '@/lib/domain'
+import { BlockedBadge } from './BlockedBadge'
 
 /** A ticket at a glance: its key, type, and summary. Clicking opens the detail modal. */
 export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen?: () => void }) {
@@ -11,9 +12,12 @@ export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen?: () => 
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-muted-foreground font-mono text-xs">{ticket.key}</span>
-        <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium uppercase">
-          {TICKET_TYPE_LABELS[ticket.type]}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {ticket.is_blocked ? <BlockedBadge /> : null}
+          <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium uppercase">
+            {TICKET_TYPE_LABELS[ticket.type]}
+          </span>
+        </div>
       </div>
       <p className="text-sm">{ticket.summary}</p>
     </button>

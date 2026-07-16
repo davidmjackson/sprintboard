@@ -20,9 +20,13 @@ vi.mock('@/lib/tickets', async (orig) => ({
   ...(await orig<typeof tickets>()),
   updateTicket: vi.fn(),
   deleteTicket: vi.fn(),
+  blockTicket: vi.fn(),
+  unblockTicket: vi.fn(),
 }))
 const updateTicket = vi.mocked(tickets.updateTicket)
 const deleteTicket = vi.mocked(tickets.deleteTicket)
+const blockTicket = vi.mocked(tickets.blockTicket)
+const unblockTicket = vi.mocked(tickets.unblockTicket)
 
 const base: Ticket = {
   id: 't1',
@@ -52,6 +56,8 @@ const user = { id: 'user-a', email: 'a@example.com' }
 beforeEach(() => {
   updateTicket.mockReset()
   deleteTicket.mockReset()
+  blockTicket.mockReset()
+  unblockTicket.mockReset()
 })
 
 describe('TicketDetailDialog', () => {
@@ -769,5 +775,183 @@ describe('TicketDetailDialog — delete', () => {
     await ue.click(await screen.findByRole('button', { name: /^delete$/i }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not delete/i)
     expect(onDeleted).not.toHaveBeenCalled()
+  })
+})
+
+const blockedTicket: Ticket = {
+  ...base,
+  is_blocked: true,
+  blocked_reason: 'waiting on API',
+  blocked_since: '2026-07-15T00:03:00Z',
+}
+
+async function openActionsMenu(ue: ReturnType<typeof userEvent.setup>) {
+  await ue.click(screen.getByRole('button', { name: /ticket actions/i }))
+}
+
+describe('TicketDetailDialog — block/unblock', () => {
+  it('offers Block (not Unblock) in the actions menu for an unblocked ticket', async () => {
+    const ue = userEvent.setup()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    expect(await screen.findByRole('menuitem', { name: /^block$/i })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /unblock/i })).not.toBeInTheDocument()
+  })
+
+  it('requires a reason: the Block confirm button is disabled until one is typed', async () => {
+    const ue = userEvent.setup()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    await ue.click(await screen.findByRole('menuitem', { name: /^block$/i }))
+
+    const confirm = await screen.findByRole('button', { name: /^block$/i })
+    expect(confirm).toBeDisabled()
+    await ue.type(screen.getByRole('textbox', { name: /reason/i }), 'waiting on API')
+    expect(confirm).toBeEnabled()
+    expect(blockTicket).not.toHaveBeenCalled()
+  })
+
+  it('blocks with the typed reason and reports the trigger-stamped row up', async () => {
+    const ue = userEvent.setup()
+    blockTicket.mockResolvedValue({ ok: true, ticket: blockedTicket })
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    await ue.click(await screen.findByRole('menuitem', { name: /^block$/i }))
+    await ue.type(screen.getByRole('textbox', { name: /reason/i }), 'waiting on API')
+    await ue.click(screen.getByRole('button', { name: /^block$/i }))
+
+    await waitFor(() => expect(blockTicket).toHaveBeenCalledWith('t1', 'waiting on API'))
+    // Not optimistic: we apply the row the DB returned, which carries the
+    // trigger-stamped blocked_since — never a client guess.
+    expect(onUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 't1',
+        is_blocked: true,
+        blocked_reason: 'waiting on API',
+        blocked_since: '2026-07-15T00:03:00Z',
+      }),
+    )
+  })
+
+  it('keeps the ticket and shows an error when blocking fails', async () => {
+    const ue = userEvent.setup()
+    blockTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    await ue.click(await screen.findByRole('menuitem', { name: /^block$/i }))
+    await ue.type(screen.getByRole('textbox', { name: /reason/i }), 'waiting on API')
+    await ue.click(screen.getByRole('button', { name: /^block$/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not block/i)
+    expect(onUpdated).not.toHaveBeenCalled()
+  })
+
+  it('shows a blocked banner carrying the reason when the ticket is blocked', () => {
+    render(
+      <TicketDetailDialog
+        ticket={blockedTicket}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    const banner = screen.getByRole('status')
+    expect(banner).toHaveTextContent(/blocked/i)
+    expect(banner).toHaveTextContent(/waiting on API/i)
+  })
+
+  it('offers Unblock (not Block) in the actions menu for a blocked ticket, and unblocks', async () => {
+    const ue = userEvent.setup()
+    unblockTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...base, is_blocked: false, blocked_reason: null, blocked_since: null },
+    })
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={blockedTicket}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    expect(screen.queryByRole('menuitem', { name: /^block$/i })).not.toBeInTheDocument()
+    await ue.click(await screen.findByRole('menuitem', { name: /unblock/i }))
+
+    await waitFor(() => expect(unblockTicket).toHaveBeenCalledWith('t1'))
+    expect(onUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 't1', is_blocked: false, blocked_reason: null }),
+    )
+  })
+
+  it('keeps the ticket blocked and shows an error when unblocking fails', async () => {
+    const ue = userEvent.setup()
+    unblockTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={blockedTicket}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await openActionsMenu(ue)
+    await ue.click(await screen.findByRole('menuitem', { name: /unblock/i }))
+
+    await waitFor(() => expect(unblockTicket).toHaveBeenCalledWith('t1'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not unblock/i)
+    expect(onUpdated).not.toHaveBeenCalled()
+  })
+
+  it('shows no blocked banner for an unblocked ticket', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })

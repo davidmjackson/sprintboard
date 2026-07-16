@@ -1,28 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createTicket, deleteTicket, listTickets } from './tickets'
+import {
+  blockTicket,
+  createTicket,
+  deleteTicket,
+  listTickets,
+  parseBlockReason,
+  unblockTicket,
+} from './tickets'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
 // createTicket: from('tickets').insert(...).select().single()
 // listTickets: from('tickets').select().eq(...).order(...)
-// updateTicket: from('tickets').update(...).eq(...).select().single()
+// updateTicket / blockTicket / unblockTicket: from('tickets').update(...).eq(...).select().single()
 // deleteTicket: from('tickets').delete().eq(...).select()
 const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
 const del = vi.fn()
+const update = vi.fn(() => ({ eq: () => ({ select: () => ({ single }) }) }))
 beforeEach(() => {
   single.mockReset()
   order.mockReset()
   eq.mockReset()
   eq.mockReturnValue({ order })
   del.mockReset()
+  update.mockReset()
+  update.mockReturnValue({ eq: () => ({ select: () => ({ single }) }) })
+  vi.mocked(supabase.from).mockReset()
   vi.mocked(supabase.from).mockReturnValue({
     insert: () => ({ select: () => ({ single }) }),
     select: () => ({ eq }),
-    update: () => ({ eq: () => ({ select: () => ({ single }) }) }),
+    update,
     delete: () => ({ eq: () => ({ select: del }) }),
   } as unknown as ReturnType<typeof supabase.from>)
 })
@@ -99,5 +110,63 @@ describe('deleteTicket', () => {
   it('maps a supabase error to unknown', async () => {
     del.mockResolvedValue({ data: null, error: { code: '42501', message: 'x' } })
     expect(await deleteTicket('t1')).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+describe('parseBlockReason', () => {
+  it('rejects an empty reason — blocking requires one (S4.4 AC)', () => {
+    expect(parseBlockReason('')).toEqual({ ok: false, message: expect.any(String) })
+  })
+
+  it('rejects a whitespace-only reason', () => {
+    expect(parseBlockReason('   ')).toEqual({ ok: false, message: expect.any(String) })
+  })
+
+  it('accepts a reason and returns it trimmed', () => {
+    expect(parseBlockReason('  waiting on API  ')).toEqual({ ok: true, value: 'waiting on API' })
+  })
+
+  it('rejects a reason longer than 500 characters', () => {
+    expect(parseBlockReason('x'.repeat(501))).toEqual({ ok: false, message: expect.any(String) })
+  })
+
+  it('accepts a reason of exactly 500 characters', () => {
+    const reason = 'x'.repeat(500)
+    expect(parseBlockReason(reason)).toEqual({ ok: true, value: reason })
+  })
+})
+
+describe('blockTicket', () => {
+  it('sends is_blocked true with the trimmed reason and returns the row', async () => {
+    const ticket = { id: 't1', is_blocked: true, blocked_reason: 'waiting on API' }
+    single.mockResolvedValue({ data: ticket, error: null })
+    expect(await blockTicket('t1', '  waiting on API  ')).toEqual({ ok: true, ticket })
+    // Only these two fields are ever sent; blocked_since is trigger-owned.
+    expect(update).toHaveBeenCalledWith({ is_blocked: true, blocked_reason: 'waiting on API' })
+  })
+
+  it('rejects an empty reason without touching the database', async () => {
+    const result = await blockTicket('t1', '   ')
+    expect(result).toEqual({ ok: false, error: 'invalid_reason', message: expect.any(String) })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('maps a supabase error (e.g. RLS-filtered zero rows) to unknown', async () => {
+    single.mockResolvedValue({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    expect(await blockTicket('t1', 'reason')).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+describe('unblockTicket', () => {
+  it('sends is_blocked false (the trigger clears reason and since) and returns the row', async () => {
+    const ticket = { id: 't1', is_blocked: false, blocked_reason: null, blocked_since: null }
+    single.mockResolvedValue({ data: ticket, error: null })
+    expect(await unblockTicket('t1')).toEqual({ ok: true, ticket })
+    expect(update).toHaveBeenCalledWith({ is_blocked: false })
+  })
+
+  it('maps a supabase error to unknown', async () => {
+    single.mockResolvedValue({ data: null, error: { code: '42501', message: 'x' } })
+    expect(await unblockTicket('t1')).toEqual({ ok: false, error: 'unknown' })
   })
 })

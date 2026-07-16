@@ -13,10 +13,16 @@ import { createTicket, deleteTicket, listTickets } from '@/lib/tickets'
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
 }))
-vi.mock('@/lib/tickets', () => ({
+// Spread the real module so pure helpers (e.g. parseBlockReason, which the detail
+// dialog calls during render) stay real; only the network-touching functions are mocked.
+vi.mock('@/lib/tickets', async (orig) => ({
+  ...(await orig<typeof import('@/lib/tickets')>()),
   listTickets: vi.fn(),
   createTicket: vi.fn(),
+  updateTicket: vi.fn(),
   deleteTicket: vi.fn(),
+  blockTicket: vi.fn(),
+  unblockTicket: vi.fn(),
 }))
 
 const mockList = vi.mocked(listTickets)
