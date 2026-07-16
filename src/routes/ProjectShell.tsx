@@ -14,6 +14,10 @@ export type ProjectShellContext = {
   project: Project
   tickets: Ticket[]
   loadingTickets: boolean
+  /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
+   *  always exists) and shared, so a tab never reaches for the auth context itself and
+   *  the detail dialog and the backlog row agree on who "you" is. */
+  currentUser: { id: string; email: string }
   onOpenTicket: (ticket: Ticket) => void
   onTicketUpdated: (ticket: Ticket) => void
   onTicketDeleted: (id: string) => void
@@ -83,6 +87,8 @@ export function ProjectShell() {
         : prev,
     )
 
+  const currentUser = { id: user!.id, email: user!.email ?? '' }
+
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
       'border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
@@ -130,6 +136,7 @@ export function ProjectShell() {
               project,
               tickets,
               loadingTickets,
+              currentUser,
               onOpenTicket: (t) => setSelectedId(t.id),
               onTicketUpdated,
               onTicketDeleted,
@@ -140,7 +147,7 @@ export function ProjectShell() {
           key={selected?.id ?? 'none'}
           ticket={selected}
           epics={tickets.filter((t) => t.type === 'epic')}
-          currentUser={{ id: user!.id, email: user!.email ?? '' }}
+          currentUser={currentUser}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)
           }}

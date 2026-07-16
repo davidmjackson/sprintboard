@@ -1,32 +1,44 @@
 import { useOutletContext } from 'react-router-dom'
 
 import { TICKET_TYPE_LABELS } from '@/lib/domain'
+import { selectBacklogTickets } from '@/lib/backlog'
 import type { ProjectShellContext } from './ProjectShell'
 import { BlockedBadge } from './BlockedBadge'
 
 /**
- * The backlog: a flat list of the project's tickets, ordered by number (the order
- * `listTickets` returns). Empty and loading states keep the shell honest when a
- * project has no tickets yet.
+ * The backlog: the project's tickets with **no sprint**, ordered by number (the order
+ * `listTickets` returns and the shell's append-on-create preserves).
+ *
+ * The `sprint_id is null` rule lives in `selectBacklogTickets`, never inlined here. The
+ * filter runs client-side over the shell's shared list rather than as a second
+ * `.is('sprint_id', null)` query: the shell already owns a single, once-fetched list that
+ * Board and Backlog both read, so filtering here keeps the two tabs consistent and keeps
+ * the create path's append working (S5.2's "appears immediately"). A separate query would
+ * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, loadingTickets, onOpenTicket } = useOutletContext<ProjectShellContext>()
+  const { tickets, loadingTickets, currentUser, onOpenTicket } =
+    useOutletContext<ProjectShellContext>()
 
-  if (loadingTickets && tickets.length === 0) {
+  const backlog = selectBacklogTickets(tickets)
+
+  if (loadingTickets && backlog.length === 0) {
     return <p className="text-muted-foreground text-sm">Loading…</p>
   }
 
-  if (tickets.length === 0) {
+  if (backlog.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-        <p className="text-muted-foreground text-sm">No tickets yet.</p>
+        {/* Accurate whether the project has no tickets at all or every ticket is in a
+            sprint — the two are the same fact from the backlog's point of view. */}
+        <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
       </div>
     )
   }
 
   return (
     <ul className="divide-y rounded-lg border">
-      {tickets.map((ticket) => (
+      {backlog.map((ticket) => (
         <li key={ticket.id}>
           <button
             type="button"
@@ -41,6 +53,22 @@ export function BacklogTab() {
             </span>
             <span className="flex-1 truncate">{ticket.summary}</span>
             {ticket.is_blocked ? <BlockedBadge /> : null}
+            {/* `!= null`, not a falsy check: 0 is a real estimate, not "unestimated". */}
+            {ticket.story_points != null ? (
+              <span
+                aria-label={`${ticket.story_points} story points`}
+                className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums"
+              >
+                {ticket.story_points}
+              </span>
+            ) : null}
+            <span className="text-muted-foreground w-40 shrink-0 truncate text-right text-xs">
+              {/* Phase 1 is single-owner, so the only name we can resolve is the signed-in
+                  user's — `listTickets` does no `profiles` join, and `assignee_id` is a
+                  bare uuid. Anything else reads as Unassigned, exactly as the detail
+                  dialog's `{ Unassigned, you }` picker already does. */}
+              {ticket.assignee_id === currentUser.id ? currentUser.email : 'Unassigned'}
+            </span>
           </button>
         </li>
       ))}
