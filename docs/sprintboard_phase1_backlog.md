@@ -159,6 +159,17 @@ points on tickets. We just don't score our own stories.
 - **AC:** deliverables persist as a list and can be edited (add, remove).
 - **AC:** stories, bugs, and tasks can reference a parent epic.
 
+### S4.6 Surface a failed ticket read, with retry
+- **Labels:** tickets
+- **AC:** when the ticket read fails, the Backlog and the Board show a clear error rather
+  than an empty state.
+- **AC:** "failed" and "genuinely empty" are distinguishable — a project with no tickets
+  still shows its empty state.
+- **AC:** a sprint's ticket count never shows a false `0` when the ticket read failed.
+- **AC:** a retry re-runs the failed read in-app, without a page refresh, and renders the
+  data on success.
+- **AC:** the retry also recovers a failed *sprint* read.
+
 ---
 
 ## E5 Backlog
