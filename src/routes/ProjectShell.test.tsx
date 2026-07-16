@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,7 @@ import { BacklogTab } from './BacklogTab'
 import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
 import type { Sprint, Ticket } from '@/lib/domain'
-import { createTicket, deleteTicket, listTickets } from '@/lib/tickets'
+import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { createSprint, listSprints } from '@/lib/sprints'
 
 vi.mock('@/lib/auth-context', () => ({
@@ -41,6 +41,7 @@ beforeEach(() => {
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
   mockDelete.mockReset()
+  vi.mocked(updateTicket).mockReset()
   mockListSprints.mockReset().mockResolvedValue([])
   vi.mocked(createSprint).mockReset()
 })
@@ -387,5 +388,59 @@ describe('ProjectShell', () => {
     expect(items[1]).toHaveTextContent('Older sprint')
     // Local mutation, not a refetch: a second read is the stale-response race S4.1 removed.
     expect(mockListSprints).toHaveBeenCalledTimes(1)
+  })
+
+  // THE SEAM (S6.2 AC 1), both directions, through the REAL BacklogTab and the REAL
+  // TicketDetailDialog — no stubs on either side.
+  //
+  // This test exists because the dialog's `sprints`/`sprintsPhase` props are optional and
+  // defaulted: forget to pass them from the shell and the picker renders permanently
+  // disabled while every per-task unit test still passes. Neither suite either side of this
+  // seam can see that — the dialog's own tests pass the props by hand, and the shell's tests
+  // never touched the picker. Deleting `sprints={sprints}` from the call site must turn this
+  // test red; that has been verified by doing it.
+  it('moves a ticket into a sprint and back to the backlog from the detail dialog (real wiring)', async () => {
+    const u = userEvent.setup()
+    mockList.mockResolvedValue([ticketA])
+    mockListSprints.mockResolvedValue([{ ...sprintBase, id: 's1', name: 'Hardening push' }])
+    // Echo the patch back as the server row would, so the reconcile after the optimistic
+    // update agrees with it rather than reverting the field under test.
+    vi.mocked(updateTicket).mockImplementation(async (id, patch) => ({
+      ok: true,
+      ticket: { ...ticketA, id, ...patch } as Ticket,
+    }))
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Enabled at all only because `sprintsPhase` arrived: the picker is
+    // `disabled={sprintsPhase !== 'loaded'}`, and its default is 'loading'.
+    const picker = await screen.findByRole('combobox', { name: 'sprint' })
+    expect(picker).toBeEnabled()
+    // Populated only because `sprints` arrived.
+    expect(within(picker).getByRole('option', { name: /Hardening push/ })).toBeInTheDocument()
+
+    // Into the sprint.
+    await u.selectOptions(picker, 's1')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { sprint_id: 's1' }),
+    )
+    // …and it leaves the backlog: the optimistic update flowed back through
+    // `onTicketUpdated` into the shell's list, which the real BacklogTab filters.
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
+
+    // Back out to the backlog. '' is the domain's "no sprint", so the patch is `null`.
+    await u.selectOptions(picker, '')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenLastCalledWith('tA', { sprint_id: null }),
+    )
+    await waitFor(() =>
+      expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument(),
+    )
+    // The row is back. Close the modal first: the open dialog renders the summary too, and
+    // `aria-hidden`s the backlog behind it, so a role query can only see the row once the
+    // dialog is gone.
+    await u.keyboard('{Escape}')
+    expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
   })
 })

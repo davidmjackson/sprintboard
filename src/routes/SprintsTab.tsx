@@ -1,5 +1,6 @@
 import { useOutletContext } from 'react-router-dom'
 
+import { selectSprintTickets } from '@/lib/backlog'
 import { formatSprintDate } from '@/lib/sprint-dates'
 import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
@@ -37,6 +38,7 @@ export function SprintsTab() {
     sprints,
     sprintsPhase: phase,
     onSprintCreated,
+    tickets,
   } = useOutletContext<ProjectShellContext>()
 
   return (
@@ -79,6 +81,17 @@ export function SprintsTab() {
                 </span>
               ) : null}
               <SprintDates sprint={sprint} />
+              {/* Membership comes from `selectSprintTickets`, never an inline filter: the
+                  `sprint_id` rule lives in `backlog.ts` and is read from both sides there —
+                  the backlog is `sprint_id is null`, a sprint's tickets are the ones naming
+                  it. The bare number needs a unit for screen readers, and it is real
+                  `sr-only` text rather than an `aria-label`: a <span> maps to
+                  `role="generic"`, on which ARIA 1.2 *prohibits* aria-label — browsers
+                  honour it so it looks fine, but axe-core flags it. */}
+              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
+                {selectSprintTickets(tickets, sprint.id).length}
+                <span className="sr-only"> tickets</span>
+              </span>
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
                 {SPRINT_STATUS_LABELS[sprint.status]}
               </span>
