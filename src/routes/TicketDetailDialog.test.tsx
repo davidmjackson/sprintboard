@@ -19,8 +19,10 @@ function deferred<T>() {
 vi.mock('@/lib/tickets', async (orig) => ({
   ...(await orig<typeof tickets>()),
   updateTicket: vi.fn(),
+  deleteTicket: vi.fn(),
 }))
 const updateTicket = vi.mocked(tickets.updateTicket)
+const deleteTicket = vi.mocked(tickets.deleteTicket)
 
 const base: Ticket = {
   id: 't1',
@@ -47,7 +49,10 @@ const base: Ticket = {
 }
 const user = { id: 'user-a', email: 'a@example.com' }
 
-beforeEach(() => updateTicket.mockReset())
+beforeEach(() => {
+  updateTicket.mockReset()
+  deleteTicket.mockReset()
+})
 
 describe('TicketDetailDialog', () => {
   it('shows the ticket key, summary, and status when open', () => {
@@ -57,6 +62,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     expect(screen.getByText('MP-1')).toBeInTheDocument()
@@ -71,6 +77,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     expect(screen.queryByText('MP-1')).not.toBeInTheDocument()
@@ -88,6 +95,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -115,6 +123,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -135,6 +144,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
@@ -151,6 +161,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /assignee/i }), 'user-a')
@@ -164,6 +175,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     const options = screen.getAllByRole('option').filter((o) =>
@@ -206,6 +218,7 @@ describe('TicketDetailDialog', () => {
             setT(next)
             onUpdated(next)
           }}
+          onDeleted={() => {}}
         />
       )
     }
@@ -257,6 +270,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -279,6 +293,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -298,6 +313,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -317,6 +333,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -343,6 +360,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -358,6 +376,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={onUpdated}
+        onDeleted={() => {}}
       />,
     )
 
@@ -382,6 +401,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -409,6 +429,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -443,6 +464,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -461,6 +483,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -500,6 +523,7 @@ describe('TicketDetailDialog', () => {
             setT(next)
             onUpdated(next)
           }}
+          onDeleted={() => {}}
         />
       ) : null
     }
@@ -547,6 +571,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -587,6 +612,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
 
@@ -611,6 +637,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /type/i }), 'bug')
@@ -625,6 +652,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.click(screen.getByRole('button', { name: /edit description/i }))
@@ -646,6 +674,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.click(screen.getByRole('button', { name: /edit acceptance criteria/i }))
@@ -669,6 +698,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
+        onDeleted={() => {}}
       />,
     )
     await userEvent.click(screen.getByRole('button', { name: /edit labels/i }))
@@ -676,5 +706,68 @@ describe('TicketDetailDialog', () => {
     await waitFor(() =>
       expect(updateTicket).toHaveBeenCalledWith('t1', { labels: ['ui', 'backend'] }),
     )
+  })
+})
+
+async function openDeleteConfirm(ue: ReturnType<typeof userEvent.setup>) {
+  await ue.click(screen.getByRole('button', { name: /ticket actions/i }))
+  await ue.click(await screen.findByRole('menuitem', { name: /delete/i }))
+}
+
+describe('TicketDetailDialog — delete', () => {
+  it('deletes after confirm and reports the id up', async () => {
+    const ue = userEvent.setup()
+    deleteTicket.mockResolvedValue({ ok: true })
+    const onDeleted = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={onDeleted}
+      />,
+    )
+    await openDeleteConfirm(ue)
+    await ue.click(await screen.findByRole('button', { name: /^delete$/i }))
+    await waitFor(() => expect(deleteTicket).toHaveBeenCalledWith('t1'))
+    expect(onDeleted).toHaveBeenCalledWith('t1')
+  })
+
+  it('does nothing when the confirm is cancelled', async () => {
+    const ue = userEvent.setup()
+    const onDeleted = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={onDeleted}
+      />,
+    )
+    await openDeleteConfirm(ue)
+    await ue.click(await screen.findByRole('button', { name: /cancel/i }))
+    expect(deleteTicket).not.toHaveBeenCalled()
+    expect(onDeleted).not.toHaveBeenCalled()
+  })
+
+  it('keeps the ticket and shows an error when the delete fails', async () => {
+    const ue = userEvent.setup()
+    deleteTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onDeleted = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={onDeleted}
+      />,
+    )
+    await openDeleteConfirm(ue)
+    await ue.click(await screen.findByRole('button', { name: /^delete$/i }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not delete/i)
+    expect(onDeleted).not.toHaveBeenCalled()
   })
 })
