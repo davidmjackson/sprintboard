@@ -21,11 +21,16 @@ if (typeof globalThis.WebSocket === 'undefined') {
 // AlertDialog call both when opening under userEvent. Stub them so menu/dialog
 // interactions work in tests (see [[sprintboard-frontend-conventions]] — the same class
 // of jsdom gap that makes native <select> preferable to radix Select).
-if (!Element.prototype.hasPointerCapture) {
-  Element.prototype.hasPointerCapture = () => false
-  Element.prototype.setPointerCapture = () => {}
-  Element.prototype.releasePointerCapture = () => {}
-}
-if (!Element.prototype.scrollIntoView) {
-  Element.prototype.scrollIntoView = () => {}
+// Guarded on `typeof Element`: the live integration suites declare
+// `@vitest-environment node` (no DOM at all), and this file's setupFiles entry runs for
+// every test file regardless of its per-file environment override.
+if (typeof Element !== 'undefined') {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false
+    Element.prototype.setPointerCapture = () => {}
+    Element.prototype.releasePointerCapture = () => {}
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {}
+  }
 }
