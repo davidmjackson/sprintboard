@@ -5,13 +5,17 @@ import type { ProjectsContext } from './AppLayout'
 import type { Project, Ticket } from '@/lib/domain'
 import { listTickets } from '@/lib/tickets'
 import { cn } from '@/lib/utils'
+import { useAuth } from '@/lib/auth-context'
 import { CreateTicketDialog } from './CreateTicketDialog'
+import { TicketDetailDialog } from './TicketDetailDialog'
 
 /** What the shell hands to its Board/Backlog tabs via the nested <Outlet context>. */
 export type ProjectShellContext = {
   project: Project
   tickets: Ticket[]
   loadingTickets: boolean
+  onOpenTicket: (ticket: Ticket) => void
+  onTicketUpdated: (ticket: Ticket) => void
 }
 
 /**
@@ -24,6 +28,8 @@ export type ProjectShellContext = {
 export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
   const { projectId } = useParams()
+  const { user } = useAuth()
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const project = loading ? undefined : projects.find((p) => p.id === projectId)
   const activeProjectId = project?.id
 
@@ -56,6 +62,18 @@ export function ProjectShell() {
 
   const loadingTickets = loaded?.projectId !== project.id
   const tickets = loadingTickets ? [] : loaded.tickets
+
+  const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
+
+  const onTicketUpdated = (updated: Ticket) =>
+    setLoaded((prev) =>
+      prev && prev.projectId === project.id
+        ? {
+            projectId: prev.projectId,
+            tickets: prev.tickets.map((t) => (t.id === updated.id ? updated : t)),
+          }
+        : prev,
+    )
 
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
@@ -98,7 +116,26 @@ export function ProjectShell() {
         </nav>
       </header>
       <div className="flex-1 p-8">
-        <Outlet context={{ project, tickets, loadingTickets } satisfies ProjectShellContext} />
+        <Outlet
+          context={
+            {
+              project,
+              tickets,
+              loadingTickets,
+              onOpenTicket: (t) => setSelectedId(t.id),
+              onTicketUpdated,
+            } satisfies ProjectShellContext
+          }
+        />
+        <TicketDetailDialog
+          key={selected?.id ?? 'none'}
+          ticket={selected}
+          currentUser={{ id: user!.id, email: user!.email ?? '' }}
+          onOpenChange={(open) => {
+            if (!open) setSelectedId(null)
+          }}
+          onUpdated={onTicketUpdated}
+        />
       </div>
     </div>
   )

@@ -7,6 +7,7 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
 // createTicket: from('tickets').insert(...).select().single()
 // listTickets: from('tickets').select().eq(...).order(...)
+// updateTicket: from('tickets').update(...).eq(...).select().single()
 const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
@@ -18,6 +19,7 @@ beforeEach(() => {
   vi.mocked(supabase.from).mockReturnValue({
     insert: () => ({ select: () => ({ single }) }),
     select: () => ({ eq }),
+    update: () => ({ eq: () => ({ select: () => ({ single }) }) }),
   } as unknown as ReturnType<typeof supabase.from>)
 })
 
@@ -55,5 +57,26 @@ describe('listTickets', () => {
   it('throws on a query error', async () => {
     order.mockResolvedValue({ data: null, error: { message: 'network' } })
     await expect(listTickets('p1')).rejects.toThrow(/Could not load tickets/)
+  })
+})
+
+describe('updateTicket', () => {
+  it('returns the updated ticket on success', async () => {
+    const ticket = {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Renamed',
+      updated_at: '2026-07-15T00:00:01Z',
+    }
+    single.mockResolvedValue({ data: ticket, error: null })
+    const { updateTicket } = await import('./tickets')
+    expect(await updateTicket('t1', { summary: 'Renamed' })).toEqual({ ok: true, ticket })
+  })
+
+  it('maps any error to unknown', async () => {
+    single.mockResolvedValue({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    const { updateTicket } = await import('./tickets')
+    expect(await updateTicket('t1', { summary: 'x' })).toEqual({ ok: false, error: 'unknown' })
   })
 })

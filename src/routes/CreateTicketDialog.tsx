@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 
 import { createTicket } from '@/lib/tickets'
+import { parseLabels } from '@/lib/labels'
 import { TICKET_TYPES, TICKET_TYPE_LABELS, type Ticket, type TicketType } from '@/lib/domain'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -45,14 +46,6 @@ const CreateTicketSchema = z.object({
   acceptanceCriteria: z.string().trim().max(2000).optional(),
 })
 type CreateTicketValues = z.input<typeof CreateTicketSchema>
-
-/** "ui, urgent ," -> ["ui", "urgent"]. Trims, drops blanks. */
-function parseLabels(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(',')
-    .map((label) => label.trim())
-    .filter(Boolean)
-}
 
 // The type field is a native <select> styled like Input — a fixed four-option enum
 // where a native control is honest and easy to test, and needs no extra dependency.

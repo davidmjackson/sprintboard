@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,8 +7,12 @@ import { ProjectShell } from './ProjectShell'
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import type { ProjectsContext } from './AppLayout'
+import type { Ticket } from '@/lib/domain'
 import { createTicket, listTickets } from '@/lib/tickets'
 
+vi.mock('@/lib/auth-context', () => ({
+  useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
+}))
 vi.mock('@/lib/tickets', () => ({ listTickets: vi.fn(), createTicket: vi.fn() }))
 
 const mockList = vi.mocked(listTickets)
@@ -20,6 +24,38 @@ beforeEach(() => {
 const PROJECTS = [
   { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'scrum', created_at: '' },
 ] as never
+
+const ticketBase: Ticket = {
+  id: 'tA',
+  project_id: 'p1',
+  key: 'APP-1',
+  number: 1,
+  summary: 'Alpha summary',
+  type: 'story',
+  status: 'todo',
+  description: null,
+  assignee_id: null,
+  story_points: null,
+  acceptance_criteria: null,
+  labels: [],
+  sprint_id: null,
+  parent_epic_id: null,
+  context: null,
+  deliverables: [],
+  is_blocked: false,
+  blocked_reason: null,
+  blocked_since: null,
+  created_at: '2026-07-15T00:00:00Z',
+  updated_at: '2026-07-15T00:00:00Z',
+}
+const ticketA = ticketBase
+const ticketB: Ticket = {
+  ...ticketBase,
+  id: 'tB',
+  key: 'APP-2',
+  number: 2,
+  summary: 'Beta summary',
+}
 
 /** Stands in for AppLayout: hands the project list down through the outlet context. */
 function ContextProvider({ ctx }: { ctx: ProjectsContext }) {
@@ -85,5 +121,33 @@ describe('ProjectShell', () => {
   it('shows a loading state while the project list is loading', () => {
     renderShell('/projects/p1', { projects: [], loading: true })
     expect(screen.getByText('Loading…')).toBeInTheDocument()
+  })
+
+  it('opens a ticket from its board card and resets edit state across a ticket switch (key remount)', async () => {
+    const u = userEvent.setup()
+    mockList.mockReset().mockResolvedValue([ticketA, ticketB])
+    renderShell('/projects/p1')
+
+    // The board renders both cards once the (mocked) fetch lands.
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Dialog A opened from the card click; enter edit mode on its summary field.
+    await u.click(await screen.findByRole('button', { name: /edit summary/i }))
+    expect(screen.getByRole('textbox', { name: /summary/i })).toBeInTheDocument()
+
+    // Close the modal (first Escape cancels the field edit, second dismisses the dialog),
+    // then open ticket B — selection goes A → null → B, remounting the keyed dialog.
+    await u.keyboard('{Escape}')
+    await u.keyboard('{Escape}')
+    await waitFor(() =>
+      expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument(),
+    )
+    await u.click(await screen.findByRole('button', { name: /Beta summary/i }))
+
+    // The remounted dialog shows B in VIEW mode — no textbox leaked across the switch.
+    expect(await screen.findByRole('button', { name: /edit summary/i })).toHaveTextContent(
+      'Beta summary',
+    )
+    expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument()
   })
 })

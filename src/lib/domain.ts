@@ -133,8 +133,14 @@ export type Ticket = Omit<Tables<'tickets'>, 'status' | 'type'> & {
  */
 export type TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number'>
 
-/** Same reasoning, plus `id` and `project_id`: a ticket cannot change project. */
-export type TicketUpdate = Omit<TablesUpdate<'tickets'>, 'key' | 'number' | 'id' | 'project_id'>
+/** Same reasoning as TicketInsert, plus `id`/`project_id` (a ticket cannot change
+ *  project) and the trigger-owned timestamps: `updated_at` is set by the
+ *  `tickets_set_updated_at` trigger on every write, `created_at` is fixed at insert.
+ *  Sending any of them is either overwritten or wrong, so make it untypeable. */
+export type TicketUpdate = Omit<
+  TablesUpdate<'tickets'>,
+  'key' | 'number' | 'id' | 'project_id' | 'updated_at' | 'created_at'
+>
 
 export type ProjectInsert = TablesInsert<'projects'>
 export type SprintInsert = TablesInsert<'sprints'>
