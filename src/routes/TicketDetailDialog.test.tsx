@@ -955,3 +955,136 @@ describe('TicketDetailDialog — block/unblock', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 })
+
+const epicTicket: Ticket = {
+  ...base,
+  id: 'e-main',
+  key: 'MP-9',
+  type: 'epic',
+  summary: 'Platform epic',
+  context: null,
+  deliverables: [],
+}
+
+/** Renders the dialog with sensible defaults; override only what a test needs. */
+function renderDialog(props: Partial<React.ComponentProps<typeof TicketDetailDialog>> = {}) {
+  return render(
+    <TicketDetailDialog
+      ticket={epicTicket}
+      currentUser={user}
+      onOpenChange={() => {}}
+      onUpdated={() => {}}
+      onDeleted={() => {}}
+      {...props}
+    />,
+  )
+}
+
+describe('TicketDetailDialog — epic fields', () => {
+  it('shows Context and Deliverables for an epic, and a parent-epic picker for a non-epic', () => {
+    const { rerender } = renderDialog({ ticket: epicTicket })
+    expect(screen.getByText('Context')).toBeInTheDocument()
+    expect(screen.getByText('Deliverables')).toBeInTheDocument()
+    // An epic does not get a parent epic in the Phase 1 UI.
+    expect(screen.queryByRole('combobox', { name: /parent epic/i })).not.toBeInTheDocument()
+
+    // A story (base) is the mirror image: no epic-only fields, but a parent-epic picker.
+    rerender(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.queryByText('Context')).not.toBeInTheDocument()
+    expect(screen.queryByText('Deliverables')).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: /parent epic/i })).toBeInTheDocument()
+  })
+
+  it('commits an epic context edit, sending the context patch', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...epicTicket, context: 'Background' } })
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: /edit context/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /^context$/i }), 'Background')
+    await userEvent.tab() // context is multiline — blur commits
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('e-main', { context: 'Background' }),
+    )
+  })
+
+  it('adds a deliverable, committing the appended list', async () => {
+    const epicWithOne: Ticket = { ...epicTicket, deliverables: ['Ship the API'] }
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...epicWithOne, deliverables: ['Ship the API', 'Wire the UI'] },
+    })
+    renderDialog({ ticket: epicWithOne })
+    await userEvent.type(screen.getByRole('textbox', { name: /new deliverable/i }), 'Wire the UI')
+    await userEvent.click(screen.getByRole('button', { name: /add deliverable/i }))
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('e-main', {
+        deliverables: ['Ship the API', 'Wire the UI'],
+      }),
+    )
+  })
+
+  it('does not add a blank or whitespace-only deliverable (Add stays disabled)', async () => {
+    renderDialog({ ticket: epicTicket }) // deliverables: []
+    const addBtn = screen.getByRole('button', { name: /add deliverable/i })
+    expect(addBtn).toBeDisabled()
+    await userEvent.type(screen.getByRole('textbox', { name: /new deliverable/i }), '   ')
+    expect(addBtn).toBeDisabled()
+    expect(updateTicket).not.toHaveBeenCalled()
+  })
+
+  it('removes a deliverable, committing the list without it', async () => {
+    const epicTwo: Ticket = { ...epicTicket, deliverables: ['Ship the API', 'Wire the UI'] }
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...epicTwo, deliverables: ['Wire the UI'] },
+    })
+    renderDialog({ ticket: epicTwo })
+    await userEvent.click(screen.getByRole('button', { name: /remove deliverable 1/i }))
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('e-main', { deliverables: ['Wire the UI'] }),
+    )
+  })
+
+  it('edits a deliverable in place, committing the updated list', async () => {
+    const epicTwo: Ticket = { ...epicTicket, deliverables: ['Ship the API', 'Wire the UI'] }
+    updateTicket.mockResolvedValue({ ok: true, ticket: epicTwo })
+    renderDialog({ ticket: epicTwo })
+    await userEvent.click(screen.getByRole('button', { name: /edit deliverable 1/i }))
+    const input = screen.getByRole('textbox', { name: /^deliverable 1$/i })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Ship the v2 API{Enter}')
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('e-main', {
+        deliverables: ['Ship the v2 API', 'Wire the UI'],
+      }),
+    )
+  })
+
+  it('lists project epics in the parent-epic picker and commits the selected epic id', async () => {
+    const epicA: Ticket = { ...base, id: 'e1', key: 'MP-2', type: 'epic', summary: 'Epic A' }
+    const epicB: Ticket = { ...base, id: 'e2', key: 'MP-3', type: 'epic', summary: 'Epic B' }
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, parent_epic_id: 'e2' } })
+    renderDialog({ ticket: base, epics: [epicA, epicB] })
+    const picker = screen.getByRole('combobox', { name: /parent epic/i })
+    const optionLabels = screen.getAllByRole('option').map((o) => o.textContent)
+    expect(optionLabels).toEqual(expect.arrayContaining([expect.stringMatching(/MP-2/)]))
+    await userEvent.selectOptions(picker, 'e2')
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { parent_epic_id: 'e2' }))
+  })
+
+  it('clears the parent epic when No epic is chosen, sending null', async () => {
+    const child: Ticket = { ...base, parent_epic_id: 'e1' }
+    const epicA: Ticket = { ...base, id: 'e1', key: 'MP-2', type: 'epic', summary: 'Epic A' }
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...child, parent_epic_id: null } })
+    renderDialog({ ticket: child, epics: [epicA] })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /parent epic/i }), '')
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { parent_epic_id: null }))
+  })
+})

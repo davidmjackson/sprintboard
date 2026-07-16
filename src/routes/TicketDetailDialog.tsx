@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Ban, CircleCheck, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { Ban, CircleCheck, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react'
 
 import {
   BLOCK_REASON_MAX,
@@ -10,6 +10,7 @@ import {
   updateTicket,
 } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
+import { parseDeliverables } from '@/lib/deliverables'
 import {
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
@@ -217,12 +218,16 @@ function parseSummary(raw: string): { ok: true; value: string } | { ok: false; m
 export function TicketDetailDialog({
   ticket,
   currentUser,
+  epics = [],
   onOpenChange,
   onUpdated,
   onDeleted,
 }: {
   ticket: Ticket | null
   currentUser: { id: string; email: string }
+  /** The project's epics, for the parent-epic picker shown on non-epic tickets. Optional
+   *  and defaulted so the dialog renders standalone (and in tests) without wiring it. */
+  epics?: Ticket[]
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
@@ -252,6 +257,9 @@ export function TicketDetailDialog({
   const [blockError, setBlockError] = useState<string | null>(null)
   const [blockPending, setBlockPending] = useState(false)
   const [unblockPending, setUnblockPending] = useState(false)
+
+  // The draft for the "add a deliverable" input (epic only). Cleared on a successful add.
+  const [deliverableDraft, setDeliverableDraft] = useState('')
 
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
@@ -283,6 +291,11 @@ export function TicketDetailDialog({
   if (!ticket) return null
 
   const error = errorFor?.ticketId === ticket.id ? errorFor.message : null
+
+  // The epic's deliverables, narrowed from the `jsonb` column to a clean string list. The
+  // editor always rebuilds the whole array and commits it through `commit`, so a write is
+  // always a well-formed `string[]` and never a half-mutated jsonb value.
+  const deliverables = parseDeliverables(ticket.deliverables)
 
   async function commit(patch: TicketUpdate) {
     const current = ticketRef.current!
@@ -321,6 +334,25 @@ export function TicketDetailDialog({
       onUpdated({ ...base, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
       setErrorFor(null)
     }
+  }
+
+  // Deliverables are an epic-only, order-preserving `string[]`. Each mutation rebuilds the
+  // whole list and reuses `commit` — so add/remove/edit ride the same optimistic-with-
+  // rollback path as every other field, and a failed save reverts just `deliverables`.
+  function addDeliverable() {
+    const trimmed = deliverableDraft.trim()
+    if (!trimmed) return
+    commit({ deliverables: [...deliverables, trimmed] })
+    setDeliverableDraft('')
+  }
+  function removeDeliverable(index: number) {
+    commit({ deliverables: deliverables.filter((_, i) => i !== index) })
+  }
+  function editDeliverable(index: number, value: string) {
+    // Editing an item to blank removes it — `filter(Boolean)` after the replace, so the
+    // list never holds an empty deliverable (the same rule `parseDeliverables` enforces).
+    const next = deliverables.map((d, i) => (i === index ? value.trim() : d)).filter(Boolean)
+    commit({ deliverables: next })
   }
 
   async function handleDelete() {
@@ -529,6 +561,81 @@ export function TicketDetailDialog({
                 onEditingChange={handleEditingChange}
               />
             </div>
+
+            {/* Epic-only: the context and deliverables that feed Rung 2 AI decomposition. */}
+            {ticket.type === 'epic' ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>Context</FieldLabel>
+                  <EditableText
+                    value={ticket.context ?? ''}
+                    ariaLabel="context"
+                    multiline
+                    placeholder="Add context for this epic…"
+                    onCommit={(v) => commit({ context: v.trim() || null })}
+                    onEditingChange={handleEditingChange}
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <FieldLabel>Deliverables</FieldLabel>
+                  {deliverables.length > 0 ? (
+                    <ul className="flex flex-col gap-1">
+                      {deliverables.map((d, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span
+                            aria-hidden="true"
+                            className="bg-foreground/40 mt-2.5 size-1.5 shrink-0 rounded-full"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <EditableText
+                              value={d}
+                              ariaLabel={`deliverable ${i + 1}`}
+                              onCommit={(v) => editDeliverable(i, v)}
+                              onEditingChange={handleEditingChange}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`Remove deliverable ${i + 1}`}
+                            onClick={() => removeDeliverable(i)}
+                            className="text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:bg-muted mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-none"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-muted-foreground text-sm">No deliverables yet.</p>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Input
+                      aria-label="new deliverable"
+                      value={deliverableDraft}
+                      placeholder="Add a deliverable…"
+                      onChange={(e) => setDeliverableDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          addDeliverable()
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      aria-label="Add deliverable"
+                      onClick={addDeliverable}
+                      disabled={!deliverableDraft.trim()}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
 
           {/* Sidebar: a quiet "Details" panel, the Jira right rail */}
@@ -552,6 +659,31 @@ export function TicketDetailDialog({
                 ))}
               </select>
             </label>
+
+            {/* Non-epic only: reference a parent epic in this project. An epic doesn't nest
+                under another epic in Phase 1, so the picker is hidden for epics. The options
+                are the project's epics; the composite fk `tickets_epic_fk` keeps the parent
+                in the same project, so cross-project references are rejected at the DB. */}
+            {ticket.type !== 'epic' ? (
+              <label className="flex flex-col gap-1">
+                <FieldLabel>Parent epic</FieldLabel>
+                <select
+                  aria-label="parent epic"
+                  className={selectClass}
+                  value={ticket.parent_epic_id ?? ''}
+                  onChange={(e) => commit({ parent_epic_id: e.target.value || null })}
+                >
+                  <option value="">No epic</option>
+                  {epics
+                    .filter((e) => e.id !== ticket.id)
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.key} · {e.summary}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            ) : null}
 
             <label className="flex flex-col gap-1">
               <FieldLabel>Assignee</FieldLabel>

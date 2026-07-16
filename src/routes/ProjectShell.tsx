@@ -139,6 +139,7 @@ export function ProjectShell() {
         <TicketDetailDialog
           key={selected?.id ?? 'none'}
           ticket={selected}
+          epics={tickets.filter((t) => t.type === 'epic')}
           currentUser={{ id: user!.id, email: user!.email ?? '' }}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)
