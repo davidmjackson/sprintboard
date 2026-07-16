@@ -282,4 +282,44 @@ describe('TicketDetailDialog', () => {
       expect(document.activeElement).toBe(screen.getByRole('button', { name: /edit description/i })),
     )
   })
+
+  it('resets a mid-edit field when the parent keys the dialog by ticket id and the selection switches (Ultracode finding B)', async () => {
+    const ticketB: Ticket = { ...base, id: 't2', key: 'MP-2', summary: 'Ticket B summary' }
+    // Mirrors ProjectShell's `<TicketDetailDialog key={selected?.id ?? 'none'} .../>` —
+    // the key is what forces React to unmount the stale instance instead of reusing it
+    // with ticket B's props.
+    const { rerender } = render(
+      <TicketDetailDialog
+        key={base.id}
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    const input = screen.getByRole('textbox', { name: /summary/i })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Stale draft text')
+    expect(input).toHaveValue('Stale draft text')
+
+    // Switch the selected ticket while the summary field is still mid-edit — exactly
+    // what selecting a different board card or backlog row does.
+    rerender(
+      <TicketDetailDialog
+        key={ticketB.id}
+        ticket={ticketB}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+
+    // Remounted: back to view mode, showing ticket B's own summary — never a live
+    // textbox still holding ticket A's stale draft.
+    expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Ticket B summary')).toBeInTheDocument()
+    expect(screen.queryByText('Stale draft text')).not.toBeInTheDocument()
+  })
 })

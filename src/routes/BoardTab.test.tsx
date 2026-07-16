@@ -1,7 +1,8 @@
 import type { ComponentType } from 'react'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
@@ -18,6 +19,8 @@ function renderTab(
     project: {} as never,
     tickets: TICKETS,
     loadingTickets: false,
+    onOpenTicket: vi.fn(),
+    onTicketUpdated: vi.fn(),
   },
 ) {
   function Provider() {
@@ -61,8 +64,27 @@ describe('BoardTab', () => {
   })
 
   it('renders every column empty when there are no tickets', () => {
-    renderTab(BoardTab, { project: {} as never, tickets: [], loadingTickets: false })
+    renderTab(BoardTab, {
+      project: {} as never,
+      tickets: [],
+      loadingTickets: false,
+      onOpenTicket: vi.fn(),
+      onTicketUpdated: vi.fn(),
+    })
     expect(screen.getAllByText('No tickets yet.')).toHaveLength(4)
+  })
+
+  it('opens the ticket detail modal when a card is clicked', async () => {
+    const onOpenTicket = vi.fn()
+    renderTab(BoardTab, {
+      project: {} as never,
+      tickets: TICKETS,
+      loadingTickets: false,
+      onOpenTicket,
+      onTicketUpdated: vi.fn(),
+    })
+    await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
+    expect(onOpenTicket).toHaveBeenCalled()
   })
 })
 
@@ -74,12 +96,37 @@ describe('BacklogTab', () => {
   })
 
   it('shows an empty state when there are no tickets', () => {
-    renderTab(BacklogTab, { project: {} as never, tickets: [], loadingTickets: false })
+    renderTab(BacklogTab, {
+      project: {} as never,
+      tickets: [],
+      loadingTickets: false,
+      onOpenTicket: vi.fn(),
+      onTicketUpdated: vi.fn(),
+    })
     expect(screen.getByText('No tickets yet.')).toBeInTheDocument()
   })
 
   it('shows a loading state while tickets load', () => {
-    renderTab(BacklogTab, { project: {} as never, tickets: [], loadingTickets: true })
+    renderTab(BacklogTab, {
+      project: {} as never,
+      tickets: [],
+      loadingTickets: true,
+      onOpenTicket: vi.fn(),
+      onTicketUpdated: vi.fn(),
+    })
     expect(screen.getByText('Loading…')).toBeInTheDocument()
+  })
+
+  it('opens the ticket detail modal when a row is clicked', async () => {
+    const onOpenTicket = vi.fn()
+    renderTab(BacklogTab, {
+      project: {} as never,
+      tickets: TICKETS,
+      loadingTickets: false,
+      onOpenTicket,
+      onTicketUpdated: vi.fn(),
+    })
+    await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
+    expect(onOpenTicket).toHaveBeenCalledWith(TICKETS[0])
   })
 })

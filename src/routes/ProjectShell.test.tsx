@@ -9,6 +9,9 @@ import { BacklogTab } from './BacklogTab'
 import type { ProjectsContext } from './AppLayout'
 import { createTicket, listTickets } from '@/lib/tickets'
 
+vi.mock('@/lib/auth-context', () => ({
+  useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
+}))
 vi.mock('@/lib/tickets', () => ({ listTickets: vi.fn(), createTicket: vi.fn() }))
 
 const mockList = vi.mocked(listTickets)

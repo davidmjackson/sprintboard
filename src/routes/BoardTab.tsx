@@ -9,7 +9,7 @@ import { TicketCard } from './TicketCard'
  * inlined). Each column holds its status's tickets; an empty column says so.
  */
 export function BoardTab() {
-  const { tickets } = useOutletContext<ProjectShellContext>()
+  const { tickets, onOpenTicket } = useOutletContext<ProjectShellContext>()
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -21,7 +21,9 @@ export function BoardTab() {
             {column.length === 0 ? (
               <p className="text-muted-foreground text-xs">No tickets yet.</p>
             ) : (
-              column.map((ticket) => <TicketCard key={ticket.id} ticket={ticket} />)
+              column.map((ticket) => (
+                <TicketCard key={ticket.id} ticket={ticket} onOpen={() => onOpenTicket(ticket)} />
+              ))
             )}
           </section>
         )
