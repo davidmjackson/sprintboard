@@ -526,6 +526,56 @@ describe('ProjectShell', () => {
       expect(screen.getByText('Alpha summary')).toBeVisible()
     })
 
+    // The recovery path driven entirely through REAL components — real shell, real
+    // BacklogTab, the real Retry button inside the real LoadFailure. The probe test above
+    // pins the shell's half (the nonce re-runs both reads) and the tabs' own suites pin
+    // theirs (Retry calls the prop they were handed), but nothing joined the two: a Retry
+    // wired to the wrong callback, or a tab handed no `onRetry` at all, satisfies both
+    // halves and still leaves a user stranded on an error screen with a dead button. This
+    // is the test the design doc claims — the recovery path, end to end, through the tabs.
+    it('recovers the backlog when the real Retry button in the real tab is clicked', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([ticketA])
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+
+      await u.click(screen.getByRole('button', { name: 'Retry' }))
+
+      // The ticket the second read returned is on screen, and the error is gone — so the
+      // click reached the shell's nonce and the new list flowed back out to this tab.
+      expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(mockList).toHaveBeenCalledTimes(2)
+    })
+
+    // The create trigger is withheld unless the read landed. `onCreated` can only append to
+    // a `loaded` list, so an ungated trigger over a failed read writes a real row to the
+    // database and shows the user nothing at all — they retry and get duplicates. Pins the
+    // gate in ProjectShell; deleting it must turn this red.
+    it('offers no create trigger while the ticket read has failed (no invisible create)', async () => {
+      mockList.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+    })
+
+    // The other side of the gate: it must be a phase gate, not a blanket removal. Without
+    // this, deleting the whole dialog passes the test above.
+    it('offers the create trigger again once the read recovers', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([])
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+
+      await u.click(screen.getByRole('button', { name: 'Retry' }))
+
+      expect(await screen.findByRole('button', { name: 'New ticket' })).toBeVisible()
+    })
+
     // The nonce-in-the-TAG behaviour. Without the nonce in the match test, the stale
     // `failed` result still matches the current project, so the error stays on screen until
     // the new result lands — a Retry that appears to do nothing, which is how a user ends up

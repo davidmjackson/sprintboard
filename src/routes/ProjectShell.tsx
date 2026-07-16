@@ -204,20 +204,39 @@ export function ProjectShell() {
             <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
             {project.name}
           </h1>
-          <CreateTicketDialog
-            projectId={project.id}
-            onCreated={(ticket) => {
-              // A new ticket always carries the highest number, so appending it keeps
-              // the number order the board and backlog use — no refetch needed. That
-              // also avoids a stale-response race: an unguarded refetch resolving after
-              // a project switch would clobber the new project's list.
-              setLoaded((prev) =>
-                prev && prev.projectId === project.id && prev.phase === 'loaded'
-                  ? { ...prev, tickets: [...prev.tickets, ticket] }
-                  : prev,
-              )
-            }}
-          />
+          {/* The trigger only renders once `ticketsPhase === 'loaded'`, and that gate is
+              load-bearing — do not remove it to "always let people create a ticket".
+
+              `onCreated` below appends only to a `loaded` list, because it cannot do
+              anything else: a `failed` state has no `tickets` to append to, and inventing
+              one would resurrect the very "a failed read looks successful" defect S4.6
+              removed. So an UNGATED trigger plus that guard equals an INVISIBLE CREATE:
+              `createTicket` succeeds, the row is really written and really holds a key,
+              the dialog closes — and the UI shows no trace at all. The user reads that as
+              "it didn't work", creates it again, and now owns duplicate tickets. A create
+              whose result you cannot see is worse than no create button, so the button is
+              withheld until we have a list to put the result into. Hiding rather than
+              disabling matches `SprintsTab`'s CreateSprintDialog, which gates on its own
+              phase for this same reason.
+
+              The Board and Backlog carry the error and the Retry for this failed read, so
+              the create affordance comes back on its own the moment the read recovers. */}
+          {ticketsPhase === 'loaded' ? (
+            <CreateTicketDialog
+              projectId={project.id}
+              onCreated={(ticket) => {
+                // A new ticket always carries the highest number, so appending it keeps
+                // the number order the board and backlog use — no refetch needed. That
+                // also avoids a stale-response race: an unguarded refetch resolving after
+                // a project switch would clobber the new project's list.
+                setLoaded((prev) =>
+                  prev && prev.projectId === project.id && prev.phase === 'loaded'
+                    ? { ...prev, tickets: [...prev.tickets, ticket] }
+                    : prev,
+                )
+              }}
+            />
+          ) : null}
         </div>
         <nav className="flex gap-4">
           <NavLink to="board" className={tabClass}>
