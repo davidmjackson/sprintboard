@@ -38,9 +38,10 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
   return {
     project: {} as never,
     tickets: TICKETS,
-    loadingTickets: false,
+    ticketsPhase: 'loaded',
     sprints: [],
     sprintsPhase: 'loaded',
+    onRetry: vi.fn(),
     onSprintCreated: vi.fn(),
     currentUser: USER,
     onOpenTicket: vi.fn(),
@@ -289,7 +290,7 @@ describe('BacklogTab', () => {
   })
 
   it('shows a loading state while tickets load', () => {
-    renderTab(BacklogTab, ctxWith({ tickets: [], loadingTickets: true }))
+    renderTab(BacklogTab, ctxWith({ tickets: [], ticketsPhase: 'loading' }))
     expect(screen.getByText('Loading…')).toBeInTheDocument()
   })
 

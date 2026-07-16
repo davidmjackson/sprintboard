@@ -39,7 +39,7 @@ export function SprintsTab() {
     sprintsPhase: phase,
     onSprintCreated,
     tickets,
-    loadingTickets,
+    ticketsPhase,
   } = useOutletContext<ProjectShellContext>()
 
   return (
@@ -90,25 +90,20 @@ export function SprintsTab() {
                   `role="generic"`, on which ARIA 1.2 *prohibits* aria-label — browsers
                   honour it so it looks fine, but axe-core flags it.
 
-                  The count is gated on `loadingTickets` because `tickets` is `[]` before the
+                  The count is gated on the ticket phase because `tickets` is `[]` before the
                   shell's read lands: deep-linking to this tab would otherwise render a
                   confident "0 tickets" per sprint and then flip to real numbers. This count
                   is S6.2's only observable evidence that a ticket joined a sprint, so a
                   false zero discredits the one thing the story is meant to show. '—' is not
                   a number and cannot be misread as one.
 
-                  What this does NOT fix, deliberately: a FAILED ticket read still shows
-                  "0 tickets", permanently. `loadingTickets` is derived purely from
-                  project-id tagging and the shell's `.catch()` swallows a rejected
-                  `listTickets` into `{ tickets: [] }` — which *resolves* the load, so on
-                  failure `loadingTickets` is false, not true. The state needed to tell
-                  "empty" from "broken" does not exist here to be read. That is the same
-                  app-wide, pre-existing debt behind BacklogTab's "Nothing in the backlog."
-                  and BoardTab's "No tickets yet." on a paused database. Fixing it means
-                  giving the shell's ticket read a real three-state phase (as S6.1 did for
-                  sprints) — its own story, not smuggled into this one. */}
+                  TODO(S4.6): a FAILED ticket read still shows "0 tickets" here, because this
+                  gates on `'loading'` alone. `ticketsPhase` now makes `'failed'` readable —
+                  the state exists, unlike before, when the shell's `.catch()` flattened a
+                  rejection into `{ tickets: [] }` and there was nothing here to read. Widening
+                  this gate is a later task in this same story. */}
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
-                {loadingTickets ? (
+                {ticketsPhase === 'loading' ? (
                   <>
                     <span aria-hidden="true">—</span>
                     {/* Honest: the number is not known yet, rather than claiming a count. */}

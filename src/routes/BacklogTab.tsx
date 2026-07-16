@@ -17,12 +17,12 @@ import { BlockedBadge } from './BlockedBadge'
  * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, loadingTickets, currentUser, onOpenTicket } =
+  const { tickets, ticketsPhase, currentUser, onOpenTicket } =
     useOutletContext<ProjectShellContext>()
 
   const backlog = selectBacklogTickets(tickets)
 
-  if (loadingTickets && backlog.length === 0) {
+  if (ticketsPhase === 'loading' && backlog.length === 0) {
     return <p className="text-muted-foreground text-sm">Loading…</p>
   }
 
@@ -30,13 +30,10 @@ export function BacklogTab() {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
         {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
-            backlog's point of view those are the same fact. It does NOT cover a third
-            state: the shell swallows a `listTickets` rejection into an empty list
-            (ProjectShell's catch), so a failed read is indistinguishable from an empty
-            backlog and claims this too. Pre-existing and app-wide — BoardTab says "No
-            tickets yet." off the same state — and `loadingTickets` is derived purely
-            from project-id tagging, so it structurally cannot represent "failed".
-            Surfacing read errors is its own story; noted here, not smuggled into S5.1. */}
+            backlog's point of view those are the same fact.
+            TODO(S4.6): it still claims a FAILED read too. That is no longer structural —
+            `ticketsPhase` is a real discriminant now, so `'failed'` is readable right here
+            — only unsurfaced: the error UI is a later task in this same story. */}
         <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
       </div>
     )

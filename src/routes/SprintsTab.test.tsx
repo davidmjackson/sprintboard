@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
-import type { ProjectShellContext, SprintsPhase } from './ProjectShell'
+import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
 
 // The dialog is exercised by its own suite; here it is a button that reports its props
@@ -94,21 +94,21 @@ function renderTab(
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
     tickets?: Ticket[]
-    loadingTickets?: boolean
+    ticketsPhase?: TicketsPhase
   } = {},
 ) {
-  // `loadingTickets` defaults to false — the landed state every other test here means.
+  // `ticketsPhase` defaults to 'loaded' — the landed state every other test here means.
   // It has to be passed explicitly: the `as ProjectShellContext` cast below is an
   // assertion, not a check, so omitting a field the component reads is not a type error.
-  // It would arrive as `undefined`, and `undefined` is falsy — the count tests would pass
-  // for the wrong reason and the loading test could never fail.
+  // It would arrive as `undefined`, which is neither 'loading' nor 'loaded' — the count
+  // tests would pass for the wrong reason and the loading test could never fail.
   const context = {
     project,
     sprints: ctx.sprints ?? [],
     sprintsPhase: ctx.sprintsPhase ?? 'loaded',
     onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
     tickets: ctx.tickets ?? [],
-    loadingTickets: ctx.loadingTickets ?? false,
+    ticketsPhase: ctx.ticketsPhase ?? 'loaded',
   } as ProjectShellContext
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
@@ -217,7 +217,7 @@ describe('SprintsTab', () => {
     renderTab({
       sprints: [sprint({ id: 's1', name: 'Hardening push' })],
       tickets: [], // what the shell serves before `listTickets` resolves
-      loadingTickets: true,
+      ticketsPhase: 'loading',
     })
 
     const row = screen.getByRole('listitem')
