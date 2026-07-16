@@ -19,11 +19,15 @@ import { CreateSprintDialog } from './CreateSprintDialog'
  * and derives `loadingTickets` purely from project-id tagging, so it *structurally cannot*
  * represent "failed" — which is why a paused database renders as "Nothing in the backlog."
  * New code does not inherit that.
+ *
+ * "loading" itself is still derived from project-id tagging (the same device the shell's
+ * ticket read uses), rather than an explicit `setState({ phase: 'loading' })` at the top of
+ * the effect — that would be a synchronous setState in an effect body, which
+ * `react-hooks/set-state-in-effect` (this repo's lint gate) rejects as a cascading-render
+ * hazard. Only "loaded" and "failed" need to be stored; "loading" is just "neither has
+ * landed for this project yet".
  */
-type LoadState =
-  | { phase: 'loading' }
-  | { phase: 'loaded'; sprints: Sprint[] }
-  | { phase: 'failed' }
+type Loaded = { projectId: string; phase: 'loaded'; sprints: Sprint[] } | { projectId: string; phase: 'failed' }
 
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
@@ -40,20 +44,23 @@ function SprintDates({ sprint }: { sprint: Sprint }) {
 
 export function SprintsTab() {
   const { project } = useOutletContext<ProjectShellContext>()
-  const [state, setState] = useState<LoadState>({ phase: 'loading' })
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
 
   useEffect(() => {
     let active = true
-    setState({ phase: 'loading' })
     listSprints(project.id)
-      .then((sprints) => active && setState({ phase: 'loaded', sprints }))
-      .catch(() => active && setState({ phase: 'failed' }))
+      .then((sprints) => active && setLoaded({ projectId: project.id, phase: 'loaded', sprints }))
+      .catch(() => active && setLoaded({ projectId: project.id, phase: 'failed' }))
     return () => {
       active = false
     }
   }, [project.id])
 
-  const sprints = state.phase === 'loaded' ? state.sprints : []
+  // Not this project's result yet (still in flight, or a previous project's landed after
+  // the switch) reads as "loading" — the same tagging device as the shell's ticket read.
+  const current = loaded?.projectId === project.id ? loaded : null
+  const phase = current?.phase ?? 'loading'
+  const sprints = current?.phase === 'loaded' ? current.sprints : []
 
   return (
     <div className="space-y-4">
@@ -67,16 +74,18 @@ export function SprintsTab() {
             // A local mutation, not a refetch — the same reasoning as the shell's
             // append-on-create (S4.1): an unguarded refetch resolving after a project
             // switch would clobber the new project's list.
-            setState((prev) =>
-              prev.phase === 'loaded' ? { phase: 'loaded', sprints: [sprint, ...prev.sprints] } : prev,
+            setLoaded((prev) =>
+              prev && prev.projectId === project.id && prev.phase === 'loaded'
+                ? { projectId: prev.projectId, phase: 'loaded', sprints: [sprint, ...prev.sprints] }
+                : prev,
             )
           }
         />
       </div>
 
-      {state.phase === 'loading' ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
+      {phase === 'loading' ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
 
-      {state.phase === 'failed' ? (
+      {phase === 'failed' ? (
         <div className="border-destructive/50 flex min-h-40 items-center justify-center rounded-lg border border-dashed">
           <p role="alert" className="text-destructive text-sm">
             Could not load sprints. Please refresh to try again.
@@ -84,7 +93,7 @@ export function SprintsTab() {
         </div>
       ) : null}
 
-      {state.phase === 'loaded' && sprints.length === 0 ? (
+      {phase === 'loaded' && sprints.length === 0 ? (
         <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
           <p className="text-muted-foreground text-sm">No sprints yet.</p>
         </div>
