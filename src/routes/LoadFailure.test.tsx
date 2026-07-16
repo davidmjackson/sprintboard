@@ -5,15 +5,25 @@ import { describe, expect, it, vi } from 'vitest'
 import { LoadFailure } from './LoadFailure'
 
 describe('LoadFailure', () => {
-  it('renders the given message with role="alert"', () => {
-    render(<LoadFailure message="Could not load tickets." onRetry={vi.fn()} />)
+  // The copy lives in the component, so these pin the resource→sentence mapping rather than
+  // a message the caller passed in. A caller can no longer choose the words — which is the
+  // point: a raw PostgREST error string has no route to `role="alert"`.
+  it('renders the tickets copy with role="alert"', () => {
+    render(<LoadFailure resource="tickets" onRetry={vi.fn()} />)
 
     const alert = screen.getByRole('alert')
     expect(alert).toHaveTextContent('Could not load tickets.')
   })
 
+  it('renders the sprints copy with role="alert"', () => {
+    render(<LoadFailure resource="sprints" onRetry={vi.fn()} />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Could not load sprints.')
+  })
+
   it('renders a Retry button', () => {
-    render(<LoadFailure message="Could not load tickets." onRetry={vi.fn()} />)
+    render(<LoadFailure resource="tickets" onRetry={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
@@ -21,7 +31,7 @@ describe('LoadFailure', () => {
   it('calls onRetry exactly once when Retry is clicked', async () => {
     const onRetry = vi.fn()
     const user = userEvent.setup()
-    render(<LoadFailure message="Could not load tickets." onRetry={onRetry} />)
+    render(<LoadFailure resource="tickets" onRetry={onRetry} />)
 
     await user.click(screen.getByRole('button', { name: 'Retry' }))
 

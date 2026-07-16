@@ -561,6 +561,25 @@ describe('ProjectShell', () => {
       expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
     })
 
+    // The `loading` half of the same gate, and it is NOT covered by the two tests either side
+    // of it: both drive failed→loaded, so weakening the gate to `ticketsPhase !== 'failed'`
+    // leaves them green while reopening the invisible create through a narrower window. A read
+    // in flight is not a list — click "New ticket" before it lands and `onCreated`'s
+    // `phase === 'loaded'` guard drops the append, then the already-in-flight read resolves
+    // with the pre-create rows and overwrites the state. The row is written, the UI never shows
+    // it, and the user creates it again. Same defect as the failed case, smaller window.
+    it('offers no create trigger while the ticket read is still in flight', async () => {
+      // Never resolves: the read stays in flight, so the phase stays `loading` for the
+      // whole test rather than racing the assertion.
+      mockList.mockReturnValue(new Promise(() => {}))
+      renderShell('/projects/p1/backlog')
+
+      // Proves we are actually in `loading` — without this the assertion below could pass
+      // simply because the shell had not rendered the header yet.
+      expect(await screen.findByText('Loading…')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+    })
+
     // The other side of the gate: it must be a phase gate, not a blanket removal. Without
     // this, deleting the whole dialog passes the test above.
     it('offers the create trigger again once the read recovers', async () => {

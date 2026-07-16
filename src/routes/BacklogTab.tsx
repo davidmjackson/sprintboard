@@ -32,7 +32,7 @@ export function BacklogTab() {
     // on a failed read, so falling through would render "Nothing in the backlog." — a
     // confident claim about work we could not see. The empty state below now speaks only
     // for a read that actually landed.
-    return <LoadFailure message="Could not load tickets." onRetry={onRetry} />
+    return <LoadFailure resource="tickets" onRetry={onRetry} />
   }
 
   if (backlog.length === 0) {

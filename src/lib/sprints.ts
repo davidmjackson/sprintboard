@@ -70,10 +70,11 @@ export async function createSprint(input: {
  * to the owner, but the owner has many projects — without the filter this returns every
  * project's sprints. Same reasoning as `listTickets`.
  *
- * This throws rather than resolving to `[]` on error. The shell's ticket read swallows its
- * rejection into an empty list, which is why a paused database renders as "Nothing in the
- * backlog"; `SprintsTab` renders a real error state instead, and that needs a rejection to
- * catch.
+ * This throws rather than resolving to `[]` on error, and that is the load-bearing part: `[]`
+ * is indistinguishable from "this project has no sprints", so a caller handed one could not
+ * tell a failed read from an empty one and would render "No sprints yet." over a database it
+ * never reached. Only a rejection carries that fact — `ProjectShell`'s `.catch()` turns it
+ * into `phase: 'failed'`. Resolving to `[]` here would silently delete the failed state.
  */
 export async function listSprints(projectId: string): Promise<Sprint[]> {
   const { data, error } = await supabase

@@ -28,7 +28,7 @@ export function BoardTab() {
   }
 
   if (ticketsPhase === 'failed') {
-    return <LoadFailure message="Could not load tickets." onRetry={onRetry} />
+    return <LoadFailure resource="tickets" onRetry={onRetry} />
   }
 
   return (

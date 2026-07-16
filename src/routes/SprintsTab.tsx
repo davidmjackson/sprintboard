@@ -61,9 +61,7 @@ export function SprintsTab() {
 
       {/* `onRetry` re-runs both of the shell's reads, so this one button also clears a
           failed ticket count in the rows below — the two reads usually fail together. */}
-      {phase === 'failed' ? (
-        <LoadFailure message="Could not load sprints." onRetry={onRetry} />
-      ) : null}
+      {phase === 'failed' ? <LoadFailure resource="sprints" onRetry={onRetry} /> : null}
 
       {phase === 'loaded' && sprints.length === 0 ? (
         <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
