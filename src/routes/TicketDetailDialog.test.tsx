@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
 import type { Ticket } from '@/lib/domain'
@@ -469,5 +469,214 @@ describe('TicketDetailDialog', () => {
     expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument()
     expect(screen.getByText('Ticket B summary')).toBeInTheDocument()
     expect(screen.queryByText('Stale draft text')).not.toBeInTheDocument()
+  })
+
+  it('does not let a stale in-flight save from a closed instance clobber a reopened instance edit (Ultracode Critical)', async () => {
+    // Repro: open A, edit story_points (save stays pending) → CLOSE (unmounts this
+    // instance under ProjectShell's key={selected?.id}) → REOPEN A (fresh instance) →
+    // edit summary (resolves; parent now holds both edits) → the stale story_points
+    // save resolves. Without the mounted guard the dead instance's continuation merges
+    // onto its FROZEN ticketRef and reverts the summary the reopened instance just saved.
+    const firstSave = deferred<UpdateTicketResult>()
+    let call = 0
+    updateTicket.mockImplementation((_id, patch) => {
+      call += 1
+      if (call === 1) return firstSave.promise // story_points save — held pending
+      return Promise.resolve({ ok: true, ticket: { ...base, ...patch } as Ticket })
+    })
+
+    const onUpdated = vi.fn()
+    // Stands in for ProjectShell: owns the ticket, keys the dialog by id, and mounts it
+    // only when `open` — so open=false unmounts the instance exactly like a real close.
+    function Harness({ open }: { open: boolean }) {
+      const [t, setT] = useState(base)
+      return open ? (
+        <TicketDetailDialog
+          key={t.id}
+          ticket={t}
+          currentUser={user}
+          onOpenChange={() => {}}
+          onUpdated={(next) => {
+            setT(next)
+            onUpdated(next)
+          }}
+        />
+      ) : null
+    }
+
+    const { rerender } = render(<Harness open={true} />)
+
+    // Instance 1: edit story points; the save stays pending.
+    await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
+    await userEvent.type(screen.getByRole('spinbutton', { name: /story points/i }), '5{Enter}')
+    expect(updateTicket).toHaveBeenCalledWith('t1', { story_points: 5 })
+
+    // Close: instance 1 unmounts while its save is still in flight.
+    rerender(<Harness open={false} />)
+    // Reopen the SAME ticket: a fresh instance mounts, carrying both edits' parent state.
+    rerender(<Harness open={true} />)
+
+    // Instance 2: rename the summary; this save resolves immediately.
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), 'Renamed B{Enter}')
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /edit summary/i })).toHaveTextContent('Renamed B'),
+    )
+
+    // The stale (dead-instance) story_points save finally resolves. Flush its continuation.
+    await act(async () => {
+      firstSave.resolve({
+        ok: true,
+        ticket: { ...base, story_points: 5, updated_at: '2026-07-15T00:09:00Z' },
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    // The reopened instance's summary edit must survive — never reverted to the original.
+    expect(screen.getByRole('button', { name: /edit summary/i })).toHaveTextContent('Renamed B')
+    expect(screen.queryByText('Wire the board')).not.toBeInTheDocument()
+  })
+
+  it('rejects an empty, whitespace-only, or over-long summary without saving, then accepts a valid rename', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, summary: 'New Title' } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+
+    // (a) cleared to empty — required.
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), '{Enter}')
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/summary is required/i)
+
+    // (b) whitespace-only — trims to empty, still required.
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), '   {Enter}')
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/summary is required/i)
+
+    // (c) over the 200-char max.
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), 'x'.repeat(201))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), '{Enter}')
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/200 characters or fewer/i)
+
+    // (d) a valid rename with surrounding whitespace commits the TRIMMED value.
+    await userEvent.click(screen.getByRole('button', { name: /edit summary/i }))
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), '  New Title  {Enter}')
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { summary: 'New Title' }))
+  })
+
+  it('commits a value on blur but does NOT steal focus back to the trigger (blur is not a keyboard commit)', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, summary: 'Blurred' } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+
+    const editSummaryBtn = screen.getByRole('button', { name: /edit summary/i })
+    await userEvent.click(editSummaryBtn)
+    await userEvent.clear(screen.getByRole('textbox', { name: /summary/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /summary/i }), 'Blurred')
+    // Tab out of the field — focus is already moving intentionally.
+    await userEvent.tab()
+
+    // The value committed…
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { summary: 'Blurred' }))
+    // …but focus was NOT yanked back to the summary trigger button.
+    expect(document.activeElement).not.toBe(
+      screen.getByRole('button', { name: /edit summary/i }),
+    )
+  })
+
+  it('commits a type change, sending the type patch', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, type: 'bug' } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /type/i }), 'bug')
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { type: 'bug' }))
+  })
+
+  it('commits a description edit, sending the description patch', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, description: 'Some detail' } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /edit description/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /^description$/i }), 'Some detail')
+    await userEvent.tab() // description is multiline — blur commits
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('t1', { description: 'Some detail' }),
+    )
+  })
+
+  it('commits an acceptance-criteria edit, sending the acceptance_criteria patch', async () => {
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...base, acceptance_criteria: 'Given, when, then' },
+    })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /edit acceptance criteria/i }))
+    await userEvent.type(
+      screen.getByRole('textbox', { name: /acceptance criteria/i }),
+      'Given, when, then',
+    )
+    await userEvent.tab() // multiline — blur commits
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('t1', {
+        acceptance_criteria: 'Given, when, then',
+      }),
+    )
+  })
+
+  it('commits a labels edit, sending the parsed labels array', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, labels: ['ui', 'backend'] } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /edit labels/i }))
+    await userEvent.type(screen.getByRole('textbox', { name: /labels/i }), 'ui, backend{Enter}')
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('t1', { labels: ['ui', 'backend'] }),
+    )
   })
 })

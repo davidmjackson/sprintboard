@@ -76,10 +76,13 @@ function EditableText({
     setEditing(true)
     onEditingChange?.(true)
   }
-  function commit() {
+  function commit(refocus: boolean) {
     setEditing(false)
     onEditingChange?.(false)
-    refocusTriggerRef.current = true
+    // Refocus-to-trigger is a KEYBOARD affordance (Enter commits). A blur means focus is
+    // already moving on intentionally (Tab, or a click onto another field's edit button),
+    // so yanking it back would steal it — force the user to Tab twice / re-click.
+    if (refocus) refocusTriggerRef.current = true
     if (draft !== value) onCommit(draft)
   }
   function cancel() {
@@ -117,12 +120,12 @@ function EditableText({
     'aria-label': ariaLabel,
     value: draft,
     onChange: (e: { target: { value: string } }) => setDraft(e.target.value),
-    onBlur: commit,
+    onBlur: () => commit(false),
     onKeyDown: (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') cancel()
       if (e.key === 'Enter' && !multiline) {
         e.preventDefault()
-        commit()
+        commit(true)
       }
     },
   }
@@ -167,6 +170,19 @@ function parseStoryPoints(raw: string): { ok: true; value: number | null } | { o
   return { ok: true, value: Number(trimmed) }
 }
 
+/** Same rule as `CreateTicketDialog`'s zod schema for `summary`
+ *  (`.trim().min(1).max(200)`) — the edit path has no `<form>`/zod, so it re-validates
+ *  the same shape by hand. `summary text not null` accepts `''`, so without this a
+ *  cleared or whitespace-only summary would persist and produce an untitled row.
+ *  Returns the TRIMMED value on success. */
+function parseSummary(raw: string): { ok: true; value: string } | { ok: false; message: string } {
+  const trimmed = raw.trim()
+  if (trimmed.length < 1) return { ok: false, message: 'Summary is required' }
+  if (trimmed.length > 200)
+    return { ok: false, message: 'Keep the summary to 200 characters or fewer' }
+  return { ok: true, value: trimmed }
+}
+
 export function TicketDetailDialog({
   ticket,
   currentUser,
@@ -204,6 +220,22 @@ export function TicketDetailDialog({
     ticketRef.current = ticket
   })
 
+  // A commit()'s async continuation must not touch parent state after THIS instance
+  // unmounts. ProjectShell renders us with key={selected?.id ?? 'none'}, so closing then
+  // reopening the SAME ticket unmounts this instance and mounts a fresh one that now owns
+  // the ticket. A save still in flight when the old instance dies would otherwise resolve
+  // against a frozen ticketRef (its sync effect has no cleanup) and clobber the fresh
+  // instance's already-saved edits (Ultracode Critical). Set true on (re)mount, false on
+  // unmount — the explicit true-on-mount keeps it correct under React StrictMode's
+  // mount→unmount→mount.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   if (!ticket) return null
 
   const error = errorFor?.ticketId === ticket.id ? errorFor.message : null
@@ -215,12 +247,16 @@ export function TicketDetailDialog({
 
     onUpdated({ ...current, ...patch } as Ticket) // optimistic — merge onto the latest ticket
     const result = await updateTicket(current.id, patch)
-    // `ticketRef.current` may have moved on by the time this resolves — to a DIFFERENT
-    // ticket (the dialog switched tickets while this save was in flight) or to `null`
-    // (the dialog closed). Merging onto it unguarded would emit a wrong-identity object
-    // (or, for null, an id-less `{}`). Fall back to the commit-time `current` — which is
-    // always non-null and always has `id === current.id` — whenever the live ref no
-    // longer matches the ticket this save belongs to.
+    // This instance is gone (close→reopen remounted a fresh one that now owns the ticket):
+    // its optimistic value was already applied to parent state before the await and carried
+    // forward by the fresh instance, so reconciling here would only clobber the live
+    // instance's newer edits. Bail (Ultracode Critical — the mountedRef guard).
+    if (!mountedRef.current) return
+    // `ticketRef.current` may also have moved on WITHIN this live instance — to a DIFFERENT
+    // ticket (the dialog switched tickets while this save was in flight) or to `null`.
+    // Merging onto it unguarded would emit a wrong-identity object (or, for null, an id-less
+    // `{}`). Fall back to the commit-time `current` — always non-null, always
+    // `id === current.id` — whenever the live ref no longer matches this save's ticket.
     const base = ticketRef.current?.id === current.id ? ticketRef.current : current
     if (!result.ok) {
       // Revert only the fields this commit changed, merged onto whatever is latest NOW —
@@ -244,7 +280,7 @@ export function TicketDetailDialog({
   }
 
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
-  const initial = assigneeValue ? currentUser.email[0]!.toUpperCase() : null
+  const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
 
   return (
     <Dialog open={ticket !== null} onOpenChange={onOpenChange}>
@@ -279,7 +315,14 @@ export function TicketDetailDialog({
               value={ticket.summary}
               ariaLabel="summary"
               heading
-              onCommit={(v) => commit({ summary: v })}
+              onCommit={(v) => {
+                const parsed = parseSummary(v)
+                if (!parsed.ok) {
+                  setErrorFor({ ticketId: ticket.id, message: parsed.message })
+                  return
+                }
+                commit({ summary: parsed.value })
+              }}
               onEditingChange={handleEditingChange}
             />
 
