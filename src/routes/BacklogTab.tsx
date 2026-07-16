@@ -4,6 +4,7 @@ import { TICKET_TYPE_LABELS } from '@/lib/domain'
 import { selectBacklogTickets } from '@/lib/backlog'
 import type { ProjectShellContext } from './ProjectShell'
 import { BlockedBadge } from './BlockedBadge'
+import { LoadFailure } from './LoadFailure'
 
 /**
  * The backlog: the project's tickets with **no sprint**, ordered by number (the order
@@ -17,7 +18,7 @@ import { BlockedBadge } from './BlockedBadge'
  * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, ticketsPhase, currentUser, onOpenTicket } =
+  const { tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
     useOutletContext<ProjectShellContext>()
 
   const backlog = selectBacklogTickets(tickets)
@@ -26,14 +27,20 @@ export function BacklogTab() {
     return <p className="text-muted-foreground text-sm">Loading…</p>
   }
 
+  if (ticketsPhase === 'failed') {
+    // Checked BEFORE the empty state, and that order is the whole story: `tickets` is `[]`
+    // on a failed read, so falling through would render "Nothing in the backlog." — a
+    // confident claim about work we could not see. The empty state below now speaks only
+    // for a read that actually landed.
+    return <LoadFailure message="Could not load tickets." onRetry={onRetry} />
+  }
+
   if (backlog.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
         {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
-            backlog's point of view those are the same fact.
-            TODO(S4.6): it still claims a FAILED read too. That is no longer structural —
-            `ticketsPhase` is a real discriminant now, so `'failed'` is readable right here
-            — only unsurfaced: the error UI is a later task in this same story. */}
+            backlog's point of view those are the same fact. A failed read is NOT one of
+            them and no longer reaches here. */}
         <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
       </div>
     )

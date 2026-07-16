@@ -173,9 +173,13 @@ describe('ProjectShell', () => {
     expect(screen.getByRole('heading', { name: /Apple/ })).toBeInTheDocument()
   })
 
-  it('defaults to the Board tab (renders the four columns) with no tickets', () => {
+  it('defaults to the Board tab (renders the four columns) with no tickets', async () => {
     renderShell('/projects/p1')
-    expect(screen.getByRole('heading', { name: 'To Do' })).toBeInTheDocument()
+    // Awaited, not synchronous: since S4.6 the board renders "Loading…" until the read
+    // lands, rather than four confident "No tickets yet." columns over a list that is
+    // merely `[]` so far. The assertion under test is which TAB is the default, so it
+    // waits for the read the same way the Backlog test below does.
+    expect(await screen.findByRole('heading', { name: 'To Do' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Done' })).toBeInTheDocument()
   })
 
