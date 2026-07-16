@@ -75,7 +75,7 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 ---
 
 ## Data model
-Defined in `sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
+Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactly:
 - **Ticket keys:** PROJECTKEY-N via the `project_counters` row and the BEFORE
   INSERT trigger. Atomic and race-safe. Never generate keys with count(*).
 - **Blocked:** the `sync_blocked_fields` trigger keeps is_blocked,
@@ -148,9 +148,12 @@ the same shape: the check that ran was not the check that was claimed.
 ---
 
 ## Jira tracking
-Claude Code CLI owns the Jira board through the Atlassian connector.
+Claude Code CLI owns the Jira board (project key `SPRIN`) through the **Composio**
+MCP connector — there is no native Atlassian connector on this machine. The Jira
+connection persists across sessions; check `has_active_connection` before ever
+asking for a re-auth. Transition ids are per-workflow: fetch them, never hardcode.
 - Create the 8 epics first, then stories linked to their epic. Source of truth
-  is `sprintboard_phase1_backlog.md`.
+  is `docs/sprintboard_phase1_backlog.md`.
 - Confirm the Jira workflow columns map to the four fixed statuses. If they do
   not, adjust the Jira workflow, not the app scope.
 - Move each issue as work progresses: In Progress on start, In Review on PR
@@ -188,6 +191,6 @@ for. Don't.
 the endpoint cannot rot underneath the cron. `npm run keepalive` triggers it manually.
 
 ## Key files
-- `sprintboard_phase1_schema.sql` — the database schema.
-- `sprintboard_phase1_backlog.md` — epics and stories with acceptance criteria.
+- `docs/sprintboard_phase1_schema.sql` — the database schema.
+- `docs/sprintboard_phase1_backlog.md` — epics and stories with acceptance criteria.
 - `CLAUDE.md` — this file.
