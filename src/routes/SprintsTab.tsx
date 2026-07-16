@@ -6,19 +6,6 @@ import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CreateSprintDialog } from './CreateSprintDialog'
 
-/**
- * The project's sprints, newest first, with a create dialog.
- *
- * The sprints themselves live in `ProjectShellContext` (S6.2): the shell renders the ticket
- * detail dialog, whose sprint picker needs the same list this tab shows, so the read was
- * hoisted there and this tab became a pure view of it. The three-state discriminant
- * (`sprintsPhase`) and the reasoning behind it moved with it — see `ProjectShell`.
- *
- * The create trigger only renders once `sprintsPhase === 'loaded'`. `sprints` is `[]` during
- * both loading and failed, so `defaultSprintName` would otherwise number off an empty array —
- * a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the shell's
- * `onSprintCreated` guard drops it) if the read failed.
- */
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
     return <span className="text-muted-foreground text-xs">No dates set</span>
@@ -32,6 +19,19 @@ function SprintDates({ sprint }: { sprint: Sprint }) {
   )
 }
 
+/**
+ * The project's sprints, newest first, with a create dialog.
+ *
+ * The sprints themselves live in `ProjectShellContext` (S6.2): the shell renders the ticket
+ * detail dialog, whose sprint picker needs the same list this tab shows, so the read was
+ * hoisted there and this tab became a pure view of it. The three-state discriminant
+ * (`sprintsPhase`) and the reasoning behind it moved with it — see `ProjectShell`.
+ *
+ * The create trigger only renders once `sprintsPhase === 'loaded'`. `sprints` is `[]` during
+ * both loading and failed, so `defaultSprintName` would otherwise number off an empty array —
+ * a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the shell's
+ * `onSprintCreated` guard drops it) if the read failed.
+ */
 export function SprintsTab() {
   const {
     project,
@@ -39,6 +39,7 @@ export function SprintsTab() {
     sprintsPhase: phase,
     onSprintCreated,
     tickets,
+    loadingTickets,
   } = useOutletContext<ProjectShellContext>()
 
   return (
@@ -87,10 +88,38 @@ export function SprintsTab() {
                   it. The bare number needs a unit for screen readers, and it is real
                   `sr-only` text rather than an `aria-label`: a <span> maps to
                   `role="generic"`, on which ARIA 1.2 *prohibits* aria-label — browsers
-                  honour it so it looks fine, but axe-core flags it. */}
+                  honour it so it looks fine, but axe-core flags it.
+
+                  The count is gated on `loadingTickets` because `tickets` is `[]` before the
+                  shell's read lands: deep-linking to this tab would otherwise render a
+                  confident "0 tickets" per sprint and then flip to real numbers. This count
+                  is S6.2's only observable evidence that a ticket joined a sprint, so a
+                  false zero discredits the one thing the story is meant to show. '—' is not
+                  a number and cannot be misread as one.
+
+                  What this does NOT fix, deliberately: a FAILED ticket read still shows
+                  "0 tickets", permanently. `loadingTickets` is derived purely from
+                  project-id tagging and the shell's `.catch()` swallows a rejected
+                  `listTickets` into `{ tickets: [] }` — which *resolves* the load, so on
+                  failure `loadingTickets` is false, not true. The state needed to tell
+                  "empty" from "broken" does not exist here to be read. That is the same
+                  app-wide, pre-existing debt behind BacklogTab's "Nothing in the backlog."
+                  and BoardTab's "No tickets yet." on a paused database. Fixing it means
+                  giving the shell's ticket read a real three-state phase (as S6.1 did for
+                  sprints) — its own story, not smuggled into this one. */}
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
-                {selectSprintTickets(tickets, sprint.id).length}
-                <span className="sr-only"> tickets</span>
+                {loadingTickets ? (
+                  <>
+                    <span aria-hidden="true">—</span>
+                    {/* Honest: the number is not known yet, rather than claiming a count. */}
+                    <span className="sr-only">Ticket count loading</span>
+                  </>
+                ) : (
+                  <>
+                    {selectSprintTickets(tickets, sprint.id).length}
+                    <span className="sr-only"> tickets</span>
+                  </>
+                )}
               </span>
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
                 {SPRINT_STATUS_LABELS[sprint.status]}

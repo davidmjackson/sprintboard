@@ -94,14 +94,21 @@ function renderTab(
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
     tickets?: Ticket[]
+    loadingTickets?: boolean
   } = {},
 ) {
+  // `loadingTickets` defaults to false — the landed state every other test here means.
+  // It has to be passed explicitly: the `as ProjectShellContext` cast below is an
+  // assertion, not a check, so omitting a field the component reads is not a type error.
+  // It would arrive as `undefined`, and `undefined` is falsy — the count tests would pass
+  // for the wrong reason and the loading test could never fail.
   const context = {
     project,
     sprints: ctx.sprints ?? [],
     sprintsPhase: ctx.sprintsPhase ?? 'loaded',
     onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
     tickets: ctx.tickets ?? [],
+    loadingTickets: ctx.loadingTickets ?? false,
   } as ProjectShellContext
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
@@ -200,6 +207,26 @@ describe('SprintsTab', () => {
     renderTab({ sprints: [sprint({ id: 's1' })], tickets: [] })
 
     expect(within(screen.getByRole('listitem')).getByText('0')).toBeVisible()
+  })
+
+  // The shell serves `tickets: []` while its read is in flight, so a count rendered
+  // ungated reads "0 tickets" on every sprint until it lands, then flips to the truth.
+  // The `not('0')` assertion is the point of the test — asserting only that '—' is
+  // present would also pass for a badge that rendered both.
+  it('shows — rather than a false 0 while the ticket list has not landed', () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Hardening push' })],
+      tickets: [], // what the shell serves before `listTickets` resolves
+      loadingTickets: true,
+    })
+
+    const row = screen.getByRole('listitem')
+    expect(within(row).getByText('—')).toBeVisible()
+    expect(within(row).queryByText('0')).toBeNull()
+    // The em-dash is aria-hidden, so the count's meaning has to reach a screen reader as
+    // real text; "loading" is honest where "0 tickets" would be a claim we cannot make.
+    expect(within(row).getByText('Ticket count loading')).toBeInTheDocument()
+    expect(within(row).queryByText('tickets')).toBeNull()
   })
 
   // The counterweight to the test above: without this, a count that ignored `sprint_id`

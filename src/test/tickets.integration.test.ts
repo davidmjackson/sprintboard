@@ -739,6 +739,14 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
     // singleton in as A is what makes the app's write path owner-scoped here exactly as
     // it is in the browser; without it every update below would be an anonymous write
     // that RLS filters to zero rows.
+    //
+    // ORDER DEPENDENCY, for whoever appends the next describe to this file: this signs in
+    // a MODULE-SCOPE singleton, so its auth state outlives this block. Vitest runs a
+    // file's describes in order and `afterAll` below signs it back out — but a later
+    // describe that drives any app data-layer function (rather than the raw `a`/`b`
+    // clients every other block here uses) inherits whatever this left behind, and would
+    // be the only block in the file whose result depends on one running before it. Sign
+    // the app client in from your own `beforeAll`; do not lean on this one.
     const { email, password } = RLS_USERS.A
     const { error: authErr } = await appClient.auth.signInWithPassword({
       email: email!,
@@ -748,9 +756,14 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
   }, 30_000)
 
   afterAll(async () => {
-    await appClient?.auth.signOut()
+    // Delete FIRST, sign out second. This suite runs against the real shared Supabase
+    // project, so the delete is the load-bearing statement: if `signOut` went first and
+    // threw, the throw would abort this hook and leak the project, its sprint and its
+    // tickets into the hosted database permanently. Signing out only tidies a client
+    // that the process is about to discard anyway.
     // The project cascade removes its tickets and sprints.
     await a.from('projects').delete().eq('id', projectId)
+    await appClient?.auth.signOut()
   }, 30_000)
 
   /** A fresh backlog ticket (`sprint_id` defaults to null), created through the raw
