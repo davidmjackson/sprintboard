@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
+import { selectBacklogTickets } from '@/lib/backlog'
 import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
 
 assertCredentialsOrExplain()
@@ -509,3 +510,165 @@ describe.skipIf(!hasRlsCredentials)(
     }, 30_000)
   },
 )
+
+/**
+ * S5.1 — the backlog rule against the real database: **the backlog is exactly
+ * `sprint_id is null`.**
+ *
+ * The rule itself is covered by the client tests (`backlog.test.ts` and the BacklogTab
+ * cases in `BoardTab.test.tsx` — revert `selectBacklogTickets` and they go red). What
+ * those cannot cover is that a *real* row behaves the way their hand-built fixtures
+ * assume, and today nothing in the app can produce one: there is no sprint UI yet (E6)
+ * and `createTicket` never sends `sprint_id`, so every row the app writes is already
+ * null. So this suite does what the app cannot — inserts a real completed sprint, parks
+ * a Done ticket in it — and pins the three things only Postgres can answer: the column
+ * defaults to null, the DB's own `is('sprint_id', null)` agrees with our client-side
+ * rule, and deleting a sprint returns its tickets to the backlog.
+ */
+describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
+  let a: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+  let sprintId: string
+  let backlogTicketId: string
+  let sprintedTicketId: string
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+
+    const { data: project, error: projectErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Backlog rule', key: runKey() })
+      .select()
+      .single()
+    if (projectErr) throw projectErr
+    projectId = project!.id
+
+    // A COMPLETED sprint, not an active one: the AC that bites is "a Done ticket in a
+    // completed sprint does not appear in the backlog".
+    const { data: sprint, error: sprintErr } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Sprint 1', status: 'complete' })
+      .select()
+      .single()
+    if (sprintErr) throw sprintErr
+    sprintId = sprint!.id
+
+    const { data: sprinted, error: sprintedErr } = await a
+      .from('tickets')
+      .insert({
+        project_id: projectId,
+        summary: 'Finished last sprint',
+        type: 'story',
+        status: 'done',
+        sprint_id: sprintId,
+      })
+      .select()
+      .single()
+    if (sprintedErr) throw sprintedErr
+    sprintedTicketId = sprinted!.id
+
+    const { data: backlog, error: backlogErr } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, summary: 'Not yet sprinted', type: 'story' })
+      .select()
+      .single()
+    if (backlogErr) throw backlogErr
+    backlogTicketId = backlog!.id
+  }, 30_000)
+
+  afterAll(async () => {
+    // The project cascade removes its tickets and sprints.
+    await a.from('projects').delete().eq('id', projectId)
+  }, 30_000)
+
+  it('defaults sprint_id to null — a ticket created without one is backlog', async () => {
+    const { data } = await a.from('tickets').select('sprint_id').eq('id', backlogTicketId).single()
+    expect(data!.sprint_id).toBeNull()
+  })
+
+  it('accepts a ticket parked in a sprint (positive control for the filter below)', async () => {
+    // Without this, the exclusion test below could pass simply because the insert failed
+    // and the row never existed. RLS filters, it does not raise — never trust a negative
+    // on its own.
+    const { data } = await a
+      .from('tickets')
+      .select('sprint_id, status')
+      .eq('id', sprintedTicketId)
+      .single()
+    expect(data!.sprint_id).toBe(sprintId)
+    expect(data!.status).toBe('done')
+  })
+
+  it('excludes a Done ticket in a completed sprint from `sprint_id is null` (S5.1 AC)', async () => {
+    const { data, error } = await a
+      .from('tickets')
+      .select('id')
+      .eq('project_id', projectId)
+      .is('sprint_id', null)
+    expect(error).toBeNull()
+    const ids = (data ?? []).map((t) => t.id)
+    expect(ids).toContain(backlogTicketId)
+    expect(ids).not.toContain(sprintedTicketId)
+  })
+
+  it('agrees with the client-side rule: selectBacklogTickets(listTickets()) === the DB filter', async () => {
+    // The app filters client-side over the shell's shared list; the column comment and
+    // `tickets_sprint_idx` describe the same rule server-side. This pins the two together,
+    // so a future move to a server-side `.is('sprint_id', null)` cannot silently disagree.
+    const { data: all } = await a.from('tickets').select().eq('project_id', projectId)
+    const clientSide = selectBacklogTickets(all as never).map((t) => t.id)
+
+    const { data: serverSide } = await a
+      .from('tickets')
+      .select('id')
+      .eq('project_id', projectId)
+      .is('sprint_id', null)
+
+    expect(clientSide.sort()).toEqual((serverSide ?? []).map((t) => t.id).sort())
+    expect(clientSide).toEqual([backlogTicketId])
+  })
+
+  it('returns a ticket to the backlog when its sprint is deleted (on delete set null)', async () => {
+    // `tickets_sprint_fk ... on delete set null (sprint_id)` — column-qualified, so
+    // deleting a sprint nulls only sprint_id and never aborts on not-null project_id.
+    const { data: sprint, error: sprintErr } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Doomed', status: 'future' })
+      .select()
+      .single()
+    if (sprintErr) throw sprintErr
+
+    const { data: ticket, error: ticketErr } = await a
+      .from('tickets')
+      .insert({
+        project_id: projectId,
+        summary: 'Sprint about to vanish',
+        type: 'task',
+        sprint_id: sprint!.id,
+      })
+      .select()
+      .single()
+    if (ticketErr) throw ticketErr
+    expect(ticket!.sprint_id).toBe(sprint!.id)
+
+    const { error: delErr } = await a.from('sprints').delete().eq('id', sprint!.id)
+    expect(delErr).toBeNull()
+
+    const { data: row } = await a
+      .from('tickets')
+      .select('id, sprint_id, project_id')
+      .eq('id', ticket!.id)
+      .single()
+    expect(row!.id).toBe(ticket!.id) // ticket survives
+    expect(row!.sprint_id).toBeNull() // and is back in the backlog
+    expect(row!.project_id).toBe(projectId) // project_id untouched
+
+    // This test's ticket is now permanently unsprinted, i.e. a second row in this
+    // shared project's backlog. Remove it rather than leave it for whatever assertion
+    // lands below: the exact-list check above ("=== [backlogTicketId]") is the kind that
+    // would then fail pointing at the backlog rule, which would be fine.
+    await a.from('tickets').delete().eq('id', ticket!.id)
+  }, 30_000)
+})

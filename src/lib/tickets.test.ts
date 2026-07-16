@@ -19,6 +19,7 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
+const select = vi.fn(() => ({ eq }))
 const del = vi.fn()
 const update = vi.fn(() => ({ eq: () => ({ select: () => ({ single }) }) }))
 beforeEach(() => {
@@ -26,13 +27,15 @@ beforeEach(() => {
   order.mockReset()
   eq.mockReset()
   eq.mockReturnValue({ order })
+  select.mockReset()
+  select.mockReturnValue({ eq })
   del.mockReset()
   update.mockReset()
   update.mockReturnValue({ eq: () => ({ select: () => ({ single }) }) })
   vi.mocked(supabase.from).mockReset()
   vi.mocked(supabase.from).mockReturnValue({
     insert: () => ({ select: () => ({ single }) }),
-    select: () => ({ eq }),
+    select,
     update,
     delete: () => ({ eq: () => ({ select: del }) }),
   } as unknown as ReturnType<typeof supabase.from>)
@@ -62,6 +65,20 @@ describe('listTickets', () => {
     // has. Assert it, so a regression to `.eq('id', …)` or a dropped order fails here.
     expect(eq).toHaveBeenCalledWith('project_id', 'p1')
     expect(order).toHaveBeenCalledWith('number', { ascending: true })
+  })
+
+  it('selects every column, so the client-side row rules keep working', async () => {
+    order.mockResolvedValue({ data: [], error: null })
+    await listTickets('p1')
+    // Narrowing this to an explicit column list looks like a harmless perf tidy-up and
+    // is silently catastrophic: the returned rows are cast `as Ticket[]` unchecked, so a
+    // dropped column arrives as `undefined` while TypeScript still swears it is there.
+    // Drop `sprint_id` and `isBacklogTicket` (strict `=== null`) goes false for every
+    // row — every project's Backlog renders empty, for ever, with no type error. Every
+    // other test hand-builds its fixtures, so this assertion is the only thing standing
+    // between that edit and a green suite. Same applies to `is_blocked`, `story_points`
+    // and `assignee_id`, which the board and backlog rows read straight off the row.
+    expect(select).toHaveBeenCalledWith()
   })
 
   it('returns an empty array when there are none', async () => {

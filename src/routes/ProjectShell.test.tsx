@@ -109,13 +109,13 @@ describe('ProjectShell', () => {
     const user = userEvent.setup()
     renderShell('/projects/p1')
     await user.click(screen.getByRole('link', { name: 'Backlog' }))
-    expect(await screen.findByText('No tickets yet.')).toBeInTheDocument()
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
   })
 
   it('restores the Backlog tab from a deep link on load (survives a refresh)', async () => {
     renderShell('/projects/p1/backlog')
-    expect(await screen.findByText('No tickets yet.')).toBeInTheDocument()
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
   })
 
