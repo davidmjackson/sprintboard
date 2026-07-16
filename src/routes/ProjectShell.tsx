@@ -16,6 +16,7 @@ export type ProjectShellContext = {
   loadingTickets: boolean
   onOpenTicket: (ticket: Ticket) => void
   onTicketUpdated: (ticket: Ticket) => void
+  onTicketDeleted: (id: string) => void
 }
 
 /**
@@ -75,6 +76,13 @@ export function ProjectShell() {
         : prev,
     )
 
+  const onTicketDeleted = (id: string) =>
+    setLoaded((prev) =>
+      prev && prev.projectId === project.id
+        ? { projectId: prev.projectId, tickets: prev.tickets.filter((t) => t.id !== id) }
+        : prev,
+    )
+
   const tabClass = ({ isActive }: { isActive: boolean }) =>
     cn(
       'border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
@@ -124,6 +132,7 @@ export function ProjectShell() {
               loadingTickets,
               onOpenTicket: (t) => setSelectedId(t.id),
               onTicketUpdated,
+              onTicketDeleted,
             } satisfies ProjectShellContext
           }
         />
@@ -135,6 +144,7 @@ export function ProjectShell() {
             if (!open) setSelectedId(null)
           }}
           onUpdated={onTicketUpdated}
+          onDeleted={onTicketDeleted}
         />
       </div>
     </div>
