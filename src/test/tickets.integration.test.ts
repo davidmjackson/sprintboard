@@ -529,6 +529,11 @@ describe.skipIf(!hasRlsCredentials)(
  * a Done ticket in it — and pins the three things only Postgres can answer: the column
  * defaults to null, the DB's own `is('sprint_id', null)` agrees with our client-side
  * rule, and deleting a sprint returns its tickets to the backlog.
+ *
+ * It also owns this file's coverage of `tickets_sprint_fk` — both halves of it: the
+ * `on delete set null` behaviour above, and (last test) that the composite fk rejects a
+ * sprint belonging to a DIFFERENT project, which is the guarantee `TicketDetailDialog`'s
+ * unfiltered sprint picker leans on.
  */
 describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   let a: SupabaseClient<Database>
@@ -537,6 +542,11 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   let sprintId: string
   let backlogTicketId: string
   let sprintedTicketId: string
+  // A SECOND project owned by the SAME user, and a sprint inside it — the fixture for the
+  // cross-project rejection test at the bottom of this block. Owned by A, like everything
+  // else here, so RLS is not what stops the write.
+  let otherProjectId: string
+  let otherSprintId: string
 
   beforeAll(async () => {
     a = await signIn('A')
@@ -549,6 +559,22 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
       .single()
     if (projectErr) throw projectErr
     projectId = project!.id
+
+    const { data: otherProject, error: otherProjectErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Backlog rule other', key: runKey() })
+      .select()
+      .single()
+    if (otherProjectErr) throw otherProjectErr
+    otherProjectId = otherProject!.id
+
+    const { data: otherSprint, error: otherSprintErr } = await a
+      .from('sprints')
+      .insert({ project_id: otherProjectId, name: 'Other project sprint', status: 'future' })
+      .select()
+      .single()
+    if (otherSprintErr) throw otherSprintErr
+    otherSprintId = otherSprint!.id
 
     // A COMPLETED sprint, not an active one: the AC that bites is "a Done ticket in a
     // completed sprint does not appear in the backlog".
@@ -586,6 +612,7 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   afterAll(async () => {
     // The project cascade removes its tickets and sprints.
     await a.from('projects').delete().eq('id', projectId)
+    await a.from('projects').delete().eq('id', otherProjectId)
   }, 30_000)
 
   it('defaults sprint_id to null — a ticket created without one is backlog', async () => {
@@ -674,6 +701,65 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
     // shared project's backlog. Remove it rather than leave it for whatever assertion
     // lands below: the exact-list check above ("=== [backlogTicketId]") is the kind that
     // would then fail pointing at the backlog rule, which would be fine.
+    await a.from('tickets').delete().eq('id', ticket!.id)
+  }, 30_000)
+
+  it('rejects a sprint in another project (the composite fk keeps it in-project)', async () => {
+    // WHY THIS EXISTS. `TicketDetailDialog`'s sprint picker is deliberately NOT
+    // status-filtered and NOT type-gated, and its comment justifies that by asserting the
+    // database cannot store a cross-project reference:
+    //   tickets_sprint_fk foreign key (sprint_id, project_id)
+    //     references sprints (id, project_id) on delete set null (sprint_id)
+    // The pair — not the id alone — is what gets checked, so a sprint from another project
+    // has no matching (id, project_id) row. That claim was load-bearing and unproven.
+    //
+    // THE SAME-OWNER CASE IS THE INTERESTING ONE. A owns BOTH projects, so RLS is happy to
+    // let this write through: it is the composite fk alone holding the line. Relax it to a
+    // plain `references sprints (id)` — which reads as redundant next to sprints' PK, and
+    // the schema comment even says so — and an owner of two projects could park a ticket
+    // in the wrong project's sprint with this entire suite still green. This is that net.
+    const { data: ticket, error: ticketErr } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, type: 'task', summary: 'Sprint fk probe' })
+      .select()
+      .single()
+    if (ticketErr) throw ticketErr
+
+    // Positive control FIRST. Without it, a test that rejects every sprint write — a bad
+    // uuid, a null, an RLS filter, a typo'd column — looks identical to a working guard.
+    // This proves the exact same write shape SUCCEEDS when the sprint is in-project, so
+    // the rejection below can only be about the project pairing.
+    const { data: sameProject, error: sameProjectErr } = await a
+      .from('tickets')
+      .update({ sprint_id: sprintId })
+      .eq('id', ticket!.id)
+      .select()
+      .single()
+    expect(sameProjectErr).toBeNull()
+    expect(sameProject!.sprint_id).toBe(sprintId)
+
+    // The negative: same ticket, same statement, only the sprint's project differs.
+    const { data, error } = await a
+      .from('tickets')
+      .update({ sprint_id: otherSprintId })
+      .eq('id', ticket!.id)
+      .select()
+
+    expect(error).not.toBeNull()
+    expect(error!.code).toBe('23503') // foreign_key_violation — specifically the fk, not a check/null/RLS
+    expect(error!.message).toContain('tickets_sprint_fk') // and specifically THIS fk
+    expect(data).toBeNull()
+
+    // Independent re-read: the ticket still points at its own project's sprint, so the
+    // rejected write did not partially land.
+    const { data: row } = await a
+      .from('tickets')
+      .select('sprint_id, project_id')
+      .eq('id', ticket!.id)
+      .single()
+    expect(row!.sprint_id).toBe(sprintId)
+    expect(row!.project_id).toBe(projectId)
+
     await a.from('tickets').delete().eq('id', ticket!.id)
   }, 30_000)
 })
