@@ -21,6 +21,7 @@ function renderTab(
     loadingTickets: false,
     onOpenTicket: vi.fn(),
     onTicketUpdated: vi.fn(),
+    onTicketDeleted: vi.fn(),
   },
 ) {
   function Provider() {
@@ -70,6 +71,7 @@ describe('BoardTab', () => {
       loadingTickets: false,
       onOpenTicket: vi.fn(),
       onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
     })
     expect(screen.getAllByText('No tickets yet.')).toHaveLength(4)
   })
@@ -82,6 +84,7 @@ describe('BoardTab', () => {
       loadingTickets: false,
       onOpenTicket,
       onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
     })
     await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
     expect(onOpenTicket).toHaveBeenCalled()
@@ -102,6 +105,7 @@ describe('BacklogTab', () => {
       loadingTickets: false,
       onOpenTicket: vi.fn(),
       onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
     })
     expect(screen.getByText('No tickets yet.')).toBeInTheDocument()
   })
@@ -113,6 +117,7 @@ describe('BacklogTab', () => {
       loadingTickets: true,
       onOpenTicket: vi.fn(),
       onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
     })
     expect(screen.getByText('Loading…')).toBeInTheDocument()
   })
@@ -125,6 +130,7 @@ describe('BacklogTab', () => {
       loadingTickets: false,
       onOpenTicket,
       onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
     })
     await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
     expect(onOpenTicket).toHaveBeenCalledWith(TICKETS[0])

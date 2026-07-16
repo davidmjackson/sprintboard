@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createTicket, listTickets } from './tickets'
+import { createTicket, deleteTicket, listTickets } from './tickets'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
@@ -8,18 +8,22 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 // createTicket: from('tickets').insert(...).select().single()
 // listTickets: from('tickets').select().eq(...).order(...)
 // updateTicket: from('tickets').update(...).eq(...).select().single()
+// deleteTicket: from('tickets').delete().eq(...).select()
 const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
+const del = vi.fn()
 beforeEach(() => {
   single.mockReset()
   order.mockReset()
   eq.mockReset()
   eq.mockReturnValue({ order })
+  del.mockReset()
   vi.mocked(supabase.from).mockReturnValue({
     insert: () => ({ select: () => ({ single }) }),
     select: () => ({ eq }),
     update: () => ({ eq: () => ({ select: () => ({ single }) }) }),
+    delete: () => ({ eq: () => ({ select: del }) }),
   } as unknown as ReturnType<typeof supabase.from>)
 })
 
@@ -78,5 +82,22 @@ describe('updateTicket', () => {
     single.mockResolvedValue({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
     const { updateTicket } = await import('./tickets')
     expect(await updateTicket('t1', { summary: 'x' })).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+describe('deleteTicket', () => {
+  it('returns ok on a successful single-row delete', async () => {
+    del.mockResolvedValue({ data: [{ id: 't1' }], error: null })
+    expect(await deleteTicket('t1')).toEqual({ ok: true })
+  })
+
+  it('treats zero rows deleted (RLS filtered) as a failure, not silent success', async () => {
+    del.mockResolvedValue({ data: [], error: null })
+    expect(await deleteTicket('t1')).toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('maps a supabase error to unknown', async () => {
+    del.mockResolvedValue({ data: null, error: { code: '42501', message: 'x' } })
+    expect(await deleteTicket('t1')).toEqual({ ok: false, error: 'unknown' })
   })
 })

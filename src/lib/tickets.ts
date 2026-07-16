@@ -83,3 +83,21 @@ export async function updateTicket(id: string, patch: TicketUpdate): Promise<Upd
   if (error) return { ok: false, error: 'unknown' }
   return { ok: true, ticket: data as Ticket }
 }
+
+/**
+ * Delete a ticket by id. RLS (`tickets_owner`, `FOR ALL`) scopes the delete through the
+ * owned project, so a cross-tenant delete matches ZERO rows rather than raising. We
+ * `.select()` the deleted rows and treat an empty result set as a failure — a delete that
+ * removed nothing is not a success. Deleting a parent epic nulls its children's
+ * `parent_epic_id` (the `tickets_epic_fk` `on delete set null`), and `project_counters` is
+ * untouched, so ticket numbers are never reused. A failure is not user-correctable here.
+ */
+export type DeleteTicketResult = { ok: true } | { ok: false; error: 'unknown' }
+
+export async function deleteTicket(id: string): Promise<DeleteTicketResult> {
+  const { data, error } = await supabase.from('tickets').delete().eq('id', id).select()
+
+  if (error) return { ok: false, error: 'unknown' }
+  if (!data || data.length === 0) return { ok: false, error: 'unknown' }
+  return { ok: true }
+}

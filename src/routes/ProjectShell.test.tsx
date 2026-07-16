@@ -8,17 +8,23 @@ import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import type { ProjectsContext } from './AppLayout'
 import type { Ticket } from '@/lib/domain'
-import { createTicket, listTickets } from '@/lib/tickets'
+import { createTicket, deleteTicket, listTickets } from '@/lib/tickets'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
 }))
-vi.mock('@/lib/tickets', () => ({ listTickets: vi.fn(), createTicket: vi.fn() }))
+vi.mock('@/lib/tickets', () => ({
+  listTickets: vi.fn(),
+  createTicket: vi.fn(),
+  deleteTicket: vi.fn(),
+}))
 
 const mockList = vi.mocked(listTickets)
+const mockDelete = vi.mocked(deleteTicket)
 beforeEach(() => {
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
+  mockDelete.mockReset()
 })
 
 const PROJECTS = [
@@ -149,5 +155,23 @@ describe('ProjectShell', () => {
       'Beta summary',
     )
     expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument()
+  })
+
+  it('removes a ticket from the board after confirming delete', async () => {
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([
+      { ...ticketBase, id: 't1', key: 'MP-1', number: 1, summary: 'Keep me' },
+      { ...ticketBase, id: 't2', key: 'MP-2', number: 2, summary: 'Delete me', type: 'bug' },
+    ])
+    mockDelete.mockResolvedValue({ ok: true })
+    renderShell('/projects/p1')
+
+    await user.click(await screen.findByRole('button', { name: /delete me/i }))
+    await user.click(await screen.findByRole('button', { name: /ticket actions/i }))
+    await user.click(await screen.findByRole('menuitem', { name: /delete/i }))
+    await user.click(await screen.findByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(screen.queryByText('Delete me')).not.toBeInTheDocument())
+    expect(screen.getByText('Keep me')).toBeInTheDocument()
   })
 })

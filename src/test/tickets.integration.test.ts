@@ -194,3 +194,62 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
     expect(row!.project_id).toBe(projectId)
   }, 30_000)
 })
+
+describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
+  let a: SupabaseClient<Database>
+  let b: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+    b = await signIn('B')
+    const { data: proj, error: projErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Delete contract', key: runKey() })
+      .select()
+      .single()
+    if (projErr) throw projErr
+    projectId = proj!.id
+  }, 30_000)
+
+  afterAll(async () => {
+    await a.from('projects').delete().eq('id', projectId)
+  }, 30_000)
+
+  async function newTicket(): Promise<string> {
+    const { data, error } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, summary: 'To delete' })
+      .select()
+      .single()
+    if (error) throw error
+    return data!.id
+  }
+
+  it('lets the owner delete their ticket; the row is gone', async () => {
+    const ticketId = await newTicket()
+    const { data, error } = await a.from('tickets').delete().eq('id', ticketId).select()
+    expect(error).toBeNull()
+    expect(data).toHaveLength(1)
+
+    // Independent re-read as the owner: the row no longer exists.
+    const { data: rows } = await a.from('tickets').select('id').eq('id', ticketId)
+    expect(rows).toEqual([])
+  }, 30_000)
+
+  it('rejects a cross-tenant delete: zero rows affected, row survives', async () => {
+    const ticketId = await newTicket()
+    // Signed in as B, deleting A's ticket. tickets_owner's USING clause filters the row
+    // out, so the DELETE matches zero rows and RETURNING is empty — RLS filters, it does
+    // not raise. (No .single(): zero rows is the expected, non-error outcome.)
+    const { data, error } = await b.from('tickets').delete().eq('id', ticketId).select()
+    expect(error).toBeNull()
+    expect(data).toEqual([])
+
+    // Independent control: as the owner, confirm the ticket still exists.
+    const { data: rows } = await a.from('tickets').select('id').eq('id', ticketId)
+    expect(rows).toHaveLength(1)
+  }, 30_000)
+})

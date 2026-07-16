@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Pencil } from 'lucide-react'
+import { MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 
-import { updateTicket } from '@/lib/tickets'
+import { updateTicket, deleteTicket } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
 import {
   TICKET_TYPES,
@@ -13,7 +13,23 @@ import {
 } from '@/lib/domain'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 
 const selectClass =
@@ -188,11 +204,13 @@ export function TicketDetailDialog({
   currentUser,
   onOpenChange,
   onUpdated,
+  onDeleted,
 }: {
   ticket: Ticket | null
   currentUser: { id: string; email: string }
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
+  onDeleted: (id: string) => void
 }) {
   // Keyed to the ticket id so switching tickets resets any stale error without a
   // synchronous "reset on prop change" effect (the project's react-hooks lint rule
@@ -208,6 +226,9 @@ export function TicketDetailDialog({
   function handleEditingChange(editing: boolean) {
     setEditingCount((count) => count + (editing ? 1 : -1))
   }
+
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
@@ -279,6 +300,22 @@ export function TicketDetailDialog({
     }
   }
 
+  async function handleDelete() {
+    const id = ticket!.id
+    setDeleting(true)
+    const result = await deleteTicket(id)
+    if (!mountedRef.current) return // dialog was dismissed while the delete was in flight
+    if (result.ok) {
+      // Parent removes the row → `ticket` becomes null → this dialog unmounts. We don't
+      // reset local state (we're on our way out) and never close ourselves directly.
+      onDeleted(id)
+    } else {
+      setDeleting(false)
+      setConfirmingDelete(false)
+      setErrorFor({ ticketId: id, message: 'Could not delete this ticket. Please try again.' })
+    }
+  }
+
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
   const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
 
@@ -306,6 +343,23 @@ export function TicketDetailDialog({
               {TICKET_STATUS_LABELS[ticket.status]}
             </span>
           </DialogTitle>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Ticket actions"
+                className="hover:bg-muted focus-visible:bg-muted text-muted-foreground mr-7 ml-auto inline-flex size-7 items-center justify-center rounded-md outline-none"
+              >
+                <MoreHorizontal className="size-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingDelete(true)}>
+                <Trash2 />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </DialogHeader>
 
         <div className="grid gap-x-8 gap-y-6 px-6 py-5 sm:grid-cols-[1fr_240px]">
@@ -435,6 +489,32 @@ export function TicketDetailDialog({
             {error}
           </p>
         ) : null}
+
+        <AlertDialog
+          open={confirmingDelete}
+          onOpenChange={(open) => {
+            if (!deleting) setConfirmingDelete(open)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete {ticket.key}?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This can’t be undone. The ticket will be removed from the board and backlog.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel asChild>
+                <Button variant="outline" disabled={deleting}>
+                  Cancel
+                </Button>
+              </AlertDialogCancel>
+              <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   )
