@@ -72,6 +72,12 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   task: 'Task',
 }
 
+export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
+  future: 'Future',
+  active: 'Active',
+  complete: 'Complete',
+}
+
 /* ------------------------------------------------------------------ *
  * Compile-time guards. Exported so they are "used" — `noUnusedLocals`
  * rejects an unreferenced type alias, and the `_`-prefix exemption
