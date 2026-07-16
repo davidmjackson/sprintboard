@@ -600,9 +600,7 @@ describe('TicketDetailDialog', () => {
     // The value committed…
     await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { summary: 'Blurred' }))
     // …but focus was NOT yanked back to the summary trigger button.
-    expect(document.activeElement).not.toBe(
-      screen.getByRole('button', { name: /edit summary/i }),
-    )
+    expect(document.activeElement).not.toBe(screen.getByRole('button', { name: /edit summary/i }))
   })
 
   it('commits a type change, sending the type patch', async () => {

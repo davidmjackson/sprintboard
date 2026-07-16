@@ -49,7 +49,13 @@ const ticketBase: Ticket = {
   updated_at: '2026-07-15T00:00:00Z',
 }
 const ticketA = ticketBase
-const ticketB: Ticket = { ...ticketBase, id: 'tB', key: 'APP-2', number: 2, summary: 'Beta summary' }
+const ticketB: Ticket = {
+  ...ticketBase,
+  id: 'tB',
+  key: 'APP-2',
+  number: 2,
+  summary: 'Beta summary',
+}
 
 /** Stands in for AppLayout: hands the project list down through the outlet context. */
 function ContextProvider({ ctx }: { ctx: ProjectsContext }) {

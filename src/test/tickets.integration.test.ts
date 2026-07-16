@@ -190,11 +190,7 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
     expect(data).toBeNull()
 
     // Independent control: as the owner, the ticket still belongs to A's project.
-    const { data: row } = await a
-      .from('tickets')
-      .select('project_id')
-      .eq('id', ticketId)
-      .single()
+    const { data: row } = await a.from('tickets').select('project_id').eq('id', ticketId).single()
     expect(row!.project_id).toBe(projectId)
   }, 30_000)
 })
