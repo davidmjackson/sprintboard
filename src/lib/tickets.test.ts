@@ -20,6 +20,11 @@ const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
 const select = vi.fn(() => ({ eq }))
+// Typed through the signature rather than a named parameter, so `insert.mock.calls[0][0]`
+// is the real insert body without declaring an argument the stub never uses.
+const insert = vi.fn<
+  (payload: Record<string, unknown>) => { select: () => { single: typeof single } }
+>(() => ({ select: () => ({ single }) }))
 const del = vi.fn()
 const update = vi.fn(() => ({ eq: () => ({ select: () => ({ single }) }) }))
 beforeEach(() => {
@@ -29,12 +34,14 @@ beforeEach(() => {
   eq.mockReturnValue({ order })
   select.mockReset()
   select.mockReturnValue({ eq })
+  insert.mockReset()
+  insert.mockReturnValue({ select: () => ({ single }) })
   del.mockReset()
   update.mockReset()
   update.mockReturnValue({ eq: () => ({ select: () => ({ single }) }) })
   vi.mocked(supabase.from).mockReset()
   vi.mocked(supabase.from).mockReturnValue({
-    insert: () => ({ select: () => ({ single }) }),
+    insert,
     select,
     update,
     delete: () => ({ eq: () => ({ select: del }) }),
@@ -53,6 +60,23 @@ describe('createTicket', () => {
   it('maps any error to unknown', async () => {
     single.mockResolvedValue({ data: null, error: { code: '23514', message: 'x' } })
     expect(await createTicket(input)).toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('never sends sprint_id, so a created ticket lands in the backlog (S5.2 AC)', async () => {
+    single.mockResolvedValue({ data: { id: 't1' }, error: null })
+    await createTicket(input)
+
+    // S5.2's "creating leaves sprint_id null" holds by construction twice over: the
+    // input type has no sprint field, so a CALLER cannot pass one, and the column
+    // defaults to null. What neither covers is an edit to this function's own body —
+    // `TicketInsert` leaves sprint_id optional (E6/E7 need it writable via
+    // updateTicket), so adding it here would compile. Assigning a sprint at creation is
+    // a different action from creating work, and the backlog is where new work belongs.
+    const payload = insert.mock.calls[0]![0]
+    expect(payload).not.toHaveProperty('sprint_id')
+    // Positive control: the payload is real and this assertion is looking at it, so the
+    // check above cannot pass because `insert` was never called or got something else.
+    expect(payload).toMatchObject({ project_id: 'p1', summary: 'Wire the board' })
   })
 })
 
