@@ -89,6 +89,33 @@ describe('BoardTab', () => {
     await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
     expect(onOpenTicket).toHaveBeenCalled()
   })
+
+  it('keeps a blocked ticket in its status column and marks it blocked (S4.4 AC: it does not move)', () => {
+    const blocked = [
+      {
+        id: 't1',
+        key: 'MP-1',
+        number: 1,
+        summary: 'Do the todo',
+        type: 'story',
+        status: 'in_progress',
+        is_blocked: true,
+        blocked_reason: 'waiting on API',
+      },
+    ] as never
+    renderTab(BoardTab, {
+      project: {} as never,
+      tickets: blocked,
+      loadingTickets: false,
+      onOpenTicket: vi.fn(),
+      onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
+    })
+    // Blocked is a flag, never a column: the ticket sits in In Progress with a marker.
+    const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!
+    expect(within(inProgress).getByText('MP-1')).toBeInTheDocument()
+    expect(within(inProgress).getByText(/blocked/i)).toBeInTheDocument()
+  })
 })
 
 describe('BacklogTab', () => {
@@ -134,5 +161,30 @@ describe('BacklogTab', () => {
     })
     await userEvent.click(screen.getByRole('button', { name: /do the todo/i }))
     expect(onOpenTicket).toHaveBeenCalledWith(TICKETS[0])
+  })
+
+  it('shows a Blocked marker on a blocked ticket row', () => {
+    const rows = [
+      {
+        id: 't1',
+        key: 'MP-1',
+        number: 1,
+        summary: 'Do the todo',
+        type: 'story',
+        status: 'todo',
+        is_blocked: true,
+        blocked_reason: 'waiting on API',
+      },
+    ] as never
+    renderTab(BacklogTab, {
+      project: {} as never,
+      tickets: rows,
+      loadingTickets: false,
+      onOpenTicket: vi.fn(),
+      onTicketUpdated: vi.fn(),
+      onTicketDeleted: vi.fn(),
+    })
+    const row = screen.getByRole('button', { name: /do the todo/i })
+    expect(within(row).getByText(/blocked/i)).toBeInTheDocument()
   })
 })

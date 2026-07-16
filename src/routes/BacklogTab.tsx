@@ -2,6 +2,7 @@ import { useOutletContext } from 'react-router-dom'
 
 import { TICKET_TYPE_LABELS } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
+import { BlockedBadge } from './BlockedBadge'
 
 /**
  * The backlog: a flat list of the project's tickets, ordered by number (the order
@@ -38,7 +39,8 @@ export function BacklogTab() {
             <span className="text-muted-foreground w-14 shrink-0 text-xs uppercase">
               {TICKET_TYPE_LABELS[ticket.type]}
             </span>
-            <span className="truncate">{ticket.summary}</span>
+            <span className="flex-1 truncate">{ticket.summary}</span>
+            {ticket.is_blocked ? <BlockedBadge /> : null}
           </button>
         </li>
       ))}

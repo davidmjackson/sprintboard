@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { Ban, CircleCheck, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 
-import { updateTicket, deleteTicket } from '@/lib/tickets'
+import {
+  BLOCK_REASON_MAX,
+  blockTicket,
+  deleteTicket,
+  parseBlockReason,
+  unblockTicket,
+  updateTicket,
+} from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
 import {
   TICKET_TYPES,
@@ -14,11 +21,19 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -230,6 +245,14 @@ export function TicketDetailDialog({
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
+  // Block flow: the reason dialog's open state, its draft reason, and an in-flight flag.
+  // Unblock has no dialog (it needs no input), so it only tracks its own in-flight flag.
+  const [blocking, setBlocking] = useState(false)
+  const [blockReason, setBlockReason] = useState('')
+  const [blockError, setBlockError] = useState<string | null>(null)
+  const [blockPending, setBlockPending] = useState(false)
+  const [unblockPending, setUnblockPending] = useState(false)
+
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
   // DIFFERENT field would merge against the ticket as it was when `commit` was
@@ -316,6 +339,71 @@ export function TicketDetailDialog({
     }
   }
 
+  // Block/unblock are NOT optimistic: the `sync_blocked_fields` trigger stamps/clears
+  // `blocked_since` server-side, so we apply the row the DB returns rather than guess it.
+  // Reconcile is field-scoped (only the three blocked fields + the refreshed updated_at)
+  // onto whatever is latest NOW — the same discipline as `commit()`, so a concurrent
+  // in-flight optimistic edit to a different field is never clobbered.
+  function applyBlockResult(id: string, next: Ticket) {
+    const base = ticketRef.current?.id === id ? ticketRef.current : next
+    onUpdated({
+      ...base,
+      ...pickFields(next, ['is_blocked', 'blocked_reason', 'blocked_since']),
+      updated_at: next.updated_at,
+    } as Ticket)
+  }
+
+  function closeBlockDialog() {
+    setBlocking(false)
+    setBlockReason('')
+    setBlockError(null)
+  }
+
+  async function handleBlock() {
+    const id = ticket!.id
+    const parsed = parseBlockReason(blockReason)
+    if (!parsed.ok) {
+      // The confirm button is disabled while the reason is invalid, so this is a
+      // defensive backstop rather than the normal path.
+      setBlockError(parsed.message)
+      return
+    }
+    setBlockPending(true)
+    const result = await blockTicket(id, parsed.value)
+    if (!mountedRef.current) return // dialog was dismissed while the block was in flight
+    setBlockPending(false)
+    if (result.ok) {
+      applyBlockResult(id, result.ticket)
+      setBlocking(false)
+      setBlockReason('')
+      setBlockError(null)
+    } else {
+      setBlockError(
+        result.error === 'invalid_reason'
+          ? result.message
+          : 'Could not block this ticket. Please try again.',
+      )
+    }
+  }
+
+  async function handleUnblock() {
+    // Unblock fires from the kebab (which closes on select) and is not optimistic, so
+    // without a guard an impatient second click would fire a duplicate request. The
+    // banner shows an "Unblocking…" state off this flag until the row reconciles.
+    if (unblockPending) return
+    const id = ticket!.id
+    setUnblockPending(true)
+    const result = await unblockTicket(id)
+    if (!mountedRef.current) return // dialog was dismissed while the unblock was in flight
+    setUnblockPending(false)
+    if (result.ok) {
+      applyBlockResult(id, result.ticket)
+      setErrorFor(null)
+    } else {
+      setErrorFor({ ticketId: id, message: 'Could not unblock this ticket. Please try again.' })
+    }
+  }
+
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
   const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
 
@@ -354,6 +442,24 @@ export function TicketDetailDialog({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {ticket.is_blocked ? (
+                <DropdownMenuItem onSelect={() => void handleUnblock()}>
+                  <CircleCheck />
+                  Unblock
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setBlockReason('')
+                    setBlockError(null)
+                    setBlocking(true)
+                  }}
+                >
+                  <Ban />
+                  Block
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingDelete(true)}>
                 <Trash2 />
                 Delete
@@ -363,6 +469,26 @@ export function TicketDetailDialog({
         </DialogHeader>
 
         <div className="grid gap-x-8 gap-y-6 px-6 py-5 sm:grid-cols-[1fr_240px]">
+          {ticket.is_blocked ? (
+            <div
+              role="status"
+              className="border-destructive/30 bg-destructive/10 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm sm:col-span-2"
+            >
+              <Ban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="font-medium">{unblockPending ? 'Unblocking…' : 'Blocked'}</span>
+                {ticket.blocked_reason ? (
+                  <span className="text-destructive/90 break-words">{ticket.blocked_reason}</span>
+                ) : null}
+                {ticket.blocked_since ? (
+                  <span className="text-destructive/70 text-xs">
+                    Since {new Date(ticket.blocked_since).toLocaleString()}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+
           {/* Main column: summary + description */}
           <div className="flex min-w-0 flex-col gap-6">
             <EditableText
@@ -489,6 +615,55 @@ export function TicketDetailDialog({
             {error}
           </p>
         ) : null}
+
+        <Dialog
+          open={blocking}
+          onOpenChange={(open) => {
+            // Ignore dismissal while the block is in flight; reset on any close.
+            if (blockPending) return
+            if (!open) closeBlockDialog()
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Block {ticket.key}?</DialogTitle>
+              <DialogDescription>
+                Blocking flags the ticket — it stays in its column. A reason is required.
+              </DialogDescription>
+            </DialogHeader>
+            <label className="flex flex-col gap-1.5">
+              <FieldLabel>Reason</FieldLabel>
+              <Textarea
+                aria-label="reason"
+                rows={3}
+                autoFocus
+                maxLength={BLOCK_REASON_MAX}
+                value={blockReason}
+                placeholder="Why is this blocked?"
+                onChange={(e) => {
+                  setBlockReason(e.target.value)
+                  if (blockError) setBlockError(null)
+                }}
+              />
+            </label>
+            {blockError ? (
+              <p role="alert" className="text-destructive text-sm">
+                {blockError}
+              </p>
+            ) : null}
+            <DialogFooter>
+              <Button variant="outline" onClick={closeBlockDialog} disabled={blockPending}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleBlock}
+                disabled={blockPending || !parseBlockReason(blockReason).ok}
+              >
+                {blockPending ? 'Blocking…' : 'Block'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <AlertDialog
           open={confirmingDelete}

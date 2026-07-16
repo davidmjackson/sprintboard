@@ -253,3 +253,127 @@ describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
     expect(rows).toHaveLength(1)
   }, 30_000)
 })
+
+/**
+ * S4.4 — the block/unblock contract `blockTicket`/`unblockTicket` rely on, proven live.
+ * The `sync_blocked_fields` trigger stamps `blocked_since` on block and clears both it
+ * and `blocked_reason` on unblock; `tickets_blocked_coherent` backstops the app-layer
+ * "a reason is required" rule (a block with a null reason raises `23514`, not silently
+ * persists). Blocking is a flag, never a column: `status` is untouched by it.
+ */
+describe.skipIf(!hasRlsCredentials)('S4.4 ticket-block contract', () => {
+  let a: SupabaseClient<Database>
+  let b: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+    b = await signIn('B')
+    const { data: proj, error: projErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Block contract', key: runKey() })
+      .select()
+      .single()
+    if (projErr) throw projErr
+    projectId = proj!.id
+  }, 30_000)
+
+  afterAll(async () => {
+    await a.from('projects').delete().eq('id', projectId)
+  }, 30_000)
+
+  async function newTicket(): Promise<string> {
+    const { data, error } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, summary: 'To block' })
+      .select()
+      .single()
+    if (error) throw error
+    return data!.id
+  }
+
+  it('blocks with a reason: the trigger stamps blocked_since and status is untouched', async () => {
+    const ticketId = await newTicket()
+    // Move it off the default column first, so we can prove blocking does NOT move it.
+    await a.from('tickets').update({ status: 'in_progress' }).eq('id', ticketId)
+
+    const { data, error } = await a
+      .from('tickets')
+      .update({ is_blocked: true, blocked_reason: 'waiting on API' })
+      .eq('id', ticketId)
+      .select()
+      .single()
+
+    expect(error).toBeNull()
+    expect(data).toMatchObject({
+      is_blocked: true,
+      blocked_reason: 'waiting on API',
+      status: 'in_progress', // a blocked ticket stays in its real column (S4.4 AC)
+    })
+    // The trigger stamped it — the client never sent blocked_since.
+    expect(data!.blocked_since).not.toBeNull()
+  }, 30_000)
+
+  it('unblocks: the trigger clears both blocked_reason and blocked_since', async () => {
+    const ticketId = await newTicket()
+    await a
+      .from('tickets')
+      .update({ is_blocked: true, blocked_reason: 'transient' })
+      .eq('id', ticketId)
+
+    const { data, error } = await a
+      .from('tickets')
+      .update({ is_blocked: false })
+      .eq('id', ticketId)
+      .select()
+      .single()
+
+    expect(error).toBeNull()
+    // We only sent is_blocked:false — the trigger nulled the other two, keeping the
+    // three fields coherent (S4.4 AC).
+    expect(data).toMatchObject({
+      is_blocked: false,
+      blocked_reason: null,
+      blocked_since: null,
+    })
+  }, 30_000)
+
+  it('rejects a block with no reason: the check constraint holds even though the app never sends it', async () => {
+    const ticketId = await newTicket()
+    // Send is_blocked:true with no reason — the app's blockTicket forbids this at the
+    // type/validation layer, but "verification means running it": prove the DATABASE
+    // backstops the app-layer rule. The trigger stamps blocked_since, leaving
+    // (is_blocked=true, blocked_reason=null), which violates tickets_blocked_coherent.
+    const { error } = await a.from('tickets').update({ is_blocked: true }).eq('id', ticketId)
+    expect(error).not.toBeNull()
+    expect(error!.code).toBe('23514') // check_violation
+
+    // Independent control: the ticket was not left half-blocked.
+    const { data: row } = await a
+      .from('tickets')
+      .select('is_blocked, blocked_reason')
+      .eq('id', ticketId)
+      .single()
+    expect(row).toMatchObject({ is_blocked: false, blocked_reason: null })
+  }, 30_000)
+
+  it('rejects a cross-tenant block: zero rows affected, row stays unblocked', async () => {
+    const ticketId = await newTicket()
+    // Signed in as B, blocking A's ticket. tickets_owner's USING clause filters the row
+    // out, so the UPDATE matches zero rows and RETURNING is empty — RLS filters, it does
+    // not raise.
+    const { data, error } = await b
+      .from('tickets')
+      .update({ is_blocked: true, blocked_reason: 'hacked' })
+      .eq('id', ticketId)
+      .select()
+    expect(error).toBeNull()
+    expect(data).toEqual([])
+
+    // Independent control: as the owner, the ticket is still unblocked.
+    const { data: row } = await a.from('tickets').select('is_blocked').eq('id', ticketId).single()
+    expect(row!.is_blocked).toBe(false)
+  }, 30_000)
+})

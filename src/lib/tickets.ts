@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { Ticket, TicketInsert, TicketType, TicketUpdate } from './domain'
+import type { Ticket, TicketBlockUpdate, TicketInsert, TicketType, TicketUpdate } from './domain'
 
 /**
  * Create a ticket in a project.
@@ -100,4 +100,75 @@ export async function deleteTicket(id: string): Promise<DeleteTicketResult> {
   if (error) return { ok: false, error: 'unknown' }
   if (!data || data.length === 0) return { ok: false, error: 'unknown' }
   return { ok: true }
+}
+
+export const BLOCK_REASON_MAX = 500
+
+/**
+ * The app-layer "a reason is required to block" rule (S4.4 AC), and the single
+ * client-side validator for a block reason. The database backstops the *required* half
+ * via `tickets_blocked_coherent` — a block with a null reason raises `23514` — but a
+ * check constraint has no message, so this is where the user-facing rule and the max
+ * length live. Returns the TRIMMED reason on success (leading/trailing space is not a
+ * reason). Both edges are covered per CLAUDE.md; the max is client-only (no DB length
+ * check on `blocked_reason`, mirroring `summary`).
+ */
+export type BlockReasonResult = { ok: true; value: string } | { ok: false; message: string }
+
+export function parseBlockReason(raw: string): BlockReasonResult {
+  const trimmed = raw.trim()
+  if (trimmed.length < 1) return { ok: false, message: 'A reason is required to block a ticket' }
+  if (trimmed.length > BLOCK_REASON_MAX)
+    return { ok: false, message: `Keep the reason to ${BLOCK_REASON_MAX} characters or fewer` }
+  return { ok: true, value: trimmed }
+}
+
+/**
+ * Block a ticket, requiring a reason. Sends only `{ is_blocked: true, blocked_reason }`
+ * (a `TicketBlockUpdate`); the `sync_blocked_fields` trigger stamps `blocked_since`, so
+ * the reconciled row we return carries the server timestamp — never guess it client-side.
+ * The reason is validated here first: an invalid one never reaches the database and is
+ * reported as `invalid_reason` with a message. RLS (`tickets_owner`) scopes the write
+ * through the owned project, so a cross-tenant block matches zero rows, `.single()` then
+ * errors, and we report `'unknown'`. Blocking does NOT change `status`: a blocked ticket
+ * stays in its board column (S4.4 AC), it is a flag, never a column.
+ */
+export type BlockTicketResult =
+  | { ok: true; ticket: Ticket }
+  | { ok: false; error: 'invalid_reason'; message: string }
+  | { ok: false; error: 'unknown' }
+
+export async function blockTicket(id: string, reason: string): Promise<BlockTicketResult> {
+  const parsed = parseBlockReason(reason)
+  if (!parsed.ok) return { ok: false, error: 'invalid_reason', message: parsed.message }
+
+  const { data, error } = await supabase
+    .from('tickets')
+    .update({ is_blocked: true, blocked_reason: parsed.value } satisfies TicketBlockUpdate)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return { ok: false, error: 'unknown' }
+  return { ok: true, ticket: data as Ticket }
+}
+
+/**
+ * Unblock a ticket. Sends only `{ is_blocked: false }`; the `sync_blocked_fields` trigger
+ * clears both `blocked_reason` and `blocked_since` (S4.4 AC), keeping the three fields
+ * coherent — so we never send the nulls ourselves. Same RLS scoping and `'unknown'`
+ * mapping as `blockTicket`.
+ */
+export type UnblockTicketResult = { ok: true; ticket: Ticket } | { ok: false; error: 'unknown' }
+
+export async function unblockTicket(id: string): Promise<UnblockTicketResult> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .update({ is_blocked: false } satisfies TicketBlockUpdate)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return { ok: false, error: 'unknown' }
+  return { ok: true, ticket: data as Ticket }
 }
