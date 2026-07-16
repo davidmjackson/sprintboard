@@ -72,6 +72,12 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   task: 'Task',
 }
 
+export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
+  future: 'Future',
+  active: 'Active',
+  complete: 'Complete',
+}
+
 /* ------------------------------------------------------------------ *
  * Compile-time guards. Exported so they are "used" — `noUnusedLocals`
  * rejects an unreferenced type alias, and the `_`-prefix exemption
@@ -167,6 +173,15 @@ export type TicketBlockUpdate = Pick<TablesUpdate<'tickets'>, 'is_blocked' | 'bl
 
 export type ProjectInsert = TablesInsert<'projects'>
 export type SprintInsert = TablesInsert<'sprints'>
+
+/**
+ * The shape a client may insert into `sprints`. `status` is omitted deliberately: the
+ * column defaults to `'future'` and the database owns it. S6.3 makes `'active'` mean
+ * "the one active sprint in this project", enforced by the `sprints_one_active_per_project`
+ * partial unique index — a client that sets status on create would route around that rule
+ * before it is even built. Omitting it here makes that a compile error, not a code review.
+ */
+export type SprintCreateInsert = Omit<SprintInsert, 'status'>
 
 /* ------------------------------------------------------------------ */
 

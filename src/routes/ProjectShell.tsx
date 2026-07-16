@@ -127,6 +127,9 @@ export function ProjectShell() {
           <NavLink to="backlog" className={tabClass}>
             Backlog
           </NavLink>
+          <NavLink to="sprints" className={tabClass}>
+            Sprints
+          </NavLink>
         </nav>
       </header>
       <div className="flex-1 p-8">

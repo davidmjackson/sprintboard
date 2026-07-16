@@ -1,0 +1,87 @@
+import { supabase } from './supabase'
+import { toUtcMidnight } from './sprint-dates'
+import type { Sprint, SprintCreateInsert } from './domain'
+
+/**
+ * The default name for a sprint created with the name left blank: `Sprint N`, where N is
+ * the project's existing sprint count + 1.
+ *
+ * S6.1's AC asks for an **optional** name, but `sprints.name` is `not null` with no
+ * default — so "optional" has to mean the app names it, not that the column is nullable.
+ *
+ * Count-based numbering is safe here and is NOT the ticket-key pattern. A ticket key is an
+ * identifier, which is why `assign_ticket_key` is an atomic trigger and why keys are never
+ * generated with `count(*)`. A sprint name is a **label**: `sprints` has no unique
+ * constraint on it, so a race or a delete-then-create can yield two `Sprint 3`. That is
+ * cosmetic and never corrupting.
+ */
+export function defaultSprintName(existing: readonly Sprint[]): string {
+  return `Sprint ${existing.length + 1}`
+}
+
+/**
+ * Create a sprint in a project.
+ *
+ * `status` is never sent: the column defaults to `'future'`, which is exactly S6.1's AC —
+ * so the AC is satisfied by the database, not by the client. `sprints` has no `owner_id`;
+ * the `sprints_owner` RLS policy scopes writes through the project, so a cross-tenant
+ * insert is rejected by the database, not by this function. A failure is not
+ * user-correctable (no unique constraint is reachable here — duplicate names are legal),
+ * so the error result is a single `'unknown'`.
+ */
+export type CreateSprintResult = { ok: true; sprint: Sprint } | { ok: false; error: 'unknown' }
+
+export async function createSprint(input: {
+  projectId: string
+  /** Blank or whitespace-only means "name it for me" — see `defaultSprintName`. */
+  name?: string
+  goal?: string
+  /** An `<input type="date">` value, `'YYYY-MM-DD'`. Pinned to midnight UTC on write. */
+  startDate?: string
+  endDate?: string
+  /** The project's sprints, for auto-naming. Empty when the list has not loaded. */
+  existing?: readonly Sprint[]
+}): Promise<CreateSprintResult> {
+  const name = input.name?.trim() || defaultSprintName(input.existing ?? [])
+
+  // `satisfies SprintCreateInsert` binds the write to the guard type (Omit status), so a
+  // future edit that adds `status` here fails to compile at the call site — making the
+  // "the database owns status" guarantee structural, not just a doc comment.
+  const { data, error } = await supabase
+    .from('sprints')
+    .insert({
+      project_id: input.projectId,
+      name,
+      goal: input.goal?.trim() || null,
+      start_date: input.startDate ? toUtcMidnight(input.startDate) : null,
+      end_date: input.endDate ? toUtcMidnight(input.endDate) : null,
+    } satisfies SprintCreateInsert)
+    .select()
+    .single()
+
+  if (error) return { ok: false, error: 'unknown' }
+  return { ok: true, sprint: data as Sprint }
+}
+
+/**
+ * The sprints of one project, newest first.
+ *
+ * The `project_id` filter is required, not optional: `sprints_owner` RLS scopes the select
+ * to the owner, but the owner has many projects — without the filter this returns every
+ * project's sprints. Same reasoning as `listTickets`.
+ *
+ * This throws rather than resolving to `[]` on error. The shell's ticket read swallows its
+ * rejection into an empty list, which is why a paused database renders as "Nothing in the
+ * backlog"; `SprintsTab` renders a real error state instead, and that needs a rejection to
+ * catch.
+ */
+export async function listSprints(projectId: string): Promise<Sprint[]> {
+  const { data, error } = await supabase
+    .from('sprints')
+    .select()
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+
+  if (error) throw new Error(`Could not load sprints: ${error.message}`)
+  return (data ?? []) as Sprint[]
+}
