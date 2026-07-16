@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
@@ -12,10 +13,35 @@ vi.mock('@/lib/sprints', async (importOriginal) => ({
   listSprints: vi.fn(),
 }))
 
-// The dialog is exercised by its own suite; here it is a button that reports its props.
+// The dialog is exercised by its own suite; here it is a button that reports its props
+// and, on click, invokes `onCreated` with a fixture sprint — so SprintsTab's own prepend
+// logic (the `projectId` and `phase === 'loaded'` guards) is actually exercised by this
+// suite, not just by the dialog's isolated tests.
 vi.mock('./CreateSprintDialog', () => ({
-  CreateSprintDialog: ({ existing }: { existing: readonly Sprint[] }) => (
-    <button type="button">New sprint ({existing.length} existing)</button>
+  CreateSprintDialog: ({
+    existing,
+    onCreated,
+  }: {
+    existing: readonly Sprint[]
+    onCreated?: (sprint: Sprint) => void
+  }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onCreated?.({
+          id: 'new-sprint',
+          project_id: 'p1',
+          name: 'Newly created',
+          goal: null,
+          status: 'future',
+          start_date: null,
+          end_date: null,
+          created_at: '2026-07-16T12:00:00+00:00',
+        })
+      }
+    >
+      New sprint ({existing.length} existing)
+    </button>
   ),
 }))
 
@@ -104,5 +130,34 @@ describe('SprintsTab', () => {
     renderTab()
 
     expect(await screen.findByRole('button', { name: 'New sprint (2 existing)' })).toBeVisible()
+  })
+
+  it('prepends a newly created sprint to the top of the list, alongside the existing ones', async () => {
+    vi.mocked(listSprints).mockResolvedValue([sprint({ id: 's1', name: 'Older sprint' })])
+    renderTab()
+    const user = userEvent.setup()
+
+    await user.click(await screen.findByRole('button', { name: 'New sprint (1 existing)' }))
+
+    const items = await screen.findAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Newly created')
+    expect(items[1]).toHaveTextContent('Older sprint')
+  })
+
+  it('does not render the create trigger while sprints are still loading', async () => {
+    vi.mocked(listSprints).mockImplementation(() => new Promise(() => {}))
+    renderTab()
+
+    expect(await screen.findByText('Loading…')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
+  })
+
+  it('does not render the create trigger when the read has failed', async () => {
+    vi.mocked(listSprints).mockRejectedValue(new Error('offline'))
+    renderTab()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load sprints.')
+    expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
   })
 })

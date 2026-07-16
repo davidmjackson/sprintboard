@@ -26,6 +26,11 @@ import { CreateSprintDialog } from './CreateSprintDialog'
  * `react-hooks/set-state-in-effect` (this repo's lint gate) rejects as a cascading-render
  * hazard. Only "loaded" and "failed" need to be stored; "loading" is just "neither has
  * landed for this project yet".
+ *
+ * The create trigger only renders once `phase === 'loaded'`. `existing` would otherwise be
+ * `[]` during both loading and failed, so `defaultSprintName` would number off an empty
+ * array — a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the
+ * `onCreated` guard above drops it) if the read failed.
  */
 type Loaded =
   { projectId: string; phase: 'loaded'; sprints: Sprint[] } | { projectId: string; phase: 'failed' }
@@ -67,21 +72,27 @@ export function SprintsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium">Sprints</h2>
-        <CreateSprintDialog
-          projectId={project.id}
-          existing={sprints}
-          onCreated={(sprint) =>
-            // Prepend: the list is newest-first, so the new sprint belongs at the top.
-            // A local mutation, not a refetch — the same reasoning as the shell's
-            // append-on-create (S4.1): an unguarded refetch resolving after a project
-            // switch would clobber the new project's list.
-            setLoaded((prev) =>
-              prev && prev.projectId === project.id && prev.phase === 'loaded'
-                ? { projectId: prev.projectId, phase: 'loaded', sprints: [sprint, ...prev.sprints] }
-                : prev,
-            )
-          }
-        />
+        {phase === 'loaded' ? (
+          <CreateSprintDialog
+            projectId={project.id}
+            existing={sprints}
+            onCreated={(sprint) =>
+              // Prepend: the list is newest-first, so the new sprint belongs at the top.
+              // A local mutation, not a refetch — the same reasoning as the shell's
+              // append-on-create (S4.1): an unguarded refetch resolving after a project
+              // switch would clobber the new project's list.
+              setLoaded((prev) =>
+                prev && prev.projectId === project.id && prev.phase === 'loaded'
+                  ? {
+                      projectId: prev.projectId,
+                      phase: 'loaded',
+                      sprints: [sprint, ...prev.sprints],
+                    }
+                  : prev,
+              )
+            }
+          />
+        ) : null}
       </div>
 
       {phase === 'loading' ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
@@ -104,9 +115,11 @@ export function SprintsTab() {
         <ul className="divide-y rounded-lg border">
           {sprints.map((sprint) => (
             <li key={sprint.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-              <span className="flex-1 truncate font-medium">{sprint.name}</span>
+              <span className="min-w-0 flex-[2] truncate font-medium">{sprint.name}</span>
               {sprint.goal ? (
-                <span className="text-muted-foreground flex-1 truncate text-xs">{sprint.goal}</span>
+                <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
+                  {sprint.goal}
+                </span>
               ) : null}
               <SprintDates sprint={sprint} />
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
