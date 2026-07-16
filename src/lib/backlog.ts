@@ -26,3 +26,15 @@ export function isBacklogTicket(ticket: Ticket): boolean {
 export function selectBacklogTickets(tickets: readonly Ticket[]): Ticket[] {
   return tickets.filter(isBacklogTicket)
 }
+
+/**
+ * The tickets in one sprint, in the order given. The same rule as `isBacklogTicket`, read
+ * from the other side: a ticket is in a sprint when its `sprint_id` is that sprint's id.
+ * Filters only — it never sorts, so the number order `listTickets` returns is preserved.
+ *
+ * Strict `===` on a `string` id: `Ticket['sprint_id']` is `string | null`, so a backlog
+ * ticket can never match a real sprint id and needs no special case.
+ */
+export function selectSprintTickets(tickets: readonly Ticket[], sprintId: string): Ticket[] {
+  return tickets.filter((ticket) => ticket.sprint_id === sprintId)
+}

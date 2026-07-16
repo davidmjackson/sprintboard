@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Ticket } from './domain'
-import { isBacklogTicket, selectBacklogTickets } from './backlog'
+import { isBacklogTicket, selectBacklogTickets, selectSprintTickets } from './backlog'
 
 /** A ticket with only the fields this rule reads. `sprint_id` is always stated. */
 function ticket(fields: Partial<Ticket> & Pick<Ticket, 'id' | 'sprint_id'>): Ticket {
@@ -55,5 +55,38 @@ describe('selectBacklogTickets', () => {
 
   it('returns an empty list for no tickets', () => {
     expect(selectBacklogTickets([])).toEqual([])
+  })
+})
+
+describe('selectSprintTickets', () => {
+  it('keeps only the tickets in the given sprint', () => {
+    const rows = [
+      ticket({ id: 't1', sprint_id: 's1' }),
+      ticket({ id: 't2', sprint_id: null }),
+      ticket({ id: 't3', sprint_id: 's1' }),
+    ]
+    expect(selectSprintTickets(rows, 's1').map((t) => t.id)).toEqual(['t1', 't3'])
+  })
+
+  it('excludes backlog tickets (sprint_id: null)', () => {
+    const rows = [ticket({ id: 't1', sprint_id: null })]
+    expect(selectSprintTickets(rows, 's1')).toEqual([])
+  })
+
+  it("excludes another sprint's tickets", () => {
+    const rows = [ticket({ id: 't1', sprint_id: 's2' })]
+    expect(selectSprintTickets(rows, 's1')).toEqual([])
+  })
+
+  it('preserves the incoming order (listTickets orders by number)', () => {
+    const rows = [
+      ticket({ id: 't3', sprint_id: 's1', number: 3 }),
+      ticket({ id: 't1', sprint_id: 's1', number: 1 }),
+    ]
+    expect(selectSprintTickets(rows, 's1').map((t) => t.id)).toEqual(['t3', 't1'])
+  })
+
+  it('returns an empty list for a sprint with no tickets', () => {
+    expect(selectSprintTickets([], 's1')).toEqual([])
   })
 })

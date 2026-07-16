@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
-import type { Ticket } from '@/lib/domain'
+import type { Sprint, Ticket } from '@/lib/domain'
 import * as tickets from '@/lib/tickets'
 import type { UpdateTicketResult } from '@/lib/tickets'
 
@@ -1182,5 +1182,97 @@ describe('TicketDetailDialog — epic fields', () => {
     await userEvent.type(input, 'Draft{Escape}')
     expect(input).toHaveValue('')
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
+})
+
+const sprintFuture: Sprint = {
+  id: 's1',
+  project_id: 'p1',
+  name: 'Sprint 1',
+  goal: null,
+  status: 'future',
+  start_date: null,
+  end_date: null,
+  created_at: '2026-07-15T00:00:00+00:00',
+}
+const sprintActive: Sprint = { ...sprintFuture, id: 's2', name: 'Sprint 2', status: 'active' }
+
+describe('TicketDetailDialog — sprint picker (S6.2)', () => {
+  it('lists Backlog plus every sprint, labelled with its status', () => {
+    renderDialog({
+      ticket: base,
+      sprints: [sprintFuture, sprintActive],
+      sprintsPhase: 'loaded',
+    })
+    const picker = screen.getByLabelText('sprint') as HTMLSelectElement
+    // Backlog is the domain's word for `sprint_id is null` — see backlog.ts.
+    expect(picker.value).toBe('')
+    expect(
+      Array.from(picker.options).map((o) => o.textContent?.replace(/\s+/g, ' ').trim()),
+    ).toEqual(['Backlog', 'Sprint 1 · Future', 'Sprint 2 · Active'])
+  })
+
+  // The picker is not gated on ticket type: an epic can be in a sprint.
+  it('renders for an epic as well as a story', () => {
+    renderDialog({ ticket: epicTicket, sprints: [sprintFuture], sprintsPhase: 'loaded' })
+    expect(screen.getByLabelText('sprint')).toBeInTheDocument()
+  })
+
+  it('adds the ticket to a sprint, sending the sprint_id patch', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, sprint_id: 's1' } })
+    renderDialog({ ticket: base, sprints: [sprintFuture], sprintsPhase: 'loaded' })
+
+    await userEvent.selectOptions(screen.getByLabelText('sprint'), 's1')
+
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { sprint_id: 's1' }))
+  })
+
+  // AC 1's "removed back to the backlog" at the unit level: `sprint_id: null` IS the backlog.
+  it('removes the ticket back to the backlog, sending a null sprint_id', async () => {
+    const sprinted: Ticket = { ...base, sprint_id: 's1' }
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...sprinted, sprint_id: null } })
+    renderDialog({ ticket: sprinted, sprints: [sprintFuture], sprintsPhase: 'loaded' })
+
+    const picker = screen.getByLabelText('sprint') as HTMLSelectElement
+    expect(picker.value).toBe('s1')
+    await userEvent.selectOptions(picker, '')
+
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { sprint_id: null }))
+  })
+
+  // `sprints` is [] in BOTH the loading and failed phases, so an empty list never means
+  // "no sprints". An enabled picker would then offer only "Backlog" and one click would
+  // quietly unsprint the ticket — branch on the phase, never on sprints.length.
+  it.each(['loading', 'failed'] as const)(
+    'disables the picker while the sprint list is %s',
+    (phase) => {
+      renderDialog({ ticket: { ...base, sprint_id: 's1' }, sprints: [], sprintsPhase: phase })
+      expect(screen.getByLabelText('sprint')).toBeDisabled()
+    },
+  )
+
+  it('enables the picker once the sprint list has loaded', () => {
+    renderDialog({ ticket: base, sprints: [sprintFuture], sprintsPhase: 'loaded' })
+    expect(screen.getByLabelText('sprint')).toBeEnabled()
+  })
+
+  // The test that tells `sprintsPhase` apart from `sprints.length`. A project that genuinely
+  // has no sprints is 'loaded' with an empty list, and its picker must still work — "Backlog"
+  // is then the truth, not a lie. Gating on `sprints.length` would disable this case and pass
+  // every other test in this file, so without this the length-based defect ships green.
+  it('enables the picker for a loaded project that genuinely has no sprints', () => {
+    renderDialog({ ticket: base, sprints: [], sprintsPhase: 'loaded' })
+    expect(screen.getByLabelText('sprint')).toBeEnabled()
+  })
+
+  // Mirrors the parent-epic picker's guard: a sprint_id absent from the list must not
+  // silently render as "Backlog" — that would misreport the ticket's membership.
+  it('renders a fallback option when the current sprint is not in the list', () => {
+    renderDialog({ ticket: { ...base, sprint_id: 'gone' }, sprints: [], sprintsPhase: 'loaded' })
+    const picker = screen.getByLabelText('sprint') as HTMLSelectElement
+    expect(picker.value).toBe('gone') // the value round-trips, no controlled-value mismatch
+    expect(
+      screen.getByRole('option', { name: /current sprint \(unavailable\)/i }),
+    ).toBeInTheDocument()
   })
 })

@@ -1,22 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
-import type { ProjectShellContext } from './ProjectShell'
-import { listSprints } from '@/lib/sprints'
-import type { Project, Sprint } from '@/lib/domain'
-
-vi.mock('@/lib/sprints', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/lib/sprints')>()),
-  listSprints: vi.fn(),
-}))
+import type { ProjectShellContext, SprintsPhase } from './ProjectShell'
+import type { Project, Sprint, Ticket } from '@/lib/domain'
 
 // The dialog is exercised by its own suite; here it is a button that reports its props
-// and, on click, invokes `onCreated` with a fixture sprint — so SprintsTab's own prepend
-// logic (the `projectId` and `phase === 'loaded'` guards) is actually exercised by this
-// suite, not just by the dialog's isolated tests.
+// and, on click, invokes `onCreated` with a fixture sprint — so the tab's hand-off to
+// the shell's `onSprintCreated` is exercised here, not just by the dialog's own tests.
 vi.mock('./CreateSprintDialog', () => ({
   CreateSprintDialog: ({
     existing,
@@ -61,17 +54,66 @@ function sprint(overrides: Partial<Sprint> = {}): Sprint {
   }
 }
 
-// The brief's original renderTab() used a bare `<div />` as the parent route's
-// element, with no `<Outlet>` — so the nested "sprints" route could never mount, and
-// the `project` fixture above was declared but never wired to any outlet context.
-// Fixed to match the established pattern in BoardTab.test.tsx: the parent route
-// element is an `<Outlet context={...}>` so the nested route actually renders and
-// `useOutletContext<ProjectShellContext>()` resolves to something real.
-function renderTab() {
+function ticket(overrides: Partial<Ticket> = {}): Ticket {
+  return {
+    id: 't1',
+    project_id: 'p1',
+    key: 'SPB-1',
+    number: 1,
+    summary: 'A ticket',
+    type: 'story',
+    status: 'todo',
+    description: null,
+    assignee_id: null,
+    story_points: null,
+    acceptance_criteria: null,
+    labels: [],
+    sprint_id: null,
+    parent_epic_id: null,
+    context: null,
+    deliverables: [],
+    is_blocked: false,
+    blocked_reason: null,
+    blocked_since: null,
+    created_at: '2026-07-16T00:00:00Z',
+    updated_at: '2026-07-16T00:00:00Z',
+    ...overrides,
+  }
+}
+
+// The parent route's element is an `<Outlet context={...}>`, per the established pattern
+// in BoardTab.test.tsx — a bare `<div />` has no outlet, so the nested route could never
+// mount and the fixture would wire to nothing (the suite would pass vacuously).
+//
+// S6.2: sprints arrive through this context rather than a mocked `listSprints`, because
+// the tab no longer owns the read. `sprintsPhase` is supplied per test, so the three-state
+// read is still driven from here — the load itself is pinned in ProjectShell.test.tsx.
+function renderTab(
+  ctx: {
+    sprints?: Sprint[]
+    sprintsPhase?: SprintsPhase
+    onSprintCreated?: (s: Sprint) => void
+    tickets?: Ticket[]
+    loadingTickets?: boolean
+  } = {},
+) {
+  // `loadingTickets` defaults to false — the landed state every other test here means.
+  // It has to be passed explicitly: the `as ProjectShellContext` cast below is an
+  // assertion, not a check, so omitting a field the component reads is not a type error.
+  // It would arrive as `undefined`, and `undefined` is falsy — the count tests would pass
+  // for the wrong reason and the loading test could never fail.
+  const context = {
+    project,
+    sprints: ctx.sprints ?? [],
+    sprintsPhase: ctx.sprintsPhase ?? 'loaded',
+    onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
+    tickets: ctx.tickets ?? [],
+    loadingTickets: ctx.loadingTickets ?? false,
+  } as ProjectShellContext
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
       <Routes>
-        <Route path="/" element={<Outlet context={{ project } as ProjectShellContext} />}>
+        <Route path="/" element={<Outlet context={context} />}>
           <Route path="sprints" element={<SprintsTab />} />
         </Route>
       </Routes>
@@ -79,85 +121,143 @@ function renderTab() {
   )
 }
 
-beforeEach(() => {
-  vi.mocked(listSprints).mockReset()
-  vi.mocked(listSprints).mockResolvedValue([])
-})
-
 describe('SprintsTab', () => {
-  it('lists a sprint with its name, status, goal and ISO dates', async () => {
-    vi.mocked(listSprints).mockResolvedValue([
-      sprint({
-        name: 'Hardening push',
-        goal: 'Ship the board',
-        start_date: '2026-07-20T00:00:00+00:00',
-        end_date: '2026-08-03T00:00:00+00:00',
-      }),
-    ])
-    renderTab()
+  it('lists a sprint with its name, status, goal and ISO dates', () => {
+    renderTab({
+      sprints: [
+        sprint({
+          name: 'Hardening push',
+          goal: 'Ship the board',
+          start_date: '2026-07-20T00:00:00+00:00',
+          end_date: '2026-08-03T00:00:00+00:00',
+        }),
+      ],
+    })
 
-    expect(await screen.findByText('Hardening push')).toBeVisible()
+    expect(screen.getByText('Hardening push')).toBeVisible()
     expect(screen.getByText('Future')).toBeVisible()
     expect(screen.getByText('Ship the board')).toBeVisible()
     // ISO, UTC-pinned: the day reads the same in every timezone.
     expect(screen.getByText('2026-07-20 – 2026-08-03')).toBeVisible()
   })
 
-  it('renders a sprint with no dates or goal', async () => {
-    vi.mocked(listSprints).mockResolvedValue([sprint()])
-    renderTab()
+  it('renders a sprint with no dates or goal', () => {
+    renderTab({ sprints: [sprint()] })
 
-    expect(await screen.findByText('Sprint 1')).toBeVisible()
+    expect(screen.getByText('Sprint 1')).toBeVisible()
     expect(screen.getByText('No dates set')).toBeVisible()
   })
 
-  it('shows the empty state when the project has no sprints', async () => {
-    renderTab()
+  it('shows the empty state when the project has no sprints', () => {
+    renderTab({ sprints: [] })
 
-    expect(await screen.findByText('No sprints yet.')).toBeVisible()
+    expect(screen.getByText('No sprints yet.')).toBeVisible()
   })
 
-  it('shows an error state — not an empty one — when the read fails', async () => {
-    vi.mocked(listSprints).mockRejectedValue(new Error('offline'))
-    renderTab()
+  it('shows an error state — not an empty one — when the read has failed', () => {
+    renderTab({ sprintsPhase: 'failed' })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load sprints.')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load sprints.')
     expect(screen.queryByText('No sprints yet.')).not.toBeInTheDocument()
   })
 
-  it('passes the loaded sprints to the create dialog for auto-naming', async () => {
-    vi.mocked(listSprints).mockResolvedValue([sprint(), sprint({ id: 's2' })])
-    renderTab()
+  it('passes the loaded sprints to the create dialog for auto-naming', () => {
+    renderTab({ sprints: [sprint(), sprint({ id: 's2' })] })
 
-    expect(await screen.findByRole('button', { name: 'New sprint (2 existing)' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'New sprint (2 existing)' })).toBeVisible()
   })
 
-  it('prepends a newly created sprint to the top of the list, alongside the existing ones', async () => {
-    vi.mocked(listSprints).mockResolvedValue([sprint({ id: 's1', name: 'Older sprint' })])
-    renderTab()
+  // The prepend itself now lives in the shell (it owns the list), so the tab's half of the
+  // contract is that a created sprint is handed to `onSprintCreated`. The prepend *result*
+  // — new sprint on top, existing one still below — is pinned end-to-end against the real
+  // dialog in ProjectShell.test.tsx, so the behaviour is not lost at the task seam.
+  it('hands a newly created sprint to the shell via onSprintCreated', async () => {
+    const onSprintCreated = vi.fn()
+    renderTab({ sprints: [sprint({ id: 's1', name: 'Older sprint' })], onSprintCreated })
     const user = userEvent.setup()
 
-    await user.click(await screen.findByRole('button', { name: 'New sprint (1 existing)' }))
+    await user.click(screen.getByRole('button', { name: 'New sprint (1 existing)' }))
 
-    const items = await screen.findAllByRole('listitem')
-    expect(items).toHaveLength(2)
-    expect(items[0]).toHaveTextContent('Newly created')
-    expect(items[1]).toHaveTextContent('Older sprint')
+    expect(onSprintCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'new-sprint', name: 'Newly created' }),
+    )
   })
 
-  it('does not render the create trigger while sprints are still loading', async () => {
-    vi.mocked(listSprints).mockImplementation(() => new Promise(() => {}))
-    renderTab()
+  // The count is the sprint's ticket membership, read through `selectSprintTickets` — the
+  // same `sprint_id` rule the backlog reads from the other side. The unit is real `sr-only`
+  // text, not an `aria-label`: a <span> is `role="generic"`, on which ARIA 1.2 prohibits
+  // aria-label (axe-core flags it), and real text gives the negative assertions below a
+  // positive control.
+  it("shows the count of a sprint's tickets, with a unit for screen readers", () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Hardening push' })],
+      tickets: [
+        ticket({ id: 't1', sprint_id: 's1' }),
+        ticket({ id: 't2', sprint_id: 's1' }),
+        ticket({ id: 't3', sprint_id: 's1' }),
+      ],
+    })
 
-    expect(await screen.findByText('Loading…')).toBeVisible()
+    const row = screen.getByRole('listitem')
+    expect(within(row).getByText('3')).toBeVisible()
+    expect(within(row).getByText('tickets')).toBeInTheDocument()
+  })
+
+  it('shows 0 for a sprint with no tickets', () => {
+    renderTab({ sprints: [sprint({ id: 's1' })], tickets: [] })
+
+    expect(within(screen.getByRole('listitem')).getByText('0')).toBeVisible()
+  })
+
+  // The shell serves `tickets: []` while its read is in flight, so a count rendered
+  // ungated reads "0 tickets" on every sprint until it lands, then flips to the truth.
+  // The `not('0')` assertion is the point of the test — asserting only that '—' is
+  // present would also pass for a badge that rendered both.
+  it('shows — rather than a false 0 while the ticket list has not landed', () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Hardening push' })],
+      tickets: [], // what the shell serves before `listTickets` resolves
+      loadingTickets: true,
+    })
+
+    const row = screen.getByRole('listitem')
+    expect(within(row).getByText('—')).toBeVisible()
+    expect(within(row).queryByText('0')).toBeNull()
+    // The em-dash is aria-hidden, so the count's meaning has to reach a screen reader as
+    // real text; "loading" is honest where "0 tickets" would be a claim we cannot make.
+    expect(within(row).getByText('Ticket count loading')).toBeInTheDocument()
+    expect(within(row).queryByText('tickets')).toBeNull()
+  })
+
+  // The counterweight to the test above: without this, a count that ignored `sprint_id`
+  // entirely (`tickets.length`) would pass every assertion here.
+  it("counts only that sprint's tickets — not the backlog's, and not another sprint's", () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'First' }), sprint({ id: 's2', name: 'Second' })],
+      tickets: [
+        ticket({ id: 't1', sprint_id: 's1' }),
+        ticket({ id: 't2', sprint_id: 's1' }),
+        ticket({ id: 't3', sprint_id: 's2' }),
+        ticket({ id: 't4', sprint_id: null }), // backlog
+      ],
+    })
+
+    const [first, second] = screen.getAllByRole('listitem')
+    expect(within(first!).getByText('2')).toBeVisible()
+    expect(within(second!).getByText('1')).toBeVisible()
+  })
+
+  it('does not render the create trigger while sprints are still loading', () => {
+    renderTab({ sprintsPhase: 'loading' })
+
+    expect(screen.getByText('Loading…')).toBeVisible()
     expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
   })
 
-  it('does not render the create trigger when the read has failed', async () => {
-    vi.mocked(listSprints).mockRejectedValue(new Error('offline'))
-    renderTab()
+  it('does not render the create trigger when the read has failed', () => {
+    renderTab({ sprintsPhase: 'failed' })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load sprints.')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load sprints.')
     expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
   })
 })

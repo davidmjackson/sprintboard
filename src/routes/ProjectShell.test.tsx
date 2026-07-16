@@ -1,14 +1,16 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ProjectShell } from './ProjectShell'
+import { ProjectShell, type ProjectShellContext } from './ProjectShell'
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
+import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
-import type { Ticket } from '@/lib/domain'
-import { createTicket, deleteTicket, listTickets } from '@/lib/tickets'
+import type { Sprint, Ticket } from '@/lib/domain'
+import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
+import { createSprint, listSprints } from '@/lib/sprints'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
@@ -24,13 +26,24 @@ vi.mock('@/lib/tickets', async (orig) => ({
   blockTicket: vi.fn(),
   unblockTicket: vi.fn(),
 }))
+// Same spread-the-real-module reasoning: `defaultSprintName` is a pure helper the real
+// CreateSprintDialog calls, so only the network-touching reads/writes are mocked.
+vi.mock('@/lib/sprints', async (orig) => ({
+  ...(await orig<typeof import('@/lib/sprints')>()),
+  listSprints: vi.fn(),
+  createSprint: vi.fn(),
+}))
 
 const mockList = vi.mocked(listTickets)
 const mockDelete = vi.mocked(deleteTicket)
+const mockListSprints = vi.mocked(listSprints)
 beforeEach(() => {
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
   mockDelete.mockReset()
+  vi.mocked(updateTicket).mockReset()
+  mockListSprints.mockReset().mockResolvedValue([])
+  vi.mocked(createSprint).mockReset()
 })
 
 const PROJECTS = [
@@ -60,6 +73,16 @@ const ticketBase: Ticket = {
   created_at: '2026-07-15T00:00:00Z',
   updated_at: '2026-07-15T00:00:00Z',
 }
+const sprintBase: Sprint = {
+  id: 's1',
+  project_id: 'p1',
+  name: 'Sprint 1',
+  goal: null,
+  status: 'future',
+  start_date: null,
+  end_date: null,
+  created_at: '2026-07-15T00:00:00+00:00',
+}
 const ticketA = ticketBase
 const ticketB: Ticket = {
   ...ticketBase,
@@ -67,6 +90,29 @@ const ticketB: Ticket = {
   key: 'APP-2',
   number: 2,
   summary: 'Beta summary',
+}
+
+/**
+ * Reads back the sprint fields the shell publishes on its outlet context — the contract
+ * Task 3's picker consumes from `TicketDetailDialog`.
+ *
+ * Deliberately NOT SprintsTab: while the tab still loaded sprints itself, "the tab shows a
+ * sprint" and "the shell shows an error" were both true before the hoist, so a test driving
+ * the real tab could not tell the two apart and passed against the un-hoisted code. This
+ * probe can only see what the shell put on the context, so it fails until the load moves.
+ */
+function SprintContextProbe() {
+  const { sprints, sprintsPhase } = useOutletContext<ProjectShellContext>()
+  return (
+    <div>
+      <p>phase: {sprintsPhase}</p>
+      <ul>
+        {sprints.map((s) => (
+          <li key={s.id}>{s.name}</li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 /** Stands in for AppLayout: hands the project list down through the outlet context. */
@@ -84,6 +130,8 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route index element={<Navigate to="board" replace />} />
             <Route path="board" element={<BoardTab />} />
             <Route path="backlog" element={<BacklogTab />} />
+            <Route path="sprints" element={<SprintsTab />} />
+            <Route path="probe" element={<SprintContextProbe />} />
           </Route>
         </Route>
       </Routes>
@@ -275,5 +323,124 @@ describe('ProjectShell', () => {
     await waitFor(() => expect(vi.mocked(createTicket)).toHaveBeenCalled())
     expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
     expect(screen.queryByText('Sprinted')).not.toBeInTheDocument()
+  })
+
+  // S6.2: the sprint read lives in the shell, because the detail dialog's sprint picker is
+  // rendered here. These drive the REAL SprintsTab, as the suite does for Board/Backlog, so
+  // they pin the shell→context→tab wiring rather than a stub's props.
+  // Driven from a route with NO Sprints tab, so only the shell can be doing the reading.
+  it("loads the project's sprints itself, scoped to the project id", async () => {
+    renderShell('/projects/p1/probe')
+    await waitFor(() => expect(mockListSprints).toHaveBeenCalledWith('p1'))
+    expect(mockListSprints).toHaveBeenCalledTimes(1)
+  })
+
+  it('publishes the loaded sprints on the outlet context', async () => {
+    mockListSprints.mockResolvedValue([{ ...sprintBase, name: 'Hardening push' }])
+    renderShell('/projects/p1/probe')
+
+    expect(await screen.findByText('Hardening push')).toBeVisible()
+    expect(screen.getByText('phase: loaded')).toBeVisible()
+  })
+
+  // The three-state read, pinned THROUGH the hoist. The shell's ticket read next door
+  // swallows a rejection into an empty list — moving sprints into the same file is exactly
+  // how that defect spreads by osmosis. A failed sprint read must reach the context as
+  // `failed`, never as a loaded-but-empty list.
+  it("publishes phase 'failed' on the context when the read rejects, never an empty list", async () => {
+    mockListSprints.mockRejectedValue(new Error('offline'))
+    renderShell('/projects/p1/probe')
+
+    expect(await screen.findByText('phase: failed')).toBeVisible()
+    expect(screen.queryByText('phase: loaded')).not.toBeInTheDocument()
+  })
+
+  // End-to-end through the REAL tab: the shell's context actually drives the rendered
+  // error state, not just a probe's text.
+  it('renders the sprint error state — not the empty state — in the Sprints tab', async () => {
+    mockListSprints.mockRejectedValue(new Error('offline'))
+    renderShell('/projects/p1/sprints')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load sprints.')
+    expect(screen.queryByText('No sprints yet.')).not.toBeInTheDocument()
+  })
+
+  // The prepend moved from SprintsTab's own state into the shell, so the assertion that
+  // pinned it moved here with it — driven through the REAL CreateSprintDialog, so the
+  // whole chain (dialog → tab → context → shell state → tab) is live. Without this, the
+  // hoist would silently drop the behaviour the tab suite used to cover.
+  it('prepends a newly created sprint to the top of the Sprints tab list', async () => {
+    const user = userEvent.setup()
+    mockListSprints.mockResolvedValue([{ ...sprintBase, id: 'sOld', name: 'Older sprint' }])
+    vi.mocked(createSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 'sNew', name: 'Newly created' },
+    })
+    renderShell('/projects/p1/sprints')
+
+    await user.click(await screen.findByRole('button', { name: 'New sprint' }))
+    await user.click(await screen.findByRole('button', { name: 'Create sprint' }))
+
+    await waitFor(() => expect(screen.getByText('Newly created')).toBeInTheDocument())
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Newly created')
+    expect(items[1]).toHaveTextContent('Older sprint')
+    // Local mutation, not a refetch: a second read is the stale-response race S4.1 removed.
+    expect(mockListSprints).toHaveBeenCalledTimes(1)
+  })
+
+  // THE SEAM (S6.2 AC 1), both directions, through the REAL BacklogTab and the REAL
+  // TicketDetailDialog — no stubs on either side.
+  //
+  // This test exists because the dialog's `sprints`/`sprintsPhase` props are optional and
+  // defaulted: forget to pass them from the shell and the picker renders permanently
+  // disabled while every per-task unit test still passes. Neither suite either side of this
+  // seam can see that — the dialog's own tests pass the props by hand, and the shell's tests
+  // never touched the picker. Deleting `sprints={sprints}` from the call site must turn this
+  // test red; that has been verified by doing it.
+  it('moves a ticket into a sprint and back to the backlog from the detail dialog (real wiring)', async () => {
+    const u = userEvent.setup()
+    mockList.mockResolvedValue([ticketA])
+    mockListSprints.mockResolvedValue([{ ...sprintBase, id: 's1', name: 'Hardening push' }])
+    // Echo the patch back as the server row would, so the reconcile after the optimistic
+    // update agrees with it rather than reverting the field under test.
+    vi.mocked(updateTicket).mockImplementation(async (id, patch) => ({
+      ok: true,
+      ticket: { ...ticketA, id, ...patch } as Ticket,
+    }))
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Enabled at all only because `sprintsPhase` arrived: the picker is
+    // `disabled={sprintsPhase !== 'loaded'}`, and its default is 'loading'.
+    const picker = await screen.findByRole('combobox', { name: 'sprint' })
+    expect(picker).toBeEnabled()
+    // Populated only because `sprints` arrived.
+    expect(within(picker).getByRole('option', { name: /Hardening push/ })).toBeInTheDocument()
+
+    // Into the sprint.
+    await u.selectOptions(picker, 's1')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { sprint_id: 's1' }),
+    )
+    // …and it leaves the backlog: the optimistic update flowed back through
+    // `onTicketUpdated` into the shell's list, which the real BacklogTab filters.
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
+
+    // Back out to the backlog. '' is the domain's "no sprint", so the patch is `null`.
+    await u.selectOptions(picker, '')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenLastCalledWith('tA', { sprint_id: null }),
+    )
+    await waitFor(() =>
+      expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument(),
+    )
+    // The row is back. Close the modal first: the open dialog renders the summary too, and
+    // `aria-hidden`s the backlog behind it, so a role query can only see the row once the
+    // dialog is gone.
+    await u.keyboard('{Escape}')
+    expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
   })
 })

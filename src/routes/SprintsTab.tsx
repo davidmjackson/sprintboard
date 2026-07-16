@@ -1,39 +1,10 @@
-import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
-import { listSprints } from '@/lib/sprints'
+import { selectSprintTickets } from '@/lib/backlog'
 import { formatSprintDate } from '@/lib/sprint-dates'
 import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CreateSprintDialog } from './CreateSprintDialog'
-
-/**
- * The project's sprints, newest first, with a create dialog.
- *
- * Sprints load here rather than in `ProjectShellContext` because they have exactly one
- * consumer: tickets are hoisted into the shell only because Board and Backlog both read
- * them. S6.2 will need sprints in the backlog and will hoist them then (YAGNI).
- *
- * The load is genuinely three-state — loading / loaded / failed. That is a deliberate
- * departure from the shell's ticket read, which swallows a rejection into an empty list
- * and derives `loadingTickets` purely from project-id tagging, so it *structurally cannot*
- * represent "failed" — which is why a paused database renders as "Nothing in the backlog."
- * New code does not inherit that.
- *
- * "loading" itself is still derived from project-id tagging (the same device the shell's
- * ticket read uses), rather than an explicit `setState({ phase: 'loading' })` at the top of
- * the effect — that would be a synchronous setState in an effect body, which
- * `react-hooks/set-state-in-effect` (this repo's lint gate) rejects as a cascading-render
- * hazard. Only "loaded" and "failed" need to be stored; "loading" is just "neither has
- * landed for this project yet".
- *
- * The create trigger only renders once `phase === 'loaded'`. `existing` would otherwise be
- * `[]` during both loading and failed, so `defaultSprintName` would number off an empty
- * array — a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the
- * `onCreated` guard above drops it) if the read failed.
- */
-type Loaded =
-  { projectId: string; phase: 'loaded'; sprints: Sprint[] } | { projectId: string; phase: 'failed' }
 
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
@@ -48,25 +19,28 @@ function SprintDates({ sprint }: { sprint: Sprint }) {
   )
 }
 
+/**
+ * The project's sprints, newest first, with a create dialog.
+ *
+ * The sprints themselves live in `ProjectShellContext` (S6.2): the shell renders the ticket
+ * detail dialog, whose sprint picker needs the same list this tab shows, so the read was
+ * hoisted there and this tab became a pure view of it. The three-state discriminant
+ * (`sprintsPhase`) and the reasoning behind it moved with it — see `ProjectShell`.
+ *
+ * The create trigger only renders once `sprintsPhase === 'loaded'`. `sprints` is `[]` during
+ * both loading and failed, so `defaultSprintName` would otherwise number off an empty array —
+ * a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the shell's
+ * `onSprintCreated` guard drops it) if the read failed.
+ */
 export function SprintsTab() {
-  const { project } = useOutletContext<ProjectShellContext>()
-  const [loaded, setLoaded] = useState<Loaded | null>(null)
-
-  useEffect(() => {
-    let active = true
-    listSprints(project.id)
-      .then((sprints) => active && setLoaded({ projectId: project.id, phase: 'loaded', sprints }))
-      .catch(() => active && setLoaded({ projectId: project.id, phase: 'failed' }))
-    return () => {
-      active = false
-    }
-  }, [project.id])
-
-  // Not this project's result yet (still in flight, or a previous project's landed after
-  // the switch) reads as "loading" — the same tagging device as the shell's ticket read.
-  const current = loaded?.projectId === project.id ? loaded : null
-  const phase = current?.phase ?? 'loading'
-  const sprints = current?.phase === 'loaded' ? current.sprints : []
+  const {
+    project,
+    sprints,
+    sprintsPhase: phase,
+    onSprintCreated,
+    tickets,
+    loadingTickets,
+  } = useOutletContext<ProjectShellContext>()
 
   return (
     <div className="space-y-4">
@@ -76,21 +50,7 @@ export function SprintsTab() {
           <CreateSprintDialog
             projectId={project.id}
             existing={sprints}
-            onCreated={(sprint) =>
-              // Prepend: the list is newest-first, so the new sprint belongs at the top.
-              // A local mutation, not a refetch — the same reasoning as the shell's
-              // append-on-create (S4.1): an unguarded refetch resolving after a project
-              // switch would clobber the new project's list.
-              setLoaded((prev) =>
-                prev && prev.projectId === project.id && prev.phase === 'loaded'
-                  ? {
-                      projectId: prev.projectId,
-                      phase: 'loaded',
-                      sprints: [sprint, ...prev.sprints],
-                    }
-                  : prev,
-              )
-            }
+            onCreated={onSprintCreated}
           />
         ) : null}
       </div>
@@ -122,6 +82,45 @@ export function SprintsTab() {
                 </span>
               ) : null}
               <SprintDates sprint={sprint} />
+              {/* Membership comes from `selectSprintTickets`, never an inline filter: the
+                  `sprint_id` rule lives in `backlog.ts` and is read from both sides there —
+                  the backlog is `sprint_id is null`, a sprint's tickets are the ones naming
+                  it. The bare number needs a unit for screen readers, and it is real
+                  `sr-only` text rather than an `aria-label`: a <span> maps to
+                  `role="generic"`, on which ARIA 1.2 *prohibits* aria-label — browsers
+                  honour it so it looks fine, but axe-core flags it.
+
+                  The count is gated on `loadingTickets` because `tickets` is `[]` before the
+                  shell's read lands: deep-linking to this tab would otherwise render a
+                  confident "0 tickets" per sprint and then flip to real numbers. This count
+                  is S6.2's only observable evidence that a ticket joined a sprint, so a
+                  false zero discredits the one thing the story is meant to show. '—' is not
+                  a number and cannot be misread as one.
+
+                  What this does NOT fix, deliberately: a FAILED ticket read still shows
+                  "0 tickets", permanently. `loadingTickets` is derived purely from
+                  project-id tagging and the shell's `.catch()` swallows a rejected
+                  `listTickets` into `{ tickets: [] }` — which *resolves* the load, so on
+                  failure `loadingTickets` is false, not true. The state needed to tell
+                  "empty" from "broken" does not exist here to be read. That is the same
+                  app-wide, pre-existing debt behind BacklogTab's "Nothing in the backlog."
+                  and BoardTab's "No tickets yet." on a paused database. Fixing it means
+                  giving the shell's ticket read a real three-state phase (as S6.1 did for
+                  sprints) — its own story, not smuggled into this one. */}
+              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
+                {loadingTickets ? (
+                  <>
+                    <span aria-hidden="true">—</span>
+                    {/* Honest: the number is not known yet, rather than claiming a count. */}
+                    <span className="sr-only">Ticket count loading</span>
+                  </>
+                ) : (
+                  <>
+                    {selectSprintTickets(tickets, sprint.id).length}
+                    <span className="sr-only"> tickets</span>
+                  </>
+                )}
+              </span>
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
                 {SPRINT_STATUS_LABELS[sprint.status]}
               </span>
