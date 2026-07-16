@@ -211,7 +211,33 @@ describe('BacklogTab', () => {
     renderTab(BacklogTab, ctxWith({ tickets: rows }))
     const row = screen.getByRole('button', { name: /do the todo/i })
     expect(within(row).getByText('5')).toBeInTheDocument()
+    // The positive control for the negative assertion in the next test: proves the
+    // "story points" text exists to be missing, so that test cannot pass because the
+    // label was renamed or dropped.
+    expect(within(row).getByText(/story points/i)).toBeInTheDocument()
     expect(within(row).getByText(USER.email)).toBeInTheDocument()
+  })
+
+  it('falls back to "You" rather than a blank cell when the session has no email', () => {
+    const rows = [
+      {
+        id: 't1',
+        key: 'MP-1',
+        number: 1,
+        summary: 'Do the todo',
+        type: 'story',
+        status: 'todo',
+        sprint_id: null,
+        assignee_id: USER.id,
+      },
+    ] as never
+    // The shell builds `email: user.email ?? ''`, so '' is representable. An assigned
+    // ticket must never render an empty assignee cell — that reads as broken, not as
+    // assigned-to-you.
+    renderTab(BacklogTab, ctxWith({ tickets: rows, currentUser: { id: USER.id, email: '' } }))
+    const row = screen.getByRole('button', { name: /do the todo/i })
+    expect(within(row).getByText('You')).toBeInTheDocument()
+    expect(within(row).queryByText('Unassigned')).not.toBeInTheDocument()
   })
 
   it('shows Unassigned and no points when the row has neither', () => {
@@ -231,7 +257,7 @@ describe('BacklogTab', () => {
     renderTab(BacklogTab, ctxWith({ tickets: rows }))
     const row = screen.getByRole('button', { name: /do the todo/i })
     expect(within(row).getByText('Unassigned')).toBeInTheDocument()
-    expect(within(row).queryByLabelText(/story points/i)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/story points/i)).not.toBeInTheDocument()
   })
 
   it('shows a zero-point row as 0, not as unestimated', () => {

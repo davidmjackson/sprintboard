@@ -512,13 +512,18 @@ describe.skipIf(!hasRlsCredentials)(
 )
 
 /**
- * S5.1 — the backlog rule proven live: **the backlog is exactly `sprint_id is null`.**
+ * S5.1 — the backlog rule against the real database: **the backlog is exactly
+ * `sprint_id is null`.**
  *
- * This is the only place the rule is observable end-to-end. There is no sprint UI yet
- * (E6) and `createTicket` never sends `sprint_id`, so through the app today every row is
- * null and the filter is a behavioural no-op — a client-only test would pass whether or
- * not the rule were implemented. Here we insert a real sprint, park a Done ticket in it,
- * and prove it stays out of the backlog while an unsprinted one stays in.
+ * The rule itself is covered by the client tests (`backlog.test.ts` and the BacklogTab
+ * cases in `BoardTab.test.tsx` — revert `selectBacklogTickets` and they go red). What
+ * those cannot cover is that a *real* row behaves the way their hand-built fixtures
+ * assume, and today nothing in the app can produce one: there is no sprint UI yet (E6)
+ * and `createTicket` never sends `sprint_id`, so every row the app writes is already
+ * null. So this suite does what the app cannot — inserts a real completed sprint, parks
+ * a Done ticket in it — and pins the three things only Postgres can answer: the column
+ * defaults to null, the DB's own `is('sprint_id', null)` agrees with our client-side
+ * rule, and deleting a sprint returns its tickets to the backlog.
  */
 describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   let a: SupabaseClient<Database>
@@ -659,5 +664,11 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
     expect(row!.id).toBe(ticket!.id) // ticket survives
     expect(row!.sprint_id).toBeNull() // and is back in the backlog
     expect(row!.project_id).toBe(projectId) // project_id untouched
+
+    // This test's ticket is now permanently unsprinted, i.e. a second row in this
+    // shared project's backlog. Remove it rather than leave it for whatever assertion
+    // lands below: the exact-list check above ("=== [backlogTicketId]") is the kind that
+    // would then fail pointing at the backlog rule, which would be fine.
+    await a.from('tickets').delete().eq('id', ticket!.id)
   }, 30_000)
 })

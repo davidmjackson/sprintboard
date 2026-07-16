@@ -29,8 +29,14 @@ export function BacklogTab() {
   if (backlog.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-        {/* Accurate whether the project has no tickets at all or every ticket is in a
-            sprint — the two are the same fact from the backlog's point of view. */}
+        {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
+            backlog's point of view those are the same fact. It does NOT cover a third
+            state: the shell swallows a `listTickets` rejection into an empty list
+            (ProjectShell's catch), so a failed read is indistinguishable from an empty
+            backlog and claims this too. Pre-existing and app-wide — BoardTab says "No
+            tickets yet." off the same state — and `loadingTickets` is derived purely
+            from project-id tagging, so it structurally cannot represent "failed".
+            Surfacing read errors is its own story; noted here, not smuggled into S5.1. */}
         <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
       </div>
     )
@@ -55,19 +61,27 @@ export function BacklogTab() {
             {ticket.is_blocked ? <BlockedBadge /> : null}
             {/* `!= null`, not a falsy check: 0 is a real estimate, not "unestimated". */}
             {ticket.story_points != null ? (
-              <span
-                aria-label={`${ticket.story_points} story points`}
-                className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums"
-              >
+              <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
                 {ticket.story_points}
+                {/* A bare number reads as nothing on its own, so the unit is spelled out
+                    for screen readers. It is real text rather than an `aria-label`
+                    because a <span> maps to `role="generic"`, on which ARIA 1.2
+                    *prohibits* aria-label — browsers honour it today, axe-core flags it,
+                    and the row is a <button>, so this text joins its accessible name. */}
+                <span className="sr-only"> story points</span>
               </span>
             ) : null}
             <span className="text-muted-foreground w-40 shrink-0 truncate text-right text-xs">
               {/* Phase 1 is single-owner, so the only name we can resolve is the signed-in
                   user's — `listTickets` does no `profiles` join, and `assignee_id` is a
                   bare uuid. Anything else reads as Unassigned, exactly as the detail
-                  dialog's `{ Unassigned, you }` picker already does. */}
-              {ticket.assignee_id === currentUser.id ? currentUser.email : 'Unassigned'}
+                  dialog's `{ Unassigned, you }` picker already does.
+
+                  `currentUser.email` falls back to '' in the shell when the session has
+                  no email, so it is not safe to render bare: an assigned ticket would
+                  show a blank cell, indistinguishable from a broken one. 'You' is the
+                  honest answer — we know it is theirs, we just have no name for them. */}
+              {ticket.assignee_id === currentUser.id ? currentUser.email || 'You' : 'Unassigned'}
             </span>
           </button>
         </li>
