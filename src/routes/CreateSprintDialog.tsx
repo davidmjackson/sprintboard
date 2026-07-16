@@ -17,7 +17,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from '@/components/ui/form'
 
 /**
  * Create-sprint dialog. `status` is not on this form and is never sent — the column
@@ -84,8 +91,8 @@ export function CreateSprintDialog({
         <DialogHeader>
           <DialogTitle>Create a sprint</DialogTitle>
           <DialogDescription>
-            It starts as a future sprint. Everything here is optional — leave the name blank and
-            we will number it for you.
+            It starts as a future sprint. Everything here is optional — leave the name blank and we
+            will number it for you.
           </DialogDescription>
         </DialogHeader>
 

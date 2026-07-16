@@ -27,7 +27,8 @@ import { CreateSprintDialog } from './CreateSprintDialog'
  * hazard. Only "loaded" and "failed" need to be stored; "loading" is just "neither has
  * landed for this project yet".
  */
-type Loaded = { projectId: string; phase: 'loaded'; sprints: Sprint[] } | { projectId: string; phase: 'failed' }
+type Loaded =
+  { projectId: string; phase: 'loaded'; sprints: Sprint[] } | { projectId: string; phase: 'failed' }
 
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
