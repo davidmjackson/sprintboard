@@ -1,5 +1,15 @@
 import { Button } from '@/components/ui/button'
 
+/** The failure copy, keyed by resource. Lives here rather than in `domain.ts`: that module is
+ *  the single home for status/type/column display names, which Rung 3 makes dynamic — this is
+ *  failure copy owned by the component that renders it, and putting it there would dilute the
+ *  rule. Kept above the docblock below so that block anchors to `LoadFailure`, which it
+ *  describes. */
+const FAILURE_COPY: Record<'tickets' | 'sprints', string> = {
+  tickets: 'Could not load tickets.',
+  sprints: 'Could not load sprints.',
+}
+
 /**
  * Shared "could not load this — try again" block. Extracted from the dashed-border failure
  * box `SprintsTab` had before Backlog and Board grew the same failed-read case: three copies
@@ -17,13 +27,9 @@ import { Button } from '@/components/ui/button'
  * discriminant makes the wrong call untypeable rather than merely discouraged — the same move
  * as `SprintCreateInsert = Omit<SprintInsert, 'status'>` and
  * `TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number'>` elsewhere in this codebase.
- * Adding a resource means adding a case here, which is exactly the review moment we want.
+ * Adding a resource means adding a case to `FAILURE_COPY`, which is exactly the review moment
+ * we want.
  */
-const FAILURE_COPY: Record<'tickets' | 'sprints', string> = {
-  tickets: 'Could not load tickets.',
-  sprints: 'Could not load sprints.',
-}
-
 export function LoadFailure({
   resource,
   onRetry,
