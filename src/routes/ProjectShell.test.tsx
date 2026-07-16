@@ -163,6 +163,34 @@ describe('ProjectShell', () => {
     expect(screen.queryByRole('textbox', { name: /summary/i })).not.toBeInTheDocument()
   })
 
+  it("offers the project's epics in a non-epic ticket's parent-epic picker (real wiring)", async () => {
+    const u = userEvent.setup()
+    const epic: Ticket = {
+      ...ticketBase,
+      id: 'tE',
+      key: 'APP-3',
+      number: 3,
+      summary: 'Platform epic',
+      type: 'epic',
+    }
+    const story: Ticket = {
+      ...ticketBase,
+      id: 'tS',
+      key: 'APP-4',
+      number: 4,
+      summary: 'Child story',
+      type: 'story',
+    }
+    mockList.mockResolvedValue([epic, story])
+    renderShell('/projects/p1')
+
+    await u.click(await screen.findByRole('button', { name: /Child story/i }))
+    const picker = await screen.findByRole('combobox', { name: /parent epic/i })
+    expect(picker).toBeInTheDocument()
+    // The epic from this project is a selectable parent — proves ProjectShell wired `epics`.
+    expect(screen.getByRole('option', { name: /Platform epic/i })).toBeInTheDocument()
+  })
+
   it('removes a ticket from the board after confirming delete', async () => {
     const user = userEvent.setup()
     mockList.mockResolvedValue([

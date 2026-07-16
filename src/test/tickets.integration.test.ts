@@ -377,3 +377,135 @@ describe.skipIf(!hasRlsCredentials)('S4.4 ticket-block contract', () => {
     expect(row!.is_blocked).toBe(false)
   }, 30_000)
 })
+
+/**
+ * S4.5 — the epic contract the detail dialog relies on, proven live: an epic's `context`
+ * (text) and `deliverables` (jsonb) round-trip as sent; a child can reference a parent
+ * epic in the SAME project; the composite fk `tickets_epic_fk (parent_epic_id, project_id)`
+ * rejects a parent in a DIFFERENT project (keeping the reference in-project rather than
+ * merely discouraged); and deleting a parent epic nulls its children's `parent_epic_id`
+ * via the fk's `on delete set null`, so ticket numbers and children survive.
+ */
+describe.skipIf(!hasRlsCredentials)(
+  'S4.5 epic context / deliverables / parent-epic contract',
+  () => {
+    let a: SupabaseClient<Database>
+    let userAId: string
+    let p1: string
+    let p2: string
+    let epic1: string
+    let story1: string
+    let epic2: string
+
+    async function newProject(name: string): Promise<string> {
+      const { data, error } = await a
+        .from('projects')
+        .insert({ owner_id: userAId, name, key: runKey() })
+        .select()
+        .single()
+      if (error) throw error
+      return data!.id
+    }
+
+    async function newTicket(
+      project: string,
+      type: 'epic' | 'story',
+      summary: string,
+    ): Promise<string> {
+      const { data, error } = await a
+        .from('tickets')
+        .insert({ project_id: project, type, summary })
+        .select()
+        .single()
+      if (error) throw error
+      return data!.id
+    }
+
+    beforeAll(async () => {
+      a = await signIn('A')
+      userAId = (await a.auth.getUser()).data.user!.id
+      p1 = await newProject('Epic contract P1')
+      p2 = await newProject('Epic contract P2')
+      epic1 = await newTicket(p1, 'epic', 'Epic one')
+      story1 = await newTicket(p1, 'story', 'Story one')
+      epic2 = await newTicket(p2, 'epic', 'Epic two')
+    }, 30_000)
+
+    afterAll(async () => {
+      await a.from('projects').delete().eq('id', p1)
+      await a.from('projects').delete().eq('id', p2)
+    }, 30_000)
+
+    it("round-trips an epic's context and deliverables (jsonb) exactly as sent", async () => {
+      const deliverables = ['Ship the API', 'Wire the UI']
+      const { data, error } = await a
+        .from('tickets')
+        .update({ context: 'Why this epic exists', deliverables })
+        .eq('id', epic1)
+        .select()
+        .single()
+
+      expect(error).toBeNull()
+      expect(data!.context).toBe('Why this epic exists')
+      expect(data!.deliverables).toEqual(deliverables)
+    }, 30_000)
+
+    it('references a parent epic in the same project', async () => {
+      const { data, error } = await a
+        .from('tickets')
+        .update({ parent_epic_id: epic1 })
+        .eq('id', story1)
+        .select()
+        .single()
+
+      expect(error).toBeNull()
+      expect(data!.parent_epic_id).toBe(epic1)
+    }, 30_000)
+
+    it('rejects a parent epic in another project (the composite fk keeps it in-project)', async () => {
+      // story1 lives in p1; epic2 lives in p2. The fk checks (epic2, p1) against
+      // tickets(id, project_id) — no such pair exists, so it raises 23503. A owns BOTH
+      // projects, so this is the fk holding the line, not RLS.
+      const { data, error } = await a
+        .from('tickets')
+        .update({ parent_epic_id: epic2 })
+        .eq('id', story1)
+        .select()
+
+      expect(error).not.toBeNull()
+      expect(error!.code).toBe('23503') // foreign_key_violation
+      expect(data).toBeNull()
+
+      // Independent control: the parent is still the in-project epic1, not moved.
+      const { data: row } = await a
+        .from('tickets')
+        .select('parent_epic_id')
+        .eq('id', story1)
+        .single()
+      expect(row!.parent_epic_id).toBe(epic1)
+    }, 30_000)
+
+    it("nulls a child's parent_epic_id when the parent epic is deleted (on delete set null)", async () => {
+      const parent = await newTicket(p1, 'epic', 'Doomed epic')
+      const { data: child, error: childErr } = await a
+        .from('tickets')
+        .insert({ project_id: p1, type: 'story', summary: 'Orphan-to-be', parent_epic_id: parent })
+        .select()
+        .single()
+      if (childErr) throw childErr
+      expect(child!.parent_epic_id).toBe(parent)
+
+      // Delete the parent epic — the child must survive with a nulled parent, not cascade.
+      const { error: delErr } = await a.from('tickets').delete().eq('id', parent)
+      expect(delErr).toBeNull()
+
+      const { data: row } = await a
+        .from('tickets')
+        .select('id, parent_epic_id')
+        .eq('id', child!.id)
+        .single()
+      expect(row!.id).toBe(child!.id) // child still exists
+      expect(row!.parent_epic_id).toBeNull() // parent reference cleared
+    }, 30_000)
+  },
+)
