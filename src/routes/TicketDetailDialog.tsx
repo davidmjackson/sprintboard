@@ -260,6 +260,12 @@ export function TicketDetailDialog({
 
   // The draft for the "add a deliverable" input (epic only). Cleared on a successful add.
   const [deliverableDraft, setDeliverableDraft] = useState('')
+  // True while a deliverables write is in flight — serializes them so two quick add/remove/
+  // edits can't race into a lost update (they are whole-array overwrites of one column).
+  const [deliverablesPending, setDeliverablesPending] = useState(false)
+  // The add-deliverable input, so the dialog's Escape handler can tell "Esc in the add
+  // field" (clear the draft, stay open) from "Esc anywhere else" (dismiss the dialog).
+  const newDeliverableRef = useRef<HTMLInputElement>(null)
 
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
@@ -297,7 +303,7 @@ export function TicketDetailDialog({
   // always a well-formed `string[]` and never a half-mutated jsonb value.
   const deliverables = parseDeliverables(ticket.deliverables)
 
-  async function commit(patch: TicketUpdate) {
+  async function commit(patch: TicketUpdate): Promise<boolean> {
     const current = ticketRef.current!
     const keys = Object.keys(patch) as (keyof TicketUpdate)[]
     const revert = pickFields(current, keys) // pre-change values of ONLY the changed keys
@@ -308,7 +314,7 @@ export function TicketDetailDialog({
     // its optimistic value was already applied to parent state before the await and carried
     // forward by the fresh instance, so reconciling here would only clobber the live
     // instance's newer edits. Bail (Ultracode Critical — the mountedRef guard).
-    if (!mountedRef.current) return
+    if (!mountedRef.current) return false
     // `ticketRef.current` may also have moved on WITHIN this live instance — to a DIFFERENT
     // ticket (the dialog switched tickets while this save was in flight) or to `null`.
     // Merging onto it unguarded would emit a wrong-identity object (or, for null, an id-less
@@ -323,6 +329,7 @@ export function TicketDetailDialog({
         ticketId: current.id,
         message: 'Could not save your change. Please try again.',
       })
+      return false
     } else {
       // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
       // ticket — never swap in the whole `result.ticket`, which would clobber a
@@ -333,26 +340,41 @@ export function TicketDetailDialog({
       const reconciled = pickFields(result.ticket, keys)
       onUpdated({ ...base, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
       setErrorFor(null)
+      return true
     }
   }
 
   // Deliverables are an epic-only, order-preserving `string[]`. Each mutation rebuilds the
-  // whole list and reuses `commit` — so add/remove/edit ride the same optimistic-with-
-  // rollback path as every other field, and a failed save reverts just `deliverables`.
-  function addDeliverable() {
+  // WHOLE array and commits it — which makes two concurrent mutations conflicting writes to
+  // one column, not the coexisting edits the user intends ("add A", "add B"). Out-of-order
+  // resolution would then persist last-write-wins and silently drop an item. So deliverable
+  // writes are SERIALIZED: `deliverablesPending` blocks a second mutation until the first
+  // reconciles, and Add/remove are disabled meanwhile. Each still rides the shared optimistic
+  // commit, so a failed save reverts just `deliverables`.
+  async function writeDeliverables(next: string[]): Promise<boolean> {
+    if (deliverablesPending) return false
+    setDeliverablesPending(true)
+    const ok = await commit({ deliverables: next })
+    if (!mountedRef.current) return ok
+    setDeliverablesPending(false)
+    return ok
+  }
+  async function addDeliverable() {
     const trimmed = deliverableDraft.trim()
     if (!trimmed) return
-    commit({ deliverables: [...deliverables, trimmed] })
-    setDeliverableDraft('')
+    const ok = await writeDeliverables([...deliverables, trimmed])
+    // Clear the input only once the add persisted — a failed save keeps the typed text so
+    // the user can retry without re-entering it.
+    if (ok && mountedRef.current) setDeliverableDraft('')
   }
   function removeDeliverable(index: number) {
-    commit({ deliverables: deliverables.filter((_, i) => i !== index) })
+    void writeDeliverables(deliverables.filter((_, i) => i !== index))
   }
   function editDeliverable(index: number, value: string) {
     // Editing an item to blank removes it — `filter(Boolean)` after the replace, so the
     // list never holds an empty deliverable (the same rule `parseDeliverables` enforces).
     const next = deliverables.map((d, i) => (i === index ? value.trim() : d)).filter(Boolean)
-    commit({ deliverables: next })
+    void writeDeliverables(next)
   }
 
   async function handleDelete() {
@@ -446,7 +468,17 @@ export function TicketDetailDialog({
         onEscapeKeyDown={(e) => {
           // A field is mid-edit: let its own handler cancel just that field (see
           // EditableText.cancel) and keep the dialog open.
-          if (editingCount > 0) e.preventDefault()
+          if (editingCount > 0) {
+            e.preventDefault()
+            return
+          }
+          // Esc in the add-deliverable input clears its draft rather than dismissing the
+          // whole dialog — the same "Esc cancels the field, not the modal" contract every
+          // other editable field has.
+          if (document.activeElement === newDeliverableRef.current && deliverableDraft) {
+            e.preventDefault()
+            setDeliverableDraft('')
+          }
         }}
       >
         <DialogHeader className="border-border/70 flex-row items-center gap-2 space-y-0 border-b px-6 py-4">
@@ -582,7 +614,12 @@ export function TicketDetailDialog({
                   {deliverables.length > 0 ? (
                     <ul className="flex flex-col gap-1">
                       {deliverables.map((d, i) => (
-                        <li key={i} className="flex items-start gap-2">
+                        // Key by index+value, not index alone: if a structural change (a
+                        // failed remove's rollback, or an edit-to-blank) shifts a row's value
+                        // while another row is mid-edit, the key changes and React remounts
+                        // it — discarding the stale draft rather than writing it onto the
+                        // wrong item.
+                        <li key={`${i}-${d}`} className="flex items-start gap-2">
                           <span
                             aria-hidden="true"
                             className="bg-foreground/40 mt-2.5 size-1.5 shrink-0 rounded-full"
@@ -599,7 +636,8 @@ export function TicketDetailDialog({
                             type="button"
                             aria-label={`Remove deliverable ${i + 1}`}
                             onClick={() => removeDeliverable(i)}
-                            className="text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:bg-muted mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-none"
+                            disabled={deliverablesPending}
+                            className="text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:bg-muted mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-none disabled:pointer-events-none disabled:opacity-50"
                           >
                             <X className="size-3.5" />
                           </button>
@@ -611,15 +649,20 @@ export function TicketDetailDialog({
                   )}
                   <div className="flex items-center gap-2">
                     <Input
+                      ref={newDeliverableRef}
                       aria-label="new deliverable"
                       value={deliverableDraft}
                       placeholder="Add a deliverable…"
+                      disabled={deliverablesPending}
                       onChange={(e) => setDeliverableDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault()
-                          addDeliverable()
+                          void addDeliverable()
                         }
+                        // Escape is handled by the dialog's onEscapeKeyDown below (Radix
+                        // dismisses at the document level, so a local stopPropagation can't
+                        // keep the dialog open) — it clears the draft and stays open.
                       }}
                     />
                     <Button
@@ -627,8 +670,8 @@ export function TicketDetailDialog({
                       size="sm"
                       variant="outline"
                       aria-label="Add deliverable"
-                      onClick={addDeliverable}
-                      disabled={!deliverableDraft.trim()}
+                      onClick={() => void addDeliverable()}
+                      disabled={!deliverableDraft.trim() || deliverablesPending}
                     >
                       Add
                     </Button>
@@ -650,7 +693,14 @@ export function TicketDetailDialog({
                 aria-label="type"
                 className={selectClass}
                 value={ticket.type}
-                onChange={(e) => commit({ type: e.target.value as TicketType })}
+                onChange={(e) => {
+                  const next = e.target.value as TicketType
+                  // Becoming an epic clears any parent epic in the same write: an epic does
+                  // not nest under another epic (Phase 1), and the picker that would let you
+                  // clear it is hidden for epics — so leaving it set would strand an
+                  // unreachable, invalid reference.
+                  commit(next === 'epic' ? { type: next, parent_epic_id: null } : { type: next })
+                }}
               >
                 {TICKET_TYPES.map((t) => (
                   <option key={t} value={t}>
@@ -674,6 +724,13 @@ export function TicketDetailDialog({
                   onChange={(e) => commit({ parent_epic_id: e.target.value || null })}
                 >
                   <option value="">No epic</option>
+                  {/* If the current parent isn't in the epics list (it was deleted or
+                      demoted from epic, and the list is refetch-free), still render its
+                      value so the <select> stays controlled and the link isn't silently
+                      shown as "No epic" — the user can see it exists and change or clear it. */}
+                  {ticket.parent_epic_id && !epics.some((e) => e.id === ticket.parent_epic_id) ? (
+                    <option value={ticket.parent_epic_id}>Current parent (unavailable)</option>
+                  ) : null}
                   {epics
                     .filter((e) => e.id !== ticket.id)
                     .map((e) => (

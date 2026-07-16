@@ -1087,4 +1087,100 @@ describe('TicketDetailDialog — epic fields', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /parent epic/i }), '')
     await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { parent_epic_id: null }))
   })
+
+  // Review finding 1: two rapid adds are whole-array writes that can resolve out of order
+  // and silently drop an item. The fix serializes them — while one deliverables save is in
+  // flight, Add is disabled and no second write fires.
+  it('serializes deliverable writes: Add is disabled while a save is in flight', async () => {
+    const epicWithOne: Ticket = { ...epicTicket, deliverables: ['A'] }
+    const pending = deferred<UpdateTicketResult>()
+    updateTicket.mockReturnValue(pending.promise)
+    renderDialog({ ticket: epicWithOne })
+
+    await userEvent.type(screen.getByRole('textbox', { name: /new deliverable/i }), 'B')
+    await userEvent.click(screen.getByRole('button', { name: /add deliverable/i }))
+
+    expect(updateTicket).toHaveBeenCalledTimes(1)
+    // The draft is still 'B' (non-empty), so a disabled Add can only be the in-flight guard.
+    expect(screen.getByRole('button', { name: /add deliverable/i })).toBeDisabled()
+
+    pending.resolve({ ok: true, ticket: { ...epicWithOne, deliverables: ['A', 'B'] } })
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledTimes(1))
+  })
+
+  // Review finding 3: the epic-fields block had no ok:false test (unlike every other
+  // mutating block), and a failed add silently wiped the typed draft.
+  it('rolls back and shows an error when a deliverable add fails, preserving the draft', async () => {
+    const epicWithOne: Ticket = { ...epicTicket, deliverables: ['A'] }
+    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={epicWithOne}
+        currentUser={user}
+        epics={[]}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await userEvent.type(screen.getByRole('textbox', { name: /new deliverable/i }), 'B')
+    await userEvent.click(screen.getByRole('button', { name: /add deliverable/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save/i)
+    // optimistic add then rollback → the last onUpdated restores the original list.
+    expect(onUpdated.mock.calls.at(-1)![0]).toMatchObject({ deliverables: ['A'] })
+    // The draft survives so the user can retry without retyping.
+    expect(screen.getByRole('textbox', { name: /new deliverable/i })).toHaveValue('B')
+  })
+
+  // Review finding 8: pin the "edit an item to blank removes it" contract.
+  it('removes a deliverable when it is edited to blank', async () => {
+    const epicTwo: Ticket = { ...epicTicket, deliverables: ['A', 'B'] }
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...epicTwo, deliverables: ['B'] } })
+    renderDialog({ ticket: epicTwo })
+    await userEvent.click(screen.getByRole('button', { name: /edit deliverable 1/i }))
+    const input = screen.getByRole('textbox', { name: /^deliverable 1$/i })
+    await userEvent.clear(input)
+    await userEvent.type(input, '   {Enter}')
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('e-main', { deliverables: ['B'] }),
+    )
+  })
+
+  // Review finding 5: changing a child to type epic must not orphan its parent_epic_id
+  // (an epic nested under an epic violates the Phase-1 no-nesting invariant).
+  it('nulls the parent epic when a child ticket is changed to type epic', async () => {
+    const child: Ticket = { ...base, parent_epic_id: 'e1' }
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...child, type: 'epic', parent_epic_id: null },
+    })
+    renderDialog({ ticket: child, epics: [] })
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /type/i }), 'epic')
+    await waitFor(() =>
+      expect(updateTicket).toHaveBeenCalledWith('t1', { type: 'epic', parent_epic_id: null }),
+    )
+  })
+
+  // Review finding 2: a parent_epic_id absent from the epics list must not silently render
+  // as "No epic" — a fallback option keeps the value and shows the link exists.
+  it('renders a fallback option when the parent epic is not in the list', () => {
+    const child: Ticket = { ...base, parent_epic_id: 'gone' }
+    renderDialog({ ticket: child, epics: [] })
+    const picker = screen.getByRole('combobox', { name: /parent epic/i }) as HTMLSelectElement
+    expect(picker.value).toBe('gone') // the value round-trips, no controlled-value mismatch
+    expect(screen.getByRole('option', { name: /current parent/i })).toBeInTheDocument()
+  })
+
+  // Review finding 7: Esc in the add-deliverable input should clear the draft like every
+  // other field's Esc, not dismiss the whole modal.
+  it('clears the add-deliverable draft on Escape without closing the dialog', async () => {
+    const onOpenChange = vi.fn()
+    renderDialog({ ticket: epicTicket, onOpenChange })
+    const input = screen.getByRole('textbox', { name: /new deliverable/i })
+    await userEvent.type(input, 'Draft{Escape}')
+    expect(input).toHaveValue('')
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
 })
