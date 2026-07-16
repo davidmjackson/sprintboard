@@ -122,7 +122,8 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
   }, 30_000)
 
   it('persists an owner update and advances updated_at', async () => {
-    const before = (await a.from('tickets').select('updated_at').eq('id', ticketId).single()).data!.updated_at
+    const before = (await a.from('tickets').select('updated_at').eq('id', ticketId).single()).data!
+      .updated_at
     const { data, error } = await a
       .from('tickets')
       .update({ summary: 'Edited', story_points: 5 })
@@ -135,7 +136,7 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
     expect(Date.parse(data!.updated_at)).toBeGreaterThan(Date.parse(before))
   }, 30_000)
 
-  it("rejects a cross-tenant update: zero rows affected, row unchanged", async () => {
+  it('rejects a cross-tenant update: zero rows affected, row unchanged', async () => {
     // Signed in as B, updating A's ticket. tickets_owner's USING clause filters the row
     // out, so the UPDATE matches zero rows and RETURNING is empty — RLS filters, it does
     // not raise. (No .single(): zero rows is the expected, non-error outcome.)

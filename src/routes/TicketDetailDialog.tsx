@@ -13,12 +13,7 @@ import {
 } from '@/lib/domain'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 const selectClass =
@@ -39,7 +34,14 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
  *  across every editable field in the dialog, so the whole modal reads as "click
  *  anything to edit it" without a single instructional sentence. */
 function EditableText({
-  value, ariaLabel, multiline, numeric, placeholder, heading, onCommit, onEditingChange,
+  value,
+  ariaLabel,
+  multiline,
+  numeric,
+  placeholder,
+  heading,
+  onCommit,
+  onEditingChange,
 }: {
   value: string
   ariaLabel: string
@@ -224,7 +226,10 @@ export function TicketDetailDialog({
       // Revert only the fields this commit changed, merged onto whatever is latest NOW —
       // preserves any other field a concurrent commit has since applied.
       onUpdated({ ...base, ...revert } as Ticket)
-      setErrorFor({ ticketId: current.id, message: 'Could not save your change. Please try again.' })
+      setErrorFor({
+        ticketId: current.id,
+        message: 'Could not save your change. Please try again.',
+      })
     } else {
       // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
       // ticket — never swap in the whole `result.ticket`, which would clobber a
@@ -318,7 +323,9 @@ export function TicketDetailDialog({
                 onChange={(e) => commit({ type: e.target.value as TicketType })}
               >
                 {TICKET_TYPES.map((t) => (
-                  <option key={t} value={t}>{TICKET_TYPE_LABELS[t]}</option>
+                  <option key={t} value={t}>
+                    {TICKET_TYPE_LABELS[t]}
+                  </option>
                 ))}
               </select>
             </label>

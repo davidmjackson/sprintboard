@@ -68,7 +68,10 @@ export function ProjectShell() {
   const onTicketUpdated = (updated: Ticket) =>
     setLoaded((prev) =>
       prev && prev.projectId === project.id
-        ? { projectId: prev.projectId, tickets: prev.tickets.map((t) => (t.id === updated.id ? updated : t)) }
+        ? {
+            projectId: prev.projectId,
+            tickets: prev.tickets.map((t) => (t.id === updated.id ? updated : t)),
+          }
         : prev,
     )
 
