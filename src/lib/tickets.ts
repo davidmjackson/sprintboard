@@ -50,6 +50,12 @@ export async function createTicket(input: {
  * The `project_id` filter is required, not optional: `tickets_owner` RLS scopes the
  * select to the owner, but the owner has many projects — without the filter this
  * returns every project's tickets.
+ *
+ * This throws rather than resolving to `[]` on error, and that is load-bearing: `[]` is
+ * indistinguishable from "this project has no tickets", so a caller handed one cannot tell a
+ * failed read from an empty one. That is not hypothetical — it is exactly the defect S4.6
+ * removed, where a paused database rendered as "Nothing in the backlog." Only a rejection
+ * carries the fact of failure; `ProjectShell`'s `.catch()` turns it into `phase: 'failed'`.
  */
 export async function listTickets(projectId: string): Promise<Ticket[]> {
   const { data, error } = await supabase

@@ -4,6 +4,7 @@ import { TICKET_TYPE_LABELS } from '@/lib/domain'
 import { selectBacklogTickets } from '@/lib/backlog'
 import type { ProjectShellContext } from './ProjectShell'
 import { BlockedBadge } from './BlockedBadge'
+import { LoadFailure } from './LoadFailure'
 
 /**
  * The backlog: the project's tickets with **no sprint**, ordered by number (the order
@@ -17,26 +18,29 @@ import { BlockedBadge } from './BlockedBadge'
  * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, loadingTickets, currentUser, onOpenTicket } =
+  const { tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
     useOutletContext<ProjectShellContext>()
 
   const backlog = selectBacklogTickets(tickets)
 
-  if (loadingTickets && backlog.length === 0) {
+  if (ticketsPhase === 'loading' && backlog.length === 0) {
     return <p className="text-muted-foreground text-sm">Loading…</p>
+  }
+
+  if (ticketsPhase === 'failed') {
+    // Checked BEFORE the empty state, and that order is the whole story: `tickets` is `[]`
+    // on a failed read, so falling through would render "Nothing in the backlog." — a
+    // confident claim about work we could not see. The empty state below now speaks only
+    // for a read that actually landed.
+    return <LoadFailure resource="tickets" onRetry={onRetry} />
   }
 
   if (backlog.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
         {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
-            backlog's point of view those are the same fact. It does NOT cover a third
-            state: the shell swallows a `listTickets` rejection into an empty list
-            (ProjectShell's catch), so a failed read is indistinguishable from an empty
-            backlog and claims this too. Pre-existing and app-wide — BoardTab says "No
-            tickets yet." off the same state — and `loadingTickets` is derived purely
-            from project-id tagging, so it structurally cannot represent "failed".
-            Surfacing read errors is its own story; noted here, not smuggled into S5.1. */}
+            backlog's point of view those are the same fact. A failed read is NOT one of
+            them and no longer reaches here. */}
         <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
       </div>
     )

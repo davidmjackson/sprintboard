@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
-import type { ProjectShellContext, SprintsPhase } from './ProjectShell'
+import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
 
 // The dialog is exercised by its own suite; here it is a button that reports its props
@@ -93,22 +93,24 @@ function renderTab(
     sprints?: Sprint[]
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
+    onRetry?: () => void
     tickets?: Ticket[]
-    loadingTickets?: boolean
+    ticketsPhase?: TicketsPhase
   } = {},
 ) {
-  // `loadingTickets` defaults to false — the landed state every other test here means.
+  // `ticketsPhase` defaults to 'loaded' — the landed state every other test here means.
   // It has to be passed explicitly: the `as ProjectShellContext` cast below is an
   // assertion, not a check, so omitting a field the component reads is not a type error.
-  // It would arrive as `undefined`, and `undefined` is falsy — the count tests would pass
-  // for the wrong reason and the loading test could never fail.
+  // It would arrive as `undefined`, which is neither 'loading' nor 'loaded' — the count
+  // tests would pass for the wrong reason and the loading test could never fail.
   const context = {
     project,
     sprints: ctx.sprints ?? [],
     sprintsPhase: ctx.sprintsPhase ?? 'loaded',
     onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
+    onRetry: ctx.onRetry ?? vi.fn(),
     tickets: ctx.tickets ?? [],
-    loadingTickets: ctx.loadingTickets ?? false,
+    ticketsPhase: ctx.ticketsPhase ?? 'loaded',
   } as ProjectShellContext
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
@@ -217,7 +219,7 @@ describe('SprintsTab', () => {
     renderTab({
       sprints: [sprint({ id: 's1', name: 'Hardening push' })],
       tickets: [], // what the shell serves before `listTickets` resolves
-      loadingTickets: true,
+      ticketsPhase: 'loading',
     })
 
     const row = screen.getByRole('listitem')
@@ -227,6 +229,58 @@ describe('SprintsTab', () => {
     // real text; "loading" is honest where "0 tickets" would be a claim we cannot make.
     expect(within(row).getByText('Ticket count loading')).toBeInTheDocument()
     expect(within(row).queryByText('tickets')).toBeNull()
+  })
+
+  // The failure twin of the test above, and the defect S4.6 exists to kill: a FAILED ticket
+  // read served `[]` too, so a count gated on 'loading' alone fell through and rendered a
+  // confident "0 tickets" for a list we never received. The `not('0')` assertion is the whole
+  // test — '—' being present would also pass for a badge that rendered both.
+  it('shows — rather than a false 0 when the ticket read has failed', () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Hardening push' })],
+      tickets: [], // what the shell serves when `listTickets` rejects
+      ticketsPhase: 'failed',
+    })
+
+    const row = screen.getByRole('listitem')
+    expect(within(row).getByText('—')).toBeVisible()
+    expect(within(row).queryByText('0')).toBeNull()
+    expect(within(row).queryByText('tickets')).toBeNull()
+  })
+
+  // '—' is honest for BOTH non-loaded phases, but they are not the same fact: one resolves on
+  // its own, the other needs the Retry the Backlog and Board carry. The em-dash is aria-hidden
+  // and identical in both, so the distinction reaches a screen reader only as `sr-only` text —
+  // if these two strings were ever collapsed into one, this is the test that notices.
+  it('distinguishes an unavailable count from a loading one for screen readers', () => {
+    const loading = renderTab({
+      sprints: [sprint({ id: 's1' })],
+      ticketsPhase: 'loading',
+    })
+    const loadingText = within(screen.getByRole('listitem')).getByText(/Ticket count/).textContent
+    loading.unmount()
+
+    renderTab({ sprints: [sprint({ id: 's1' })], ticketsPhase: 'failed' })
+    const failedText = within(screen.getByRole('listitem')).getByText(/Ticket count/).textContent
+
+    expect(loadingText).toBe('Ticket count loading')
+    expect(failedText).toBe('Ticket count unavailable')
+    expect(failedText).not.toBe(loadingText)
+  })
+
+  // The count badge deliberately has no Retry of its own — it cannot hold one, and the sprint
+  // list around it is fine. The sprint read failing is a different matter: that block IS the
+  // page, so it carries the recovery. Before S4.6 its copy told the user to refresh, because
+  // there was nothing in-app to click.
+  it('offers a Retry when the sprint read has failed, and calls onRetry when clicked', async () => {
+    const onRetry = vi.fn()
+    renderTab({ sprintsPhase: 'failed', onRetry })
+    const user = userEvent.setup()
+
+    expect(screen.queryByText(/refresh/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
   // The counterweight to the test above: without this, a count that ignored `sprint_id`

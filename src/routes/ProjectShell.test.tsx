@@ -115,6 +115,31 @@ function SprintContextProbe() {
   )
 }
 
+/**
+ * Reads back the ticket fields the shell publishes on its outlet context, plus the retry
+ * affordance. Same reasoning as `SprintContextProbe`: driving a real tab cannot distinguish
+ * what the shell *published* from what the tab computed — a tab rendering "Nothing in the
+ * backlog." is true both when the list is empty and when the read failed. Only a probe
+ * reading the context directly can pin the phase itself.
+ */
+function TicketContextProbe() {
+  const { tickets, ticketsPhase, sprintsPhase, onRetry } = useOutletContext<ProjectShellContext>()
+  return (
+    <div>
+      <p>tickets phase: {ticketsPhase}</p>
+      <p>sprints phase: {sprintsPhase}</p>
+      <ul>
+        {tickets.map((t) => (
+          <li key={t.id}>{t.summary}</li>
+        ))}
+      </ul>
+      <button type="button" onClick={onRetry}>
+        probe retry
+      </button>
+    </div>
+  )
+}
+
 /** Stands in for AppLayout: hands the project list down through the outlet context. */
 function ContextProvider({ ctx }: { ctx: ProjectsContext }) {
   return <Outlet context={ctx} />
@@ -132,6 +157,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="backlog" element={<BacklogTab />} />
             <Route path="sprints" element={<SprintsTab />} />
             <Route path="probe" element={<SprintContextProbe />} />
+            <Route path="ticket-probe" element={<TicketContextProbe />} />
           </Route>
         </Route>
       </Routes>
@@ -147,9 +173,13 @@ describe('ProjectShell', () => {
     expect(screen.getByRole('heading', { name: /Apple/ })).toBeInTheDocument()
   })
 
-  it('defaults to the Board tab (renders the four columns) with no tickets', () => {
+  it('defaults to the Board tab (renders the four columns) with no tickets', async () => {
     renderShell('/projects/p1')
-    expect(screen.getByRole('heading', { name: 'To Do' })).toBeInTheDocument()
+    // Awaited, not synchronous: since S4.6 the board renders "Loading…" until the read
+    // lands, rather than four confident "No tickets yet." columns over a list that is
+    // merely `[]` so far. The assertion under test is which TAB is the default, so it
+    // waits for the read the same way the Backlog test below does.
+    expect(await screen.findByRole('heading', { name: 'To Do' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Done' })).toBeInTheDocument()
   })
 
@@ -442,5 +472,152 @@ describe('ProjectShell', () => {
     // dialog is gone.
     await u.keyboard('{Escape}')
     expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
+  })
+
+  // S4.6: the ticket read is three-state, like the sprint read beside it. Before this, the
+  // shell's `.catch()` *resolved* the load with an empty list, so a rejected `listTickets`
+  // looked finished AND successful — which is why a paused database claimed the backlog was
+  // empty. These pin the phase on the context itself, via the probe, because a tab rendering
+  // "Nothing in the backlog." cannot tell "empty" from "broken" apart either.
+  describe('the ticket read phase (S4.6)', () => {
+    it("publishes 'failed' on the context when listTickets rejects, never an empty loaded list", async () => {
+      mockList.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('tickets phase: failed')).toBeVisible()
+      expect(screen.queryByText('tickets phase: loaded')).not.toBeInTheDocument()
+    })
+
+    it("publishes 'loaded' with the tickets once the read lands", async () => {
+      mockList.mockResolvedValue([ticketA])
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('tickets phase: loaded')).toBeVisible()
+      expect(screen.getByText('Alpha summary')).toBeVisible()
+    })
+
+    it("publishes 'loading' while the read is in flight", async () => {
+      mockList.mockReturnValue(new Promise(() => {}))
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('tickets phase: loading')).toBeVisible()
+    })
+
+    // Retry means "reload this project's data": one nonce drives BOTH reads. This also
+    // closes S6.2's sticky sprint read — a failed sprint read used to persist until a page
+    // refresh purely because nothing could re-run the effect.
+    it('re-runs BOTH reads on retry and recovers to loaded with the data', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([ticketA])
+      mockListSprints.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([sprintBase])
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('tickets phase: failed')).toBeVisible()
+      expect(await screen.findByText('sprints phase: failed')).toBeVisible()
+      expect(mockList).toHaveBeenCalledTimes(1)
+      expect(mockListSprints).toHaveBeenCalledTimes(1)
+
+      await u.click(screen.getByRole('button', { name: 'probe retry' }))
+
+      await waitFor(() => expect(mockList).toHaveBeenCalledTimes(2))
+      expect(mockListSprints).toHaveBeenCalledTimes(2)
+      expect(await screen.findByText('tickets phase: loaded')).toBeVisible()
+      expect(await screen.findByText('sprints phase: loaded')).toBeVisible()
+      expect(screen.getByText('Alpha summary')).toBeVisible()
+    })
+
+    // The recovery path driven entirely through REAL components — real shell, real
+    // BacklogTab, the real Retry button inside the real LoadFailure. The probe test above
+    // pins the shell's half (the nonce re-runs both reads) and the tabs' own suites pin
+    // theirs (Retry calls the prop they were handed), but nothing joined the two: a Retry
+    // wired to the wrong callback, or a tab handed no `onRetry` at all, satisfies both
+    // halves and still leaves a user stranded on an error screen with a dead button. This
+    // is the test the design doc claims — the recovery path, end to end, through the tabs.
+    it('recovers the backlog when the real Retry button in the real tab is clicked', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([ticketA])
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+
+      await u.click(screen.getByRole('button', { name: 'Retry' }))
+
+      // The ticket the second read returned is on screen, and the error is gone — so the
+      // click reached the shell's nonce and the new list flowed back out to this tab.
+      expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(mockList).toHaveBeenCalledTimes(2)
+    })
+
+    // The create trigger is withheld unless the read landed. `onCreated` can only append to
+    // a `loaded` list, so an ungated trigger over a failed read writes a real row to the
+    // database and shows the user nothing at all — they retry and get duplicates. Pins the
+    // gate in ProjectShell; deleting it must turn this red.
+    it('offers no create trigger while the ticket read has failed (no invisible create)', async () => {
+      mockList.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+    })
+
+    // The `loading` half of the same gate, and it is NOT covered by the two tests either side
+    // of it: both drive failed→loaded, so weakening the gate to `ticketsPhase !== 'failed'`
+    // leaves them green while reopening the invisible create through a narrower window. A read
+    // in flight is not a list — click "New ticket" before it lands and `onCreated`'s
+    // `phase === 'loaded'` guard drops the append, then the already-in-flight read resolves
+    // with the pre-create rows and overwrites the state. The row is written, the UI never shows
+    // it, and the user creates it again. Same defect as the failed case, smaller window.
+    it('offers no create trigger while the ticket read is still in flight', async () => {
+      // Never resolves: the read stays in flight, so the phase stays `loading` for the
+      // whole test rather than racing the assertion.
+      mockList.mockReturnValue(new Promise(() => {}))
+      renderShell('/projects/p1/backlog')
+
+      // Proves we are actually in `loading` — without this the assertion below could pass
+      // simply because the shell had not rendered the header yet.
+      expect(await screen.findByText('Loading…')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+    })
+
+    // The other side of the gate: it must be a phase gate, not a blanket removal. Without
+    // this, deleting the whole dialog passes the test above.
+    it('offers the create trigger again once the read recovers', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([])
+      renderShell('/projects/p1/backlog')
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Could not load tickets.')
+      expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
+
+      await u.click(screen.getByRole('button', { name: 'Retry' }))
+
+      expect(await screen.findByRole('button', { name: 'New ticket' })).toBeVisible()
+    })
+
+    // The nonce-in-the-TAG behaviour. Without the nonce in the match test, the stale
+    // `failed` result still matches the current project, so the error stays on screen until
+    // the new result lands — a Retry that appears to do nothing, which is how a user ends up
+    // hammering it. With it in the tag, the stale result stops matching the instant the
+    // nonce bumps and the phase derives back to 'loading', with no synchronous setState in
+    // the effect (which `react-hooks/set-state-in-effect` forbids).
+    it('returns the phase to loading the moment retry is clicked, before the new result lands', async () => {
+      const u = userEvent.setup()
+      mockList.mockRejectedValueOnce(new Error('offline')).mockReturnValue(new Promise(() => {}))
+      mockListSprints
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockReturnValue(new Promise(() => {}))
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('tickets phase: failed')).toBeVisible()
+
+      await u.click(screen.getByRole('button', { name: 'probe retry' }))
+
+      // The second read never settles, so 'loading' here can only come from the nonce bump
+      // invalidating the stale `failed` tag.
+      expect(await screen.findByText('tickets phase: loading')).toBeVisible()
+      expect(screen.queryByText('tickets phase: failed')).not.toBeInTheDocument()
+      expect(await screen.findByText('sprints phase: loading')).toBeVisible()
+    })
   })
 })

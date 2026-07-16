@@ -5,6 +5,7 @@ import { formatSprintDate } from '@/lib/sprint-dates'
 import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CreateSprintDialog } from './CreateSprintDialog'
+import { LoadFailure } from './LoadFailure'
 
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
@@ -38,8 +39,9 @@ export function SprintsTab() {
     sprints,
     sprintsPhase: phase,
     onSprintCreated,
+    onRetry,
     tickets,
-    loadingTickets,
+    ticketsPhase,
   } = useOutletContext<ProjectShellContext>()
 
   return (
@@ -57,13 +59,9 @@ export function SprintsTab() {
 
       {phase === 'loading' ? <p className="text-muted-foreground text-sm">Loading…</p> : null}
 
-      {phase === 'failed' ? (
-        <div className="border-destructive/50 flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-          <p role="alert" className="text-destructive text-sm">
-            Could not load sprints. Please refresh to try again.
-          </p>
-        </div>
-      ) : null}
+      {/* `onRetry` re-runs both of the shell's reads, so this one button also clears a
+          failed ticket count in the rows below — the two reads usually fail together. */}
+      {phase === 'failed' ? <LoadFailure resource="sprints" onRetry={onRetry} /> : null}
 
       {phase === 'loaded' && sprints.length === 0 ? (
         <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
@@ -90,29 +88,33 @@ export function SprintsTab() {
                   `role="generic"`, on which ARIA 1.2 *prohibits* aria-label — browsers
                   honour it so it looks fine, but axe-core flags it.
 
-                  The count is gated on `loadingTickets` because `tickets` is `[]` before the
-                  shell's read lands: deep-linking to this tab would otherwise render a
-                  confident "0 tickets" per sprint and then flip to real numbers. This count
-                  is S6.2's only observable evidence that a ticket joined a sprint, so a
-                  false zero discredits the one thing the story is meant to show. '—' is not
-                  a number and cannot be misread as one.
+                  A count is only rendered once the tickets are actually IN HAND: `tickets` is
+                  `[]` both while the read is in flight and when it failed, so anything short
+                  of 'loaded' would count an empty array and render a confident "0 tickets" for
+                  a list we do not have. Hence `!== 'loaded'` rather than a test per phase — a
+                  gate naming only 'failed' would let the loading case fall through, and vice
+                  versa, which is exactly how the false zero survived S6.2. This count is the
+                  only observable evidence that a ticket joined a sprint, so a false zero
+                  discredits the one thing the tab is meant to show. '—' is not a number and
+                  cannot be misread as one.
 
-                  What this does NOT fix, deliberately: a FAILED ticket read still shows
-                  "0 tickets", permanently. `loadingTickets` is derived purely from
-                  project-id tagging and the shell's `.catch()` swallows a rejected
-                  `listTickets` into `{ tickets: [] }` — which *resolves* the load, so on
-                  failure `loadingTickets` is false, not true. The state needed to tell
-                  "empty" from "broken" does not exist here to be read. That is the same
-                  app-wide, pre-existing debt behind BacklogTab's "Nothing in the backlog."
-                  and BoardTab's "No tickets yet." on a paused database. Fixing it means
-                  giving the shell's ticket read a real three-state phase (as S6.1 did for
-                  sprints) — its own story, not smuggled into this one. */}
+                  The two non-loaded phases render the same '—' but are not the same fact —
+                  one resolves on its own, the other will not — so the `sr-only` text differs.
+                  There is no Retry here: a badge cannot hold one, and the sprint list around
+                  it loaded fine. The Backlog and Board carry the retry for this same failed
+                  read; a degraded badge is not a page-level error. */}
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium tabular-nums">
-                {loadingTickets ? (
+                {ticketsPhase !== 'loaded' ? (
                   <>
                     <span aria-hidden="true">—</span>
-                    {/* Honest: the number is not known yet, rather than claiming a count. */}
-                    <span className="sr-only">Ticket count loading</span>
+                    {/* Honest: the number is not known, rather than claiming a count. The
+                        em-dash is aria-hidden, so this text is the only thing that carries
+                        the distinction to a screen reader. */}
+                    <span className="sr-only">
+                      {ticketsPhase === 'loading'
+                        ? 'Ticket count loading'
+                        : 'Ticket count unavailable'}
+                    </span>
                   </>
                 ) : (
                   <>
