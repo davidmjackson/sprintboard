@@ -89,3 +89,67 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
     expect((rows ?? []).some((r) => r.summary === 'Intruder')).toBe(false)
   }, 30_000)
 })
+
+describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
+  let a: SupabaseClient<Database>
+  let b: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+  let ticketId: string
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+    b = await signIn('B')
+    const { data: proj, error: projErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Update contract', key: runKey() })
+      .select()
+      .single()
+    if (projErr) throw projErr
+    projectId = proj!.id
+    const { data: tkt, error: tktErr } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, summary: 'Original' })
+      .select()
+      .single()
+    if (tktErr) throw tktErr
+    ticketId = tkt!.id
+  }, 30_000)
+
+  afterAll(async () => {
+    await a.from('projects').delete().eq('id', projectId)
+  }, 30_000)
+
+  it('persists an owner update and advances updated_at', async () => {
+    const before = (await a.from('tickets').select('updated_at').eq('id', ticketId).single()).data!.updated_at
+    const { data, error } = await a
+      .from('tickets')
+      .update({ summary: 'Edited', story_points: 5 })
+      .eq('id', ticketId)
+      .select()
+      .single()
+
+    expect(error).toBeNull()
+    expect(data).toMatchObject({ summary: 'Edited', story_points: 5 })
+    expect(Date.parse(data!.updated_at)).toBeGreaterThan(Date.parse(before))
+  }, 30_000)
+
+  it("rejects a cross-tenant update: zero rows affected, row unchanged", async () => {
+    // Signed in as B, updating A's ticket. tickets_owner's USING clause filters the row
+    // out, so the UPDATE matches zero rows and RETURNING is empty — RLS filters, it does
+    // not raise. (No .single(): zero rows is the expected, non-error outcome.)
+    const { data, error } = await b
+      .from('tickets')
+      .update({ summary: 'Hacked' })
+      .eq('id', ticketId)
+      .select()
+
+    expect(error).toBeNull()
+    expect(data).toEqual([])
+
+    // Independent control: as the owner, confirm the summary was not changed.
+    const { data: row } = await a.from('tickets').select('summary').eq('id', ticketId).single()
+    expect(row!.summary).toBe('Edited')
+  }, 30_000)
+})
