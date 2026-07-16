@@ -3,7 +3,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import { selectBacklogTickets } from '@/lib/backlog'
-import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
+import {
+  assertCredentialsOrExplain,
+  hasRlsCredentials,
+  RLS_USERS,
+  signIn,
+} from './supabase-clients'
 
 assertCredentialsOrExplain()
 
@@ -670,5 +675,140 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
     // lands below: the exact-list check above ("=== [backlogTicketId]") is the kind that
     // would then fail pointing at the backlog rule, which would be fine.
     await a.from('tickets').delete().eq('id', ticket!.id)
+  }, 30_000)
+})
+
+/**
+ * S6.2 AC 2 — **`sprint_id` updates correctly in both directions, through the APP's
+ * write path.**
+ *
+ * The S5.1 block above writes `sprint_id` too, so this looks covered. It is not: every
+ * one of those writes goes through the raw test client, as a fixture. They pin the
+ * column, the composite fk and `on delete set null` — real database facts, but facts
+ * about Postgres, not about our code. Nothing anywhere drives the function the sprint
+ * picker actually calls: `TicketDetailDialog`'s `commit({ sprint_id })` is `updateTicket`,
+ * and `updateTicket` writes through the app's own module-scope `supabase` client with its
+ * own `TicketUpdate` shape, `.single()` and result mapping. Any of those could break with
+ * this file green. So this block drives `updateTicket` itself.
+ *
+ * Two deliberate choices make the evidence real rather than circular:
+ * - the write goes through the **app** client (signed in below), the same object the
+ *   browser uses — not the suite's `a`;
+ * - every assertion is on a **re-read through `a`**, a different client and connection.
+ *   Asserting on the row `updateTicket` returned would also pass for a function that
+ *   echoed its own input straight back.
+ */
+describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', () => {
+  let a: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+  let sprintId: string
+  // The app's real data layer, imported lazily — see beforeAll.
+  let appClient: typeof import('@/lib/supabase').supabase
+  let updateTicket: typeof import('@/lib/tickets').updateTicket
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+
+    const { data: proj, error: projErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Sprint membership', key: runKey() })
+      .select()
+      .single()
+    if (projErr) throw projErr
+    projectId = proj!.id
+
+    const { data: sprint, error: sprintErr } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Sprint 1', status: 'future' })
+      .select()
+      .single()
+    if (sprintErr) throw sprintErr
+    sprintId = sprint!.id
+
+    // Imported dynamically, not at the top of the file: `@/lib/supabase` calls `getEnv()`
+    // at MODULE scope, so a static import would throw at load time when the environment
+    // is missing — turning this file's loud, deliberate skip into a hard error for all
+    // six describes. Inside a skipIf'd beforeAll, the import only happens when the
+    // credentials that make it valid are present.
+    ;({ supabase: appClient } = await import('@/lib/supabase'))
+    ;({ updateTicket } = await import('@/lib/tickets'))
+
+    // `updateTicket` takes no client — it closes over the app singleton. Signing that
+    // singleton in as A is what makes the app's write path owner-scoped here exactly as
+    // it is in the browser; without it every update below would be an anonymous write
+    // that RLS filters to zero rows.
+    const { email, password } = RLS_USERS.A
+    const { error: authErr } = await appClient.auth.signInWithPassword({
+      email: email!,
+      password: password!,
+    })
+    if (authErr) throw authErr
+  }, 30_000)
+
+  afterAll(async () => {
+    await appClient?.auth.signOut()
+    // The project cascade removes its tickets and sprints.
+    await a.from('projects').delete().eq('id', projectId)
+  }, 30_000)
+
+  /** A fresh backlog ticket (`sprint_id` defaults to null), created through the raw
+   *  client — the fixture is not what is under test here. */
+  async function newTicket(summary: string): Promise<string> {
+    const { data, error } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, type: 'story', summary })
+      .select()
+      .single()
+    if (error) throw error
+    expect(data!.sprint_id).toBeNull() // starts in the backlog, or the adds below prove nothing
+    return data!.id
+  }
+
+  it('adds a ticket to a sprint: updateTicket persists sprint_id', async () => {
+    const ticketId = await newTicket('To be sprinted')
+
+    const result = await updateTicket(ticketId, { sprint_id: sprintId })
+    expect(result.ok).toBe(true)
+
+    // Independent re-read through `a`, not the app client that wrote it.
+    const { data, error } = await a.from('tickets').select('sprint_id').eq('id', ticketId).single()
+    expect(error).toBeNull()
+    expect(data!.sprint_id).toBe(sprintId)
+  }, 30_000)
+
+  it('removes a ticket from a sprint: updateTicket nulls sprint_id and the DB calls it backlog', async () => {
+    const ticketId = await newTicket('To be unsprinted')
+
+    // The other direction first — and a positive control. Without proving the ticket is
+    // genuinely IN the sprint, the null below would be indistinguishable from an update
+    // that never happened: a ticket starts unsprinted, so "sprint_id is null" is also
+    // what a no-op looks like.
+    const added = await updateTicket(ticketId, { sprint_id: sprintId })
+    expect(added.ok).toBe(true)
+    const { data: before } = await a.from('tickets').select('sprint_id').eq('id', ticketId).single()
+    expect(before!.sprint_id).toBe(sprintId)
+
+    const removed = await updateTicket(ticketId, { sprint_id: null })
+    expect(removed.ok).toBe(true)
+
+    const { data: after, error } = await a
+      .from('tickets')
+      .select('sprint_id')
+      .eq('id', ticketId)
+      .single()
+    expect(error).toBeNull()
+    expect(after!.sprint_id).toBeNull()
+
+    // Not merely "no longer that sprint": the database's own `is('sprint_id', null)` —
+    // the server-side spelling of `isBacklogTicket` — returns the ticket. The removed
+    // ticket is back in the backlog by the rule the backlog tab actually applies.
+    const { data: backlog } = await a
+      .from('tickets')
+      .select('id')
+      .eq('project_id', projectId)
+      .is('sprint_id', null)
+    expect((backlog ?? []).map((t) => t.id)).toContain(ticketId)
   }, 30_000)
 })
