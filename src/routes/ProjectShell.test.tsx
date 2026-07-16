@@ -208,4 +208,72 @@ describe('ProjectShell', () => {
     await waitFor(() => expect(screen.queryByText('Delete me')).not.toBeInTheDocument())
     expect(screen.getByText('Keep me')).toBeInTheDocument()
   })
+
+  it('shows a ticket created from the Backlog tab in the backlog immediately (S5.2 AC)', async () => {
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([])
+    const created: Ticket = {
+      ...ticketBase,
+      id: 'tNew',
+      key: 'APP-3',
+      number: 3,
+      summary: 'Fresh backlog work',
+    }
+    vi.mocked(createTicket).mockResolvedValue({ ok: true, ticket: created })
+
+    renderShell('/projects/p1/backlog')
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
+
+    // The New ticket button lives in the shell header, so it is the create affordance on
+    // the Backlog tab as much as on the Board — this drives the real dialog, not a stub.
+    await user.click(screen.getByRole('button', { name: 'New ticket' }))
+    await user.type(await screen.findByLabelText('Summary'), 'Fresh backlog work')
+    await user.click(screen.getByRole('button', { name: 'Create ticket' }))
+
+    // "Appears immediately": from the shell's append, with no second listTickets call —
+    // a refetch here is what reintroduces the stale-response race S4.1 removed.
+    expect(await screen.findByText('Fresh backlog work')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument()
+    expect(mockList).toHaveBeenCalledTimes(1)
+
+    // "Leaves sprint_id null": the create call carries no sprint at all. Asserted on the
+    // real arguments the dialog built, so a sprint leaking into the create path fails here.
+    expect(vi.mocked(createTicket).mock.calls[0]![0]).toEqual({
+      projectId: 'p1',
+      summary: 'Fresh backlog work',
+      type: 'story',
+      description: undefined,
+      storyPoints: undefined,
+      labels: [],
+      acceptanceCriteria: undefined,
+    })
+  })
+
+  it('keeps a created ticket out of the backlog if it carries a sprint (the filter is live, not decorative)', async () => {
+    // The inverse of the test above. Nothing in the app can produce this today, so
+    // without it "appears immediately" would pass equally well against an unfiltered
+    // list — this pins that the backlog is showing the ticket *because* it has no sprint.
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([])
+    vi.mocked(createTicket).mockResolvedValue({
+      ok: true,
+      ticket: {
+        ...ticketBase,
+        id: 'tS',
+        key: 'APP-4',
+        number: 4,
+        summary: 'Sprinted',
+        sprint_id: 's1',
+      },
+    })
+
+    renderShell('/projects/p1/backlog')
+    await user.click(await screen.findByRole('button', { name: 'New ticket' }))
+    await user.type(await screen.findByLabelText('Summary'), 'Sprinted')
+    await user.click(screen.getByRole('button', { name: 'Create ticket' }))
+
+    await waitFor(() => expect(vi.mocked(createTicket)).toHaveBeenCalled())
+    expect(await screen.findByText('Nothing in the backlog.')).toBeInTheDocument()
+    expect(screen.queryByText('Sprinted')).not.toBeInTheDocument()
+  })
 })
