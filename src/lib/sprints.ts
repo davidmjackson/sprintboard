@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 import { toUtcMidnight } from './sprint-dates'
-import type { Sprint, SprintCreateInsert, SprintStatusUpdate } from './domain'
+import type { Sprint, SprintCreateInsert, SprintStatusUpdate, Ticket, TicketUpdate } from './domain'
 
 /**
  * The default name for a sprint created with the name left blank: `Sprint N`, where N is
@@ -119,4 +119,54 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
     return { ok: false, error: 'unknown' }
   }
   return { ok: true, sprint: data as Sprint }
+}
+
+/**
+ * Complete a sprint: return its incomplete tickets to the backlog, then flip its status to
+ * `complete`. This touches TWO tables and PostgREST gives the browser no cross-statement
+ * transaction, so the two writes are sequenced deliberately.
+ *
+ * The ORDER is load-bearing. The ticket move runs first and the status flip runs LAST, so
+ * the flip is the commit marker: a sprint that reads `complete` is never one whose incomplete
+ * tickets are still attached. If the move succeeds and the flip fails, the sprint stays
+ * `active` with its incomplete tickets already in the backlog — a visible, self-correcting
+ * state (the user sees the error and retries; the move is idempotent, and Done tickets never
+ * matched). Flipping first would fail unsafe: a `complete` sprint with tickets still attached,
+ * silently violating "incomplete tickets return to the backlog".
+ *
+ * `status <> 'done'` is the "incomplete" rule: Done tickets keep their `sprint_id` (that
+ * retained id IS the sprint history AC3 asks for, and is why S5.1's `sprint_id is null`
+ * backlog rule excludes them) and their Done status (we never touch them). The bulk UPDATE is
+ * atomic across all matching rows and returns them via `.select()` for the UI's local patch —
+ * these are the database's own post-update rows, not a guess.
+ *
+ * No user-correctable failure exists here (no unique index on `complete`; a re-complete and a
+ * re-null are both legal), so a single `'unknown'` like `createSprint`. RLS (`sprints_owner` /
+ * `tickets_owner`) scopes both writes through the owned project. For a cross-tenant caller the
+ * bulk update filters to zero rows and returns NO error (an UPDATE matching nothing is not an
+ * error), so it cannot be the gate — the status flip's `.single()` on a zero-row match errors
+ * and becomes `'unknown'`, never leaking existence and never mutating another owner's sprint.
+ */
+export type CompleteSprintResult =
+  { ok: true; sprint: Sprint; returnedTickets: Ticket[] } | { ok: false; error: 'unknown' }
+
+export async function completeSprint(id: string): Promise<CompleteSprintResult> {
+  const { data: moved, error: ticketsError } = await supabase
+    .from('tickets')
+    .update({ sprint_id: null } satisfies TicketUpdate)
+    .eq('sprint_id', id)
+    .neq('status', 'done')
+    .select()
+
+  if (ticketsError) return { ok: false, error: 'unknown' }
+
+  const { data, error } = await supabase
+    .from('sprints')
+    .update({ status: 'complete' } satisfies SprintStatusUpdate)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return { ok: false, error: 'unknown' }
+  return { ok: true, sprint: data as Sprint, returnedTickets: (moved ?? []) as Ticket[] }
 }

@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createSprint, defaultSprintName, listSprints, startSprint } from './sprints'
-import type { Sprint } from './domain'
+import {
+  completeSprint,
+  createSprint,
+  defaultSprintName,
+  listSprints,
+  startSprint,
+} from './sprints'
+import type { Sprint, Ticket } from './domain'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
@@ -203,5 +209,110 @@ describe('startSprint', () => {
     const result = await startSprint('s3')
 
     expect(result).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+function ticket(overrides: Partial<Ticket> = {}): Ticket {
+  return {
+    id: 't1',
+    project_id: 'p1',
+    key: 'APP-1',
+    number: 1,
+    summary: 'A ticket',
+    type: 'story',
+    status: 'todo',
+    description: null,
+    assignee_id: null,
+    story_points: null,
+    acceptance_criteria: null,
+    labels: [],
+    sprint_id: 's1',
+    parent_epic_id: null,
+    context: null,
+    deliverables: [],
+    is_blocked: false,
+    blocked_reason: null,
+    blocked_since: null,
+    created_at: '2026-07-16T00:00:00Z',
+    updated_at: '2026-07-16T00:00:00Z',
+    ...overrides,
+  }
+}
+
+describe('completeSprint', () => {
+  // tickets: update({sprint_id:null}).eq('sprint_id',id).neq('status','done').select() -> {data,error}
+  // sprints: update({status:'complete'}).eq('id',id).select().single()                 -> {data,error}
+  const ticketsSelect = vi.fn()
+  const ticketsNeq = vi.fn(() => ({ select: ticketsSelect }))
+  const ticketsEq = vi.fn(() => ({ neq: ticketsNeq }))
+  const ticketsUpdate = vi.fn(() => ({ eq: ticketsEq }))
+
+  const sprintSingle = vi.fn()
+  const sprintSelect = vi.fn(() => ({ single: sprintSingle }))
+  const sprintEq = vi.fn(() => ({ select: sprintSelect }))
+  const sprintUpdate = vi.fn(() => ({ eq: sprintEq }))
+
+  beforeEach(() => {
+    ticketsSelect.mockReset()
+    ticketsNeq.mockReset().mockReturnValue({ select: ticketsSelect })
+    ticketsEq.mockReset().mockReturnValue({ neq: ticketsNeq })
+    ticketsUpdate.mockReset().mockReturnValue({ eq: ticketsEq })
+    sprintSingle.mockReset()
+    sprintSelect.mockReset().mockReturnValue({ single: sprintSingle })
+    sprintEq.mockReset().mockReturnValue({ select: sprintSelect })
+    sprintUpdate.mockReset().mockReturnValue({ eq: sprintEq })
+    vi.mocked(supabase.from).mockReset()
+    vi.mocked(supabase.from).mockImplementation(
+      (table: string) =>
+        (table === 'tickets'
+          ? { update: ticketsUpdate }
+          : { update: sprintUpdate }) as unknown as ReturnType<typeof supabase.from>,
+    )
+  })
+
+  it('moves incomplete tickets to the backlog, then flips the sprint to complete', async () => {
+    const moved = [ticket({ id: 't1', sprint_id: null })]
+    const completed = sprint({ status: 'complete' })
+    ticketsSelect.mockResolvedValue({ data: moved, error: null })
+    sprintSingle.mockResolvedValue({ data: completed, error: null })
+
+    const result = await completeSprint('s1')
+
+    // Step 1: bulk-null only the NOT-done tickets of this sprint.
+    expect(ticketsUpdate).toHaveBeenCalledWith({ sprint_id: null })
+    expect(ticketsEq).toHaveBeenCalledWith('sprint_id', 's1')
+    expect(ticketsNeq).toHaveBeenCalledWith('status', 'done')
+    // Step 2: flip status.
+    expect(sprintUpdate).toHaveBeenCalledWith({ status: 'complete' })
+    expect(sprintEq).toHaveBeenCalledWith('id', 's1')
+    expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: moved })
+  })
+
+  it('does not flip the status if the ticket move fails (ordering is load-bearing)', async () => {
+    ticketsSelect.mockResolvedValue({ data: null, error: { message: 'offline' } })
+
+    const result = await completeSprint('s1')
+
+    expect(sprintUpdate).not.toHaveBeenCalled()
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('maps a failed status flip to unknown', async () => {
+    ticketsSelect.mockResolvedValue({ data: [], error: null })
+    sprintSingle.mockResolvedValue({ data: null, error: { code: 'PGRST116' } })
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('treats a sprint with nothing to move as success (empty returnedTickets)', async () => {
+    const completed = sprint({ status: 'complete' })
+    ticketsSelect.mockResolvedValue({ data: [], error: null })
+    sprintSingle.mockResolvedValue({ data: completed, error: null })
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: [] })
   })
 })
