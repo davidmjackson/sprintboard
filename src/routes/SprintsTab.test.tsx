@@ -7,7 +7,7 @@ import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
 
-vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn() }))
+vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn(), completeSprint: vi.fn() }))
 
 // The dialog is exercised by its own suite; here it is a button that reports its props
 // and, on click, invokes `onCreated` with a fixture sprint — so the tab's hand-off to
@@ -96,6 +96,7 @@ function renderTab(
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
     onSprintUpdated?: (s: Sprint) => void
+    onSprintCompleted?: (s: Sprint, tickets: Ticket[]) => void
     onRetry?: () => void
     tickets?: Ticket[]
     ticketsPhase?: TicketsPhase
@@ -112,6 +113,7 @@ function renderTab(
     sprintsPhase: ctx.sprintsPhase ?? 'loaded',
     onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
     onSprintUpdated: ctx.onSprintUpdated ?? vi.fn(),
+    onSprintCompleted: ctx.onSprintCompleted ?? vi.fn(),
     onRetry: ctx.onRetry ?? vi.fn(),
     tickets: ctx.tickets ?? [],
     ticketsPhase: ctx.ticketsPhase ?? 'loaded',
@@ -336,5 +338,26 @@ describe('SprintsTab', () => {
     const complete = screen.getByText('Done one').closest('li') as HTMLElement
     expect(within(active).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
     expect(within(complete).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+  })
+
+  it('offers Complete only for an active sprint', () => {
+    renderTab({
+      sprints: [
+        sprint({ id: 'sf', name: 'Future one', status: 'future' }),
+        sprint({ id: 'sa', name: 'Active one', status: 'active' }),
+        sprint({ id: 'sc', name: 'Done one', status: 'complete' }),
+      ],
+    })
+
+    const activeRow = screen.getByText('Active one').closest('li') as HTMLElement
+    expect(within(activeRow).getByRole('button', { name: 'Complete' })).toBeInTheDocument()
+
+    const futureRow = screen.getByText('Future one').closest('li') as HTMLElement
+    expect(within(futureRow).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+    // Future keeps its Start button; Complete is only for active.
+    expect(within(futureRow).getByRole('button', { name: 'Start' })).toBeInTheDocument()
+
+    const completeRow = screen.getByText('Done one').closest('li') as HTMLElement
+    expect(within(completeRow).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
   })
 })

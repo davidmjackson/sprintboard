@@ -4,6 +4,7 @@ import { selectSprintTickets } from '@/lib/backlog'
 import { formatSprintDate } from '@/lib/sprint-dates'
 import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
+import { CompleteSprintButton } from './CompleteSprintButton'
 import { CreateSprintDialog } from './CreateSprintDialog'
 import { LoadFailure } from './LoadFailure'
 import { StartSprintButton } from './StartSprintButton'
@@ -41,6 +42,7 @@ export function SprintsTab() {
     sprintsPhase: phase,
     onSprintCreated,
     onSprintUpdated,
+    onSprintCompleted,
     onRetry,
     tickets,
     ticketsPhase,
@@ -130,6 +132,9 @@ export function SprintsTab() {
               </span>
               {sprint.status === 'future' ? (
                 <StartSprintButton sprint={sprint} onStarted={onSprintUpdated} />
+              ) : null}
+              {sprint.status === 'active' ? (
+                <CompleteSprintButton sprint={sprint} onCompleted={onSprintCompleted} />
               ) : null}
             </li>
           ))}

@@ -42,6 +42,11 @@ export type ProjectShellContext = {
   /** Replaces one sprint in the shared list by id — e.g. after it is started (S6.3). A local
    *  mutation, not a refetch, mirroring `onTicketUpdated`. */
   onSprintUpdated: (sprint: Sprint) => void
+  /** Completing a sprint changes TWO of the shell's lists at once: the sprint's status and
+   *  the `sprint_id` of every incomplete ticket that returned to the backlog. This applies
+   *  both in one update so the count badge and the status badge never render out of step.
+   *  A local mutation from the DB's own returned rows, not a refetch. */
+  onSprintCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
   /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
    *  always exists) and shared, so a tab never reaches for the auth context itself and
    *  the detail dialog and the backlog row agree on who "you" is. */
@@ -201,6 +206,38 @@ export function ProjectShell() {
         : prev,
     )
 
+  // Completing swaps the sprint by id AND clears sprint_id on the sprint's still-incomplete
+  // tickets. The ticket patch is NOT driven solely by `returnedTickets`: a prior attempt can
+  // already have moved a ticket in the DB (returning it) and then failed on the status flip,
+  // so the retry's bulk update matches zero rows and returns []. Deriving the move from the
+  // completed sprint itself — by the same rule the DB applies
+  // (`sprint_id=null where sprint_id=id and status<>'done'`) — makes the patch idempotent and
+  // correct on both the happy path and the retry path. Done tickets keep their sprint_id
+  // (retained history), exactly as the DB leaves them. Both guarded on `phase === 'loaded'`
+  // for the same reason as `onTicketUpdated` — a failed/loading variant has no list to map,
+  // and rebuilding one would resurrect the "a failed read looks successful" defect S4.6
+  // removed.
+  const onSprintCompleted = (updated: Sprint, returnedTickets: Ticket[]) => {
+    setSprintsLoaded((prev) =>
+      prev && prev.projectId === project.id && prev.phase === 'loaded'
+        ? { ...prev, sprints: prev.sprints.map((s) => (s.id === updated.id ? updated : s)) }
+        : prev,
+    )
+    const returnedById = new Map(returnedTickets.map((t) => [t.id, t]))
+    setLoaded((prev) =>
+      prev && prev.projectId === project.id && prev.phase === 'loaded'
+        ? {
+            ...prev,
+            tickets: prev.tickets.map(
+              (t) =>
+                returnedById.get(t.id) ??
+                (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
+            ),
+          }
+        : prev,
+    )
+  }
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   const tabClass = ({ isActive }: { isActive: boolean }) =>
@@ -277,6 +314,7 @@ export function ProjectShell() {
               onRetry,
               onSprintCreated,
               onSprintUpdated,
+              onSprintCompleted,
               currentUser,
               onOpenTicket: (t) => setSelectedId(t.id),
               onTicketUpdated,
