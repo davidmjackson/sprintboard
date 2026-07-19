@@ -206,10 +206,17 @@ export function ProjectShell() {
         : prev,
     )
 
-  // Completing swaps the sprint by id AND replaces every returned ticket by id (their
-  // `sprint_id` is now null). Both guarded on `phase === 'loaded'` for the same reason as
-  // `onTicketUpdated` — a failed/loading variant has no list to map, and rebuilding one would
-  // resurrect the "a failed read looks successful" defect S4.6 removed.
+  // Completing swaps the sprint by id AND clears sprint_id on the sprint's still-incomplete
+  // tickets. The ticket patch is NOT driven solely by `returnedTickets`: a prior attempt can
+  // already have moved a ticket in the DB (returning it) and then failed on the status flip,
+  // so the retry's bulk update matches zero rows and returns []. Deriving the move from the
+  // completed sprint itself — by the same rule the DB applies
+  // (`sprint_id=null where sprint_id=id and status<>'done'`) — makes the patch idempotent and
+  // correct on both the happy path and the retry path. Done tickets keep their sprint_id
+  // (retained history), exactly as the DB leaves them. Both guarded on `phase === 'loaded'`
+  // for the same reason as `onTicketUpdated` — a failed/loading variant has no list to map,
+  // and rebuilding one would resurrect the "a failed read looks successful" defect S4.6
+  // removed.
   const onSprintCompleted = (updated: Sprint, returnedTickets: Ticket[]) => {
     setSprintsLoaded((prev) =>
       prev && prev.projectId === project.id && prev.phase === 'loaded'
@@ -219,7 +226,14 @@ export function ProjectShell() {
     const returnedById = new Map(returnedTickets.map((t) => [t.id, t]))
     setLoaded((prev) =>
       prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, tickets: prev.tickets.map((t) => returnedById.get(t.id) ?? t) }
+        ? {
+            ...prev,
+            tickets: prev.tickets.map(
+              (t) =>
+                returnedById.get(t.id) ??
+                (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
+            ),
+          }
         : prev,
     )
   }

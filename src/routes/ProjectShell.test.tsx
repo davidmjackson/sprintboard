@@ -677,4 +677,47 @@ describe('ProjectShell', () => {
     expect(mockListSprints).toHaveBeenCalledTimes(1)
     expect(mockList).toHaveBeenCalledTimes(1)
   })
+
+  it('completes a sprint on retry after a failed attempt already moved the ticket: badge still drops to 0', async () => {
+    const user = userEvent.setup()
+    // An active sprint with one incomplete ticket that belongs to it.
+    mockList.mockResolvedValue([{ ...ticketA, id: 'tA', sprint_id: 's1', status: 'todo' }])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    expect(within(row).getByText('1')).toBeInTheDocument()
+
+    // First attempt: the DB already moved the ticket (sprint_id nulled) and returned it, but
+    // the status flip failed, so the shell never hears about the move. The sprint is still
+    // Active and the local ticket list still has tA pointing at it.
+    vi.mocked(completeSprint).mockResolvedValueOnce({ ok: false, error: 'unknown' })
+
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    expect(await within(row).findByRole('alert')).toBeVisible()
+    expect(within(row).getByText('Active')).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Complete' })).toBeInTheDocument()
+    expect(within(row).getByText('1')).toBeInTheDocument()
+
+    // Retry: the bulk ticket-move now matches zero rows (tA is already null in the DB), so
+    // returnedTickets is empty, but the status flip succeeds this time.
+    vi.mocked(completeSprint).mockResolvedValueOnce({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [],
+    })
+
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    // Despite the empty returnedTickets, tA must still leave the sprint locally — the shell
+    // derives the move from the completed sprint's id, not just the returned rows.
+    expect(within(row).getByText('Complete')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+    expect(within(row).getByText('0')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledTimes(2)
+  })
 })
