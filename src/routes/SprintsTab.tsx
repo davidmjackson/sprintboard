@@ -6,6 +6,7 @@ import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CreateSprintDialog } from './CreateSprintDialog'
 import { LoadFailure } from './LoadFailure'
+import { StartSprintButton } from './StartSprintButton'
 
 function SprintDates({ sprint }: { sprint: Sprint }) {
   if (!sprint.start_date && !sprint.end_date) {
@@ -39,6 +40,7 @@ export function SprintsTab() {
     sprints,
     sprintsPhase: phase,
     onSprintCreated,
+    onSprintUpdated,
     onRetry,
     tickets,
     ticketsPhase,
@@ -126,6 +128,9 @@ export function SprintsTab() {
               <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
                 {SPRINT_STATUS_LABELS[sprint.status]}
               </span>
+              {sprint.status === 'future' ? (
+                <StartSprintButton sprint={sprint} onStarted={onSprintUpdated} />
+              ) : null}
             </li>
           ))}
         </ul>

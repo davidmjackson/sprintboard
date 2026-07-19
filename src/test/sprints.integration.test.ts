@@ -1,8 +1,13 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
-import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
+import {
+  assertCredentialsOrExplain,
+  hasRlsCredentials,
+  RLS_USERS,
+  signIn,
+} from './supabase-clients'
 
 assertCredentialsOrExplain()
 
@@ -112,4 +117,122 @@ describe.skipIf(!hasRlsCredentials)('S6.1 sprint-creation contract', () => {
     expect(error).toBeNull()
     expect(data).toEqual([])
   })
+})
+
+/**
+ * S6.3 — starting a sprint, proven live. Drives the app's `startSprint` (the function the
+ * Start button calls), signed in through the module-scope `supabase` singleton as user A —
+ * the same object the browser uses. Every assertion is a re-read through `a`, a different
+ * client, so a function that merely echoed its input back would not pass. `afterEach` wipes
+ * the project's sprints so each test starts from zero active sprints, with no order
+ * dependency between them.
+ */
+describe.skipIf(!hasRlsCredentials)('S6.3 start sprint via startSprint', () => {
+  let a: SupabaseClient<Database>
+  let userAId: string
+  let projectId: string
+  let appClient: typeof import('@/lib/supabase').supabase
+  let startSprint: typeof import('@/lib/sprints').startSprint
+
+  beforeAll(async () => {
+    a = await signIn('A')
+    userAId = (await a.auth.getUser()).data.user!.id
+
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Start sprint', key: runKey() })
+      .select()
+      .single()
+    if (error) throw error
+    projectId = data!.id
+
+    // Dynamic import: `@/lib/supabase` calls `getEnv()` at module scope, so a static import
+    // would throw at module load when the env is absent, turning this file's loud skip into a
+    // hard error. Inside a skipIf'd beforeAll it only runs when credentials are present.
+    ;({ supabase: appClient } = await import('@/lib/supabase'))
+    ;({ startSprint } = await import('@/lib/sprints'))
+
+    const { email, password } = RLS_USERS.A
+    const { error: authErr } = await appClient.auth.signInWithPassword({
+      email: email!,
+      password: password!,
+    })
+    if (authErr) throw authErr
+  }, 30_000)
+
+  afterEach(async () => {
+    // Reset to zero sprints so each test is independent of order (one leaves an active one).
+    await a.from('sprints').delete().eq('project_id', projectId)
+  }, 30_000)
+
+  afterAll(async () => {
+    // Delete first (load-bearing against the shared DB), sign out second.
+    await a.from('projects').delete().eq('id', projectId)
+    await appClient?.auth.signOut()
+  }, 30_000)
+
+  async function newFutureSprint(name: string): Promise<string> {
+    const { data, error } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name, status: 'future' })
+      .select()
+      .single()
+    if (error) throw error
+    expect(data!.status).toBe('future') // a real starting point, or the transition proves nothing
+    return data!.id
+  }
+
+  it('starts a future sprint: status becomes active', async () => {
+    const id = await newFutureSprint('Solo')
+
+    const result = await startSprint(id)
+    expect(result.ok).toBe(true)
+
+    const { data, error } = await a.from('sprints').select('status').eq('id', id).single()
+    expect(error).toBeNull()
+    expect(data!.status).toBe('active')
+  }, 30_000)
+
+  it('rejects starting a second sprint while one is active (partial unique index)', async () => {
+    const first = await newFutureSprint('First')
+    const second = await newFutureSprint('Second')
+
+    // Positive control: the first start must succeed, or the rejection below is meaningless.
+    const started = await startSprint(first)
+    expect(started.ok).toBe(true)
+
+    const blocked = await startSprint(second)
+    expect(blocked).toEqual({ ok: false, error: 'already_active' })
+
+    // The second sprint is untouched — rejected, not silently applied.
+    const { data, error } = await a.from('sprints').select('status').eq('id', second).single()
+    expect(error).toBeNull()
+    expect(data!.status).toBe('future')
+  }, 30_000)
+
+  it("rejects starting another user's sprint: RLS scopes the write, no cross-tenant mutation", async () => {
+    // A owns a future sprint. `startSprint` closes over the app singleton, so to drive the
+    // app write path AS user B we sign that singleton in as B for the duration of the call,
+    // then restore A in `finally` — the singleton's auth outlives this test otherwise.
+    const id = await newFutureSprint('Cross-tenant')
+
+    const asB = RLS_USERS.B
+    await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
+    try {
+      // `sprints_owner` scopes the UPDATE through the owned project: B's write matches ZERO
+      // rows (not A's row), `.single()` then errors, and startSprint maps that to 'unknown' —
+      // never 'already_active' (which would leak that the row exists), never a mutation.
+      const result = await startSprint(id)
+      expect(result).toEqual({ ok: false, error: 'unknown' })
+    } finally {
+      const asA = RLS_USERS.A
+      await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
+    }
+
+    // Re-read as A: the sprint is untouched — proof the cross-tenant call filtered to zero
+    // rows rather than flipping A's sprint to active.
+    const { data, error } = await a.from('sprints').select('status').eq('id', id).single()
+    expect(error).toBeNull()
+    expect(data!.status).toBe('future')
+  }, 30_000)
 })
