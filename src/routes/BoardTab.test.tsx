@@ -44,6 +44,7 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     onRetry: vi.fn(),
     onSprintCreated: vi.fn(),
     onSprintUpdated: vi.fn(),
+    onSprintCompleted: vi.fn(),
     currentUser: USER,
     onOpenTicket: vi.fn(),
     onTicketUpdated: vi.fn(),

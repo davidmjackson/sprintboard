@@ -10,7 +10,7 @@ import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
 import type { Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
-import { createSprint, listSprints, startSprint } from '@/lib/sprints'
+import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
@@ -33,6 +33,7 @@ vi.mock('@/lib/sprints', async (orig) => ({
   listSprints: vi.fn(),
   createSprint: vi.fn(),
   startSprint: vi.fn(),
+  completeSprint: vi.fn(),
 }))
 
 const mockList = vi.mocked(listTickets)
@@ -46,6 +47,7 @@ beforeEach(() => {
   mockListSprints.mockReset().mockResolvedValue([])
   vi.mocked(createSprint).mockReset()
   vi.mocked(startSprint).mockReset()
+  vi.mocked(completeSprint).mockReset()
 })
 
 const PROJECTS = [
@@ -643,5 +645,36 @@ describe('ProjectShell', () => {
     expect(within(row).getByText('Active')).toBeInTheDocument()
     expect(within(row).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
     expect(vi.mocked(startSprint)).toHaveBeenCalledWith('s1')
+  })
+
+  it('completes an active sprint: badge flips and its incomplete tickets leave the sprint', async () => {
+    const user = userEvent.setup()
+    // An active sprint with one incomplete ticket that belongs to it.
+    mockList.mockResolvedValue([{ ...ticketA, id: 'tA', sprint_id: 's1', status: 'todo' }])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [{ ...ticketA, id: 'tA', sprint_id: null, status: 'todo' }],
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    // Before completing: the count badge shows the sprint's one ticket.
+    expect(within(row).getByText('1')).toBeInTheDocument()
+
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    // The shell's onSprintCompleted swapped the sprint row and nulled the ticket's sprint_id.
+    expect(within(row).getByText('Complete')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+    // The returned ticket left the sprint: the count badge drops to 0. Local mutation only.
+    expect(within(row).getByText('0')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1')
+    expect(mockListSprints).toHaveBeenCalledTimes(1)
+    expect(mockList).toHaveBeenCalledTimes(1)
   })
 })
