@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createSprint, defaultSprintName, listSprints } from './sprints'
+import { createSprint, defaultSprintName, listSprints, startSprint } from './sprints'
 import type { Sprint } from './domain'
 import { supabase } from './supabase'
 
@@ -8,6 +8,7 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
 // createSprint: from('sprints').insert(...).select().single()
 // listSprints:  from('sprints').select().eq(...).order(...)
+// startSprint:  from('sprints').update(...).eq(...).select().single()
 const single = vi.fn()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
@@ -17,6 +18,12 @@ const select = vi.fn(() => ({ eq }))
 const insert = vi.fn<
   (payload: Record<string, unknown>) => { select: () => { single: typeof single } }
 >(() => ({ select: () => ({ single }) }))
+const updateSingle = vi.fn()
+const updateSelect = vi.fn(() => ({ single: updateSingle }))
+const updateEq = vi.fn(() => ({ select: updateSelect }))
+const update = vi.fn<(patch: Record<string, unknown>) => { eq: typeof updateEq }>(() => ({
+  eq: updateEq,
+}))
 
 beforeEach(() => {
   single.mockReset()
@@ -27,10 +34,15 @@ beforeEach(() => {
   select.mockReturnValue({ eq })
   insert.mockReset()
   insert.mockReturnValue({ select: () => ({ single }) })
+  updateSingle.mockReset()
+  updateSelect.mockReset().mockReturnValue({ single: updateSingle })
+  updateEq.mockReset().mockReturnValue({ select: updateSelect })
+  update.mockReset().mockReturnValue({ eq: updateEq })
   vi.mocked(supabase.from).mockReset()
   vi.mocked(supabase.from).mockReturnValue({
     insert,
     select,
+    update,
   } as unknown as ReturnType<typeof supabase.from>)
 })
 
@@ -162,5 +174,34 @@ describe('listSprints', () => {
     order.mockResolvedValue({ data: null, error: { message: 'offline' } })
 
     await expect(listSprints('p1')).rejects.toThrow('Could not load sprints: offline')
+  })
+})
+
+describe('startSprint', () => {
+  it('sets status active and returns the updated sprint on success', async () => {
+    const active = sprint({ status: 'active' })
+    updateSingle.mockResolvedValue({ data: active, error: null })
+
+    const result = await startSprint('s1')
+
+    expect(update).toHaveBeenCalledWith({ status: 'active' })
+    expect(updateEq).toHaveBeenCalledWith('id', 's1')
+    expect(result).toEqual({ ok: true, sprint: active })
+  })
+
+  it('maps the partial-unique-index violation (23505) to already_active', async () => {
+    updateSingle.mockResolvedValue({ data: null, error: { code: '23505' } })
+
+    const result = await startSprint('s2')
+
+    expect(result).toEqual({ ok: false, error: 'already_active' })
+  })
+
+  it('maps any other error to unknown', async () => {
+    updateSingle.mockResolvedValue({ data: null, error: { code: 'PGRST116' } })
+
+    const result = await startSprint('s3')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
   })
 })

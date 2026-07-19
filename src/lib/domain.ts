@@ -183,6 +183,15 @@ export type SprintInsert = TablesInsert<'sprints'>
  */
 export type SprintCreateInsert = Omit<SprintInsert, 'status'>
 
+/**
+ * The shape of an owner-scoped status transition on a sprint (S6.3 start, S6.4 complete).
+ * `status` is the only column these intent-named writes touch; `Pick` makes any other
+ * field untypeable at the write site, the same guarantee `TicketBlockUpdate` gives the
+ * blocked fields. The one-active rule is enforced by the `sprints_one_active_per_project`
+ * partial unique index, not here.
+ */
+export type SprintStatusUpdate = Pick<TablesUpdate<'sprints'>, 'status'>
+
 /* ------------------------------------------------------------------ */
 
 export function isTicketStatus(value: string): value is TicketStatus {

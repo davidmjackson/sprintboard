@@ -1,6 +1,6 @@
 import { supabase } from './supabase'
 import { toUtcMidnight } from './sprint-dates'
-import type { Sprint, SprintCreateInsert } from './domain'
+import type { Sprint, SprintCreateInsert, SprintStatusUpdate } from './domain'
 
 /**
  * The default name for a sprint created with the name left blank: `Sprint N`, where N is
@@ -85,4 +85,38 @@ export async function listSprints(projectId: string): Promise<Sprint[]> {
 
   if (error) throw new Error(`Could not load sprints: ${error.message}`)
   return (data ?? []) as Sprint[]
+}
+
+/**
+ * Start a sprint: flip its status to `active`. The one-active-per-project rule is enforced
+ * by the `sprints_one_active_per_project` partial unique index, NOT by this function — we
+ * attempt the update and let the database reject a second active sprint. We never deactivate
+ * another sprint to make room: that would work around the index (CLAUDE.md forbids it) and
+ * silently end a running sprint.
+ *
+ * Unlike `createSprint`, this has a user-correctable failure. A `23505` (unique_violation)
+ * is the index rejecting a second active sprint — the user can finish the current one and
+ * retry — so it gets its own tag and a clear message at the UI. Everything else (an RLS
+ * zero-row match on a cross-tenant or missing id, a network error) is not user-correctable
+ * and collapses to `'unknown'`. RLS (`sprints_owner`) scopes the write through the owned
+ * project, exactly as in the browser.
+ */
+export type StartSprintResult =
+  | { ok: true; sprint: Sprint }
+  | { ok: false; error: 'already_active' }
+  | { ok: false; error: 'unknown' }
+
+export async function startSprint(id: string): Promise<StartSprintResult> {
+  const { data, error } = await supabase
+    .from('sprints')
+    .update({ status: 'active' } satisfies SprintStatusUpdate)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) {
+    if (error.code === '23505') return { ok: false, error: 'already_active' }
+    return { ok: false, error: 'unknown' }
+  }
+  return { ok: true, sprint: data as Sprint }
 }
