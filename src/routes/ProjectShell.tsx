@@ -39,6 +39,9 @@ export type ProjectShellContext = {
    *  is never mistaken for a no-op. */
   onRetry: () => void
   onSprintCreated: (sprint: Sprint) => void
+  /** Replaces one sprint in the shared list by id — e.g. after it is started (S6.3). A local
+   *  mutation, not a refetch, mirroring `onTicketUpdated`. */
+  onSprintUpdated: (sprint: Sprint) => void
   /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
    *  always exists) and shared, so a tab never reaches for the auth context itself and
    *  the detail dialog and the backlog row agree on who "you" is. */
@@ -186,6 +189,18 @@ export function ProjectShell() {
         : prev,
     )
 
+  // Replace by id. Starting a sprint touches only that sprint — enforcing one-active by
+  // REJECTING a second start (not deactivating the current one) means no other row changes.
+  // The `phase === 'loaded'` guard is load-bearing for the same reason as `onTicketUpdated`:
+  // a failed/loading variant has no `sprints` to map, and rebuilding one would resurrect the
+  // "a failed read looks successful" defect S4.6 removed.
+  const onSprintUpdated = (updated: Sprint) =>
+    setSprintsLoaded((prev) =>
+      prev && prev.projectId === project.id && prev.phase === 'loaded'
+        ? { ...prev, sprints: prev.sprints.map((s) => (s.id === updated.id ? updated : s)) }
+        : prev,
+    )
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   const tabClass = ({ isActive }: { isActive: boolean }) =>
@@ -261,6 +276,7 @@ export function ProjectShell() {
               sprintsPhase,
               onRetry,
               onSprintCreated,
+              onSprintUpdated,
               currentUser,
               onOpenTicket: (t) => setSelectedId(t.id),
               onTicketUpdated,

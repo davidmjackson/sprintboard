@@ -7,6 +7,8 @@ import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
 
+vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn() }))
+
 // The dialog is exercised by its own suite; here it is a button that reports its props
 // and, on click, invokes `onCreated` with a fixture sprint — so the tab's hand-off to
 // the shell's `onSprintCreated` is exercised here, not just by the dialog's own tests.
@@ -93,6 +95,7 @@ function renderTab(
     sprints?: Sprint[]
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
+    onSprintUpdated?: (s: Sprint) => void
     onRetry?: () => void
     tickets?: Ticket[]
     ticketsPhase?: TicketsPhase
@@ -108,6 +111,7 @@ function renderTab(
     sprints: ctx.sprints ?? [],
     sprintsPhase: ctx.sprintsPhase ?? 'loaded',
     onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
+    onSprintUpdated: ctx.onSprintUpdated ?? vi.fn(),
     onRetry: ctx.onRetry ?? vi.fn(),
     tickets: ctx.tickets ?? [],
     ticketsPhase: ctx.ticketsPhase ?? 'loaded',
@@ -313,5 +317,24 @@ describe('SprintsTab', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load sprints.')
     expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
+  })
+
+  it('offers a Start button on a future sprint', () => {
+    renderTab({ sprints: [sprint({ id: 's1', status: 'future' })] })
+    const row = screen.getByText('Sprint 1').closest('li') as HTMLElement
+    expect(within(row).getByRole('button', { name: 'Start' })).toBeInTheDocument()
+  })
+
+  it('does not offer Start on an active or complete sprint', () => {
+    renderTab({
+      sprints: [
+        sprint({ id: 's1', name: 'Active one', status: 'active' }),
+        sprint({ id: 's2', name: 'Done one', status: 'complete' }),
+      ],
+    })
+    const active = screen.getByText('Active one').closest('li') as HTMLElement
+    const complete = screen.getByText('Done one').closest('li') as HTMLElement
+    expect(within(active).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+    expect(within(complete).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
   })
 })

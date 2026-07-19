@@ -10,7 +10,7 @@ import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
 import type { Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
-import { createSprint, listSprints } from '@/lib/sprints'
+import { createSprint, listSprints, startSprint } from '@/lib/sprints'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
@@ -32,6 +32,7 @@ vi.mock('@/lib/sprints', async (orig) => ({
   ...(await orig<typeof import('@/lib/sprints')>()),
   listSprints: vi.fn(),
   createSprint: vi.fn(),
+  startSprint: vi.fn(),
 }))
 
 const mockList = vi.mocked(listTickets)
@@ -44,6 +45,7 @@ beforeEach(() => {
   vi.mocked(updateTicket).mockReset()
   mockListSprints.mockReset().mockResolvedValue([])
   vi.mocked(createSprint).mockReset()
+  vi.mocked(startSprint).mockReset()
 })
 
 const PROJECTS = [
@@ -619,5 +621,27 @@ describe('ProjectShell', () => {
       expect(screen.queryByText('tickets phase: failed')).not.toBeInTheDocument()
       expect(await screen.findByText('sprints phase: loading')).toBeVisible()
     })
+  })
+
+  it('starts a future sprint from the Sprints tab and flips its badge to Active (real wiring)', async () => {
+    const user = userEvent.setup()
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'future' },
+    ])
+    vi.mocked(startSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: 'Start' }))
+
+    // The shell's onSprintUpdated replaced the sprint by id; the row now shows the Active badge
+    // and no longer offers a Start button.
+    expect(within(row).getByText('Active')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: 'Start' })).not.toBeInTheDocument()
+    expect(vi.mocked(startSprint)).toHaveBeenCalledWith('s1')
   })
 })
