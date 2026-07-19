@@ -42,7 +42,9 @@ describe('StartSprintButton', () => {
     render(<StartSprintButton sprint={sprint} onStarted={onStarted} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/already has an active sprint/i)
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This project already has an active sprint. Complete it before starting another.',
+    )
     expect(onStarted).not.toHaveBeenCalled()
   })
 
@@ -52,7 +54,9 @@ describe('StartSprintButton', () => {
     render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/something went wrong/i)
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong. Please try again.',
+    )
   })
 
   it('disables the button while the start is in flight', async () => {
@@ -68,5 +72,7 @@ describe('StartSprintButton', () => {
 
     expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled()
     resolve({ ok: true, sprint: { ...sprint, status: 'active' } })
+    // Let the resolution flush so the pending state clears — avoids a dangling microtask.
+    await screen.findByRole('button', { name: 'Start' })
   })
 })

@@ -209,4 +209,30 @@ describe.skipIf(!hasRlsCredentials)('S6.3 start sprint via startSprint', () => {
     expect(error).toBeNull()
     expect(data!.status).toBe('future')
   }, 30_000)
+
+  it("rejects starting another user's sprint: RLS scopes the write, no cross-tenant mutation", async () => {
+    // A owns a future sprint. `startSprint` closes over the app singleton, so to drive the
+    // app write path AS user B we sign that singleton in as B for the duration of the call,
+    // then restore A in `finally` — the singleton's auth outlives this test otherwise.
+    const id = await newFutureSprint('Cross-tenant')
+
+    const asB = RLS_USERS.B
+    await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
+    try {
+      // `sprints_owner` scopes the UPDATE through the owned project: B's write matches ZERO
+      // rows (not A's row), `.single()` then errors, and startSprint maps that to 'unknown' —
+      // never 'already_active' (which would leak that the row exists), never a mutation.
+      const result = await startSprint(id)
+      expect(result).toEqual({ ok: false, error: 'unknown' })
+    } finally {
+      const asA = RLS_USERS.A
+      await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
+    }
+
+    // Re-read as A: the sprint is untouched — proof the cross-tenant call filtered to zero
+    // rows rather than flipping A's sprint to active.
+    const { data, error } = await a.from('sprints').select('status').eq('id', id).single()
+    expect(error).toBeNull()
+    expect(data!.status).toBe('future')
+  }, 30_000)
 })
