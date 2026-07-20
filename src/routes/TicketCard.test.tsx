@@ -40,4 +40,18 @@ describe('TicketCard', () => {
       'false',
     )
   })
+
+  it('shows the block reason on the marker for hover (S7.3 AC1)', () => {
+    render(
+      <TicketCard
+        ticket={{ ...ticket, is_blocked: true, blocked_reason: 'waiting on API' } as Ticket}
+      />,
+    )
+    expect(screen.getByText(/blocked/i)).toHaveAttribute('title', 'Blocked: waiting on API')
+  })
+
+  it('shows a plain Blocked title when a blocked ticket has no reason', () => {
+    render(<TicketCard ticket={{ ...ticket, is_blocked: true, blocked_reason: null } as Ticket} />)
+    expect(screen.getByText(/blocked/i)).toHaveAttribute('title', 'Blocked')
+  })
 })
