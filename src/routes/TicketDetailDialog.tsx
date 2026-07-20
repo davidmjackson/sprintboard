@@ -447,7 +447,9 @@ export function TicketDetailDialog({
     setProposals(null)
     setSelected(new Set())
     if (created.length < selected.size) {
-      setAiError('Some tickets could not be created. Run "Decompose with AI" again to retry the rest.')
+      setAiError(
+        'Some tickets could not be created. Run "Decompose with AI" again to retry the rest.',
+      )
     }
   }
 

@@ -1205,7 +1205,12 @@ describe('TicketDetailDialog — epic fields', () => {
       ok: true,
       proposals: [
         { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
-        { title: 'Persist sessions', description: 'd2', type: 'task', rationale: 'session handling' },
+        {
+          title: 'Persist sessions',
+          description: 'd2',
+          type: 'task',
+          rationale: 'session handling',
+        },
       ],
     })
     createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
@@ -1260,7 +1265,12 @@ describe('TicketDetailDialog — epic fields', () => {
       ok: true,
       proposals: [
         { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
-        { title: 'Persist sessions', description: 'd2', type: 'task', rationale: 'session handling' },
+        {
+          title: 'Persist sessions',
+          description: 'd2',
+          type: 'task',
+          rationale: 'session handling',
+        },
       ],
     })
     createTicket
@@ -1291,9 +1301,7 @@ describe('TicketDetailDialog — epic fields', () => {
     expect(screen.getByText(/could not be created/i)).toBeInTheDocument()
 
     // Panel is cleared — no in-place retry is possible.
-    expect(
-      screen.getByRole('button', { name: /decompose with ai/i }),
-    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /decompose with ai/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /add .* to backlog/i })).not.toBeInTheDocument()
   })
 
