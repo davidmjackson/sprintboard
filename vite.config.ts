@@ -17,7 +17,10 @@ export default defineConfig(({ mode }) => ({
     // Claude Code puts subagent git worktrees under .claude/worktrees/ — full
     // repo copies, inside the repo. Without this, vitest collects their test
     // files too and reports double the tests, all passing, from stale code.
-    exclude: [...configDefaults.exclude, '**/.claude/**'],
+    // `e2e/**`: Playwright specs (named *.spec.ts) match Vitest's default include
+    // glob too. They drive a real browser and belong to `npm run e2e`, never the
+    // Vitest process — exclude them so `npm test` doesn't try to collect them.
+    exclude: [...configDefaults.exclude, '**/.claude/**', 'e2e/**'],
     // Only these prefixes are loaded into the test process — not the developer's
     // entire shell environment. Test credentials must never be VITE_-prefixed:
     // Vite inlines those into the production bundle, which would ship a password

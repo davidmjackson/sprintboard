@@ -118,6 +118,35 @@ CI run reporting 103 tests instead of 127 means exactly that, and must be treate
 failure. (103 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
 the RLS, keepalive, signup, login **and** project suites vanish.)
 
+## End-to-end suite (Playwright)
+
+`e2e/` holds the S8.1 happy-path browser test: one real user's whole journey (signup →
+create project → create ticket → add to sprint → start sprint → drag to Done → complete
+sprint), driven by Playwright against the live Supabase project. `npm run e2e` runs it.
+It needs `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`
+(the last for teardown only) and skips loudly without them. Each run signs up a fresh,
+unique user and deletes it in teardown — which cascades away the project, sprint and
+tickets, since every owned table is `on delete cascade` from `auth.users`.
+
+It is the **only** test that exercises the native HTML5 drag for real: jsdom has no
+`dataTransfer`, so every Vitest board test can assert the drag *wiring* but never the
+*gesture*. Playwright dispatches the DOM drag events directly (mouse-based `dragTo` does
+not fire them reliably), and the test waits on the `tickets` PATCH so it proves the move
+*persisted*, not just the optimistic paint.
+
+- **It is NOT the gate, and must never become it.** `e2e.yml` is a separate, non-required
+  check. A real browser plus a real signup against a remote database is inherently more
+  flake-prone than `verify`; folding it into `npm run verify`, or marking the `e2e` check
+  required, would put that flake in front of every merge. The required gate is `verify`,
+  and only `verify`.
+- **`e2e.yml` shares the global `verify` concurrency group on purpose** — so the E2E never
+  runs concurrently with the RLS suite against the shared database (which would risk auth
+  rate-limiting and write collisions). Do not give it its own group.
+- **Vitest must never collect `e2e/**`.** Playwright specs are `*.spec.ts`, which matches
+  Vitest's default include glob; `vite.config.ts` excludes `e2e/**` for exactly this
+  reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
+  the exclude, don't rename the specs.
+
 ## Deep review for security-boundary changes
 
 Every story gets the standard two-reviewer pass (peer + security) on PR open. **In
