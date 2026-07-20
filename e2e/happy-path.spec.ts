@@ -27,6 +27,17 @@ const HAS_ENV = Boolean(
   process.env.SUPABASE_SERVICE_ROLE_KEY,
 )
 
+// Mirror the integration suites' "refuse to skip in CI" rule (src/test/supabase-clients
+// requireOrExplain): locally a missing env skips loudly, but in CI a dropped variable
+// must go red, not silently green — a vanished check is the exact false-safety CLAUDE.md
+// warns about ("the check that ran was not the check that was claimed").
+if (process.env.CI && !HAS_ENV) {
+  throw new Error(
+    'E2E cannot run in CI: missing VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY or ' +
+      'SUPABASE_SERVICE_ROLE_KEY. Refusing to skip in CI.',
+  )
+}
+
 test.describe('S8.1 end-to-end happy path', () => {
   test.skip(
     !HAS_ENV,
@@ -34,12 +45,14 @@ test.describe('S8.1 end-to-end happy path', () => {
       'SUPABASE_SERVICE_ROLE_KEY (see .env.example).',
   )
 
-  // The user id captured at signup, so teardown can delete it even if the test
-  // fails partway through.
-  let createdUserId: string | null = null
+  // Every user signed up across attempts. Retries (CI runs one) execute the test body
+  // again but afterAll runs ONCE, after the final attempt — so a single mutable id
+  // would let a failed-then-retried run strand its first attempt's user in the shared
+  // database. Accumulate all ids and delete every one.
+  const createdUserIds: string[] = []
 
   test.afterAll(async () => {
-    if (createdUserId) await deleteAuthUser(createdUserId)
+    for (const id of createdUserIds) await deleteAuthUser(id)
   })
 
   test('signup → project → ticket → sprint → start → drag to Done → complete', async ({ page }) => {
@@ -56,13 +69,19 @@ test.describe('S8.1 end-to-end happy path', () => {
     await page.getByLabel('Password').fill(password)
     await page.getByRole('button', { name: 'Create account' }).click()
 
-    // The sidebar "New project" affordance only renders once authed.
+    // Capture the new user's id ASAP. The session lands in localStorage right after
+    // signup; capturing it BEFORE any later assertion means a mid-test flake can't
+    // strand the account — every captured id is deleted in afterAll.
+    await page.waitForFunction(() =>
+      Object.keys(window.localStorage).some((k) => /^sb-.*-auth-token$/.test(k)),
+    )
+    const userId = await readSupabaseUserId(page)
+    expect(userId, 'expected a Supabase session after signup').toBeTruthy()
+    if (userId) createdUserIds.push(userId)
+
+    // Signup lands on the authed home; the sidebar "New project" affordance confirms it.
     const newProject = page.getByRole('button', { name: 'New project' })
     await expect(newProject).toBeVisible()
-
-    // Capture the new user's id from the persisted Supabase session, for teardown.
-    createdUserId = await readSupabaseUserId(page)
-    expect(createdUserId, 'expected a Supabase session after signup').toBeTruthy()
 
     // 2. Create a project. Key is auto-derived from the name; set it explicitly to a
     //    valid 2–4 char key. It is unique per owner, and this owner is brand new.
@@ -141,11 +160,15 @@ test.describe('S8.1 end-to-end happy path', () => {
     ).toBeVisible()
     await expect(page.getByRole('alert')).toHaveCount(0)
 
-    // 7. Complete the sprint. Its status becomes Complete and the button unmounts.
+    // 7. Complete the sprint. The Complete button unmounts and the row's status badge
+    //    flips from Active to Complete. Assert the button is gone FIRST: that is the
+    //    load-bearing check (a no-op complete leaves the button visible) AND it
+    //    disambiguates the badge below from the button, which also renders "Complete".
     await page.goto(`/projects/${projectId}/sprints`)
     await sprintRow.getByRole('button', { name: 'Complete' }).click()
-    await expect(sprintRow.getByText('Complete', { exact: true })).toBeVisible()
     await expect(sprintRow.getByRole('button', { name: 'Complete' })).toBeHidden()
+    await expect(sprintRow.getByText('Active', { exact: true })).toBeHidden()
+    await expect(sprintRow.getByText('Complete', { exact: true })).toBeVisible()
   })
 })
 

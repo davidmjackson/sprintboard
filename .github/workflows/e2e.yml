@@ -30,6 +30,11 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
+    # This job shares the global `verify` concurrency group, so a hung run would hold
+    # the single slot and delay the required `verify` check (default job timeout is 6h).
+    # Cap it well under that: the real flow runs in seconds, and Playwright's own
+    # per-test timeout is 120s with one retry.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
