@@ -311,9 +311,7 @@ describe('BoardTab', () => {
     expect(onTicketUpdated).toHaveBeenCalledWith(
       expect.objectContaining({ id: 't1', status: 'in_progress' }),
     )
-    await waitFor(() =>
-      expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }),
-    )
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }))
   })
 
   it('reverts the optimistic move and shows an error when the write fails (S7.2 AC3)', async () => {
