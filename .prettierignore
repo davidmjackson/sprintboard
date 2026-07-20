@@ -11,3 +11,6 @@ package-lock.json
 
 # Subagent-driven-development scratch (gitignored)
 .superpowers/
+
+# Python AI service — not JS/TS, never let prettier touch it
+api/

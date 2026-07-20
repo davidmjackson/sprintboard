@@ -78,6 +78,22 @@ describe('createTicket', () => {
     // check above cannot pass because `insert` was never called or got something else.
     expect(payload).toMatchObject({ project_id: 'p1', summary: 'Wire the board' })
   })
+
+  it('sets parent_epic_id when parentEpicId is given (AI decomposition children)', async () => {
+    single.mockResolvedValue({ data: { id: 't2' }, error: null })
+    await createTicket({ ...input, parentEpicId: 'e1' })
+
+    const payload = insert.mock.calls[0]![0]
+    expect(payload).toMatchObject({ project_id: 'p1', parent_epic_id: 'e1' })
+  })
+
+  it('omits/nulls parent_epic_id when parentEpicId is absent', async () => {
+    single.mockResolvedValue({ data: { id: 't3' }, error: null })
+    await createTicket(input)
+
+    const payload = insert.mock.calls[0]![0]
+    expect(payload.parent_epic_id ?? null).toBeNull()
+  })
 })
 
 describe('listTickets', () => {

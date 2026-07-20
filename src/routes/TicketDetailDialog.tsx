@@ -4,11 +4,13 @@ import { Ban, CircleCheck, MoreHorizontal, Pencil, Trash2, X } from 'lucide-reac
 import {
   BLOCK_REASON_MAX,
   blockTicket,
+  createTicket,
   deleteTicket,
   parseBlockReason,
   unblockTicket,
   updateTicket,
 } from '@/lib/tickets'
+import { decomposeEpic, type DecomposeProposal } from '@/lib/ai'
 import { parseLabels } from '@/lib/labels'
 import { parseDeliverables } from '@/lib/deliverables'
 import {
@@ -227,6 +229,7 @@ export function TicketDetailDialog({
   onOpenChange,
   onUpdated,
   onDeleted,
+  onTicketsCreated,
 }: {
   ticket: Ticket | null
   currentUser: { id: string; email: string }
@@ -241,6 +244,9 @@ export function TicketDetailDialog({
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
+  /** Appends AI-created child tickets to the shared board/backlog list. Optional so the
+   *  dialog still renders in isolation (tests, non-epic tickets). */
+  onTicketsCreated?: (tickets: Ticket[]) => void
 }) {
   // Keyed to the ticket id so switching tickets resets any stale error without a
   // synchronous "reset on prop change" effect (the project's react-hooks lint rule
@@ -276,6 +282,14 @@ export function TicketDetailDialog({
   // The add-deliverable input, so the dialog's Escape handler can tell "Esc in the add
   // field" (clear the draft, stay open) from "Esc anywhere else" (dismiss the dialog).
   const newDeliverableRef = useRef<HTMLInputElement>(null)
+
+  // AI decomposition (epic only). `proposals === null` is "not decomposed yet" (shows the
+  // button); once set, it shows the proposal list until accepted or discarded.
+  const [proposals, setProposals] = useState<DecomposeProposal[] | null>(null)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [decomposing, setDecomposing] = useState(false)
+  const [accepting, setAccepting] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
 
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
@@ -385,6 +399,58 @@ export function TicketDetailDialog({
     // list never holds an empty deliverable (the same rule `parseDeliverables` enforces).
     const next = deliverables.map((d, i) => (i === index ? value.trim() : d)).filter(Boolean)
     void writeDeliverables(next)
+  }
+
+  async function runDecompose() {
+    if (!ticket) return
+    setDecomposing(true)
+    setAiError(null)
+    const result = await decomposeEpic({
+      summary: ticket.summary,
+      context: ticket.context ?? '',
+      deliverables: parseDeliverables(ticket.deliverables),
+    })
+    setDecomposing(false)
+    if (!result.ok) {
+      setAiError(
+        result.error === 'unauthenticated'
+          ? 'Your session expired — sign in again.'
+          : 'Could not reach the AI service. Is it running?',
+      )
+      return
+    }
+    setProposals(result.proposals)
+    setSelected(new Set(result.proposals.map((_, i) => i)))
+  }
+
+  async function acceptSelected() {
+    if (!ticket || !proposals) return
+    setAccepting(true)
+    setAiError(null)
+    const created: Ticket[] = []
+    for (const [i, p] of proposals.entries()) {
+      if (!selected.has(i)) continue
+      const result = await createTicket({
+        projectId: ticket.project_id,
+        summary: p.title,
+        type: p.type,
+        description: p.description,
+        parentEpicId: ticket.id,
+      })
+      if (result.ok) created.push(result.ticket)
+    }
+    setAccepting(false)
+    if (created.length > 0) onTicketsCreated?.(created)
+    // Always clear the panel after an attempt: a re-click must never re-create a ticket
+    // that already succeeded (duplicate writes). Successful children are already on the
+    // board via onTicketsCreated; on partial failure the user re-runs decomposition.
+    setProposals(null)
+    setSelected(new Set())
+    if (created.length < selected.size) {
+      setAiError(
+        'Some tickets could not be created. The ones that succeeded were added to the backlog.',
+      )
+    }
   }
 
   async function handleDelete() {
@@ -686,6 +752,83 @@ export function TicketDetailDialog({
                       Add
                     </Button>
                   </div>
+                </div>
+
+                <div className="space-y-2 border-t pt-4">
+                  <FieldLabel>AI decomposition</FieldLabel>
+                  {proposals === null ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={decomposing}
+                      onClick={() => void runDecompose()}
+                    >
+                      {decomposing ? 'Thinking…' : 'Decompose with AI'}
+                    </Button>
+                  ) : (
+                    <div className="space-y-2">
+                      <ul className="space-y-2">
+                        {proposals.map((p, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              className="mt-1"
+                              checked={selected.has(i)}
+                              aria-label={`Include ${p.title} (#${i + 1})`}
+                              onChange={(e) =>
+                                setSelected((prev) => {
+                                  const next = new Set(prev)
+                                  if (e.target.checked) next.add(i)
+                                  else next.delete(i)
+                                  return next
+                                })
+                              }
+                            />
+                            <div className="text-sm">
+                              <p className="font-medium">
+                                {p.title}{' '}
+                                <span className="text-muted-foreground">
+                                  ({TICKET_TYPE_LABELS[p.type]})
+                                </span>
+                              </p>
+                              <p className="text-muted-foreground">{p.description}</p>
+                              <p className="text-muted-foreground/80 text-xs italic">
+                                {p.rationale}
+                              </p>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={accepting || selected.size === 0}
+                          onClick={() => void acceptSelected()}
+                        >
+                          {accepting ? 'Adding…' : `Add ${selected.size} to backlog`}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={accepting}
+                          onClick={() => {
+                            setProposals(null)
+                            setSelected(new Set())
+                          }}
+                        >
+                          Discard
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {aiError ? (
+                    <p role="alert" className="text-destructive text-sm">
+                      {aiError}
+                    </p>
+                  ) : null}
                 </div>
               </>
             ) : null}

@@ -66,6 +66,10 @@ const envSchema = z.object({
         '`sb_publishable_…` key or a JWT with role "anon". Refusing to boot rather than ' +
         'guess: an unrecognised key could be privileged.',
     ),
+  VITE_AI_API_URL: z
+    .string()
+    .url('VITE_AI_API_URL must be a full URL, e.g. http://localhost:8787')
+    .default('http://localhost:8787'),
 })
 
 export type Env = z.infer<typeof envSchema>
