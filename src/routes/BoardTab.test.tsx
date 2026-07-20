@@ -297,7 +297,14 @@ describe('BoardTab', () => {
   it('optimistically moves a card to the drop column and persists the new status (S7.2 AC1/AC3)', async () => {
     updateTicket.mockResolvedValue({
       ok: true,
-      ticket: { ...SPRINT_TICKETS[0], status: 'in_progress', updated_at: '2026-07-20T00:00:00Z' },
+      // The reconcile reads only `status` and `updated_at` off the returned row; a minimal
+      // object suffices (SPRINT_TICKETS is typed `as never`, so it cannot be spread here).
+      ticket: {
+        id: 't1',
+        key: 'MP-1',
+        status: 'in_progress',
+        updated_at: '2026-07-20T00:00:00Z',
+      },
     } as never)
     const onTicketUpdated = vi.fn()
     renderTab(BoardTab, boardCtx({ onTicketUpdated }))
