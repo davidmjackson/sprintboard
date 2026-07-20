@@ -22,3 +22,9 @@ test-results/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Python AI service (api/) — see CLAUDE.md
+api/.venv/
+api/__pycache__/
+api/**/__pycache__/
+.pytest_cache/
