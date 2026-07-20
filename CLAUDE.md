@@ -176,6 +176,22 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
   reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
   the exclude, don't rename the specs.
 
+## Rung 2 AI service
+
+`api/` is the Rung 2 FastAPI service: **local-only and stateless**. It verifies the
+caller's Supabase JWT (authentication only) and calls Claude; it touches no database
+and holds no service-role key. Run it with
+`cd api && .venv/bin/uvicorn app.main:app --port 8787` (details in `api/README.md`).
+
+- **`api.yml` is a separate, non-required check** — deterministic (the model is
+  mocked) with its own concurrency group, sharing no live resource with
+  `verify`/`e2e`. It must never be folded into `verify`, and `verify.yml` must stay
+  byte-unchanged.
+- **Secrets:** `ANTHROPIC_API_KEY` and `SUPABASE_URL` are server-side only, never
+  `VITE_`-prefixed. `VITE_AI_API_URL` is public — a localhost URL, not a secret.
+- **Model:** `claude-opus-4-8`, configured via `AI_MODEL`, with structured output.
+  `llm.propose` is the single mock seam for tests.
+
 ## Deep review for security-boundary changes
 
 Every story gets the standard two-reviewer pass (peer + security) on PR open. **In
