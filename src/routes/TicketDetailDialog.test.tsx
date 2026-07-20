@@ -6,6 +6,7 @@ import { TicketDetailDialog } from './TicketDetailDialog'
 import type { Sprint, Ticket } from '@/lib/domain'
 import * as tickets from '@/lib/tickets'
 import type { UpdateTicketResult } from '@/lib/tickets'
+import * as ai from '@/lib/ai'
 
 /** A promise the test controls the resolution of, plus its resolver. */
 function deferred<T>() {
@@ -22,11 +23,16 @@ vi.mock('@/lib/tickets', async (orig) => ({
   deleteTicket: vi.fn(),
   blockTicket: vi.fn(),
   unblockTicket: vi.fn(),
+  createTicket: vi.fn(),
 }))
 const updateTicket = vi.mocked(tickets.updateTicket)
 const deleteTicket = vi.mocked(tickets.deleteTicket)
 const blockTicket = vi.mocked(tickets.blockTicket)
 const unblockTicket = vi.mocked(tickets.unblockTicket)
+const createTicket = vi.mocked(tickets.createTicket)
+
+vi.mock('@/lib/ai', () => ({ decomposeEpic: vi.fn() }))
+const decomposeEpic = vi.mocked(ai.decomposeEpic)
 
 const base: Ticket = {
   id: 't1',
@@ -58,6 +64,8 @@ beforeEach(() => {
   deleteTicket.mockReset()
   blockTicket.mockReset()
   unblockTicket.mockReset()
+  createTicket.mockReset()
+  decomposeEpic.mockReset()
 })
 
 describe('TicketDetailDialog', () => {
@@ -1182,6 +1190,72 @@ describe('TicketDetailDialog — epic fields', () => {
     await userEvent.type(input, 'Draft{Escape}')
     expect(input).toHaveValue('')
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
+
+  it('decomposes an epic and creates the accepted children', async () => {
+    const epic: Ticket = {
+      ...base,
+      id: 'e1',
+      type: 'epic',
+      summary: 'Authentication',
+      context: 'Users must sign in',
+      deliverables: ['login form', 'session handling'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
+        { title: 'Persist sessions', description: 'd2', type: 'task', rationale: 'session handling' },
+      ],
+    })
+    createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
+    const onTicketsCreated = vi.fn()
+
+    render(
+      <TicketDetailDialog
+        ticket={epic}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+        onTicketsCreated={onTicketsCreated}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    // Both proposals render.
+    await screen.findByText('Build login form')
+    expect(screen.getByText('Persist sessions')).toBeInTheDocument()
+
+    // Accept — creates one child per selected proposal (both selected by default).
+    await userEvent.click(screen.getByRole('button', { name: /add .* to backlog/i }))
+
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(2))
+    expect(createTicket).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'p1',
+        summary: 'Build login form',
+        type: 'story',
+        parentEpicId: 'e1',
+      }),
+    )
+    expect(onTicketsCreated).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'c1' }),
+      expect.objectContaining({ id: 'c1' }),
+    ])
+  })
+
+  it('does not show the decompose button on a non-epic ticket', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /decompose with ai/i })).not.toBeInTheDocument()
   })
 })
 

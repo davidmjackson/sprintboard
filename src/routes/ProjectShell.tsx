@@ -334,6 +334,13 @@ export function ProjectShell() {
           }}
           onUpdated={onTicketUpdated}
           onDeleted={onTicketDeleted}
+          onTicketsCreated={(created) =>
+            setLoaded((prev) =>
+              prev && prev.projectId === project.id && prev.phase === 'loaded'
+                ? { ...prev, tickets: [...prev.tickets, ...created] }
+                : prev,
+            )
+          }
         />
       </div>
     </div>
