@@ -6,9 +6,12 @@ import { Ban } from 'lucide-react'
  * rides along with the ticket in whatever status column it already sits in; it never
  * moves it. The fuller reason lives in the ticket detail dialog's banner.
  */
-export function BlockedBadge() {
+export function BlockedBadge({ reason }: { reason?: string | null }) {
   return (
-    <span className="border-destructive/30 bg-destructive/10 text-destructive inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase">
+    <span
+      title={reason ? `Blocked: ${reason}` : 'Blocked'}
+      className="border-destructive/30 bg-destructive/10 text-destructive inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase"
+    >
       <Ban aria-hidden="true" className="size-3" />
       Blocked
     </span>

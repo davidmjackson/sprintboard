@@ -355,6 +355,54 @@ describe('BoardTab', () => {
     expect(updateTicket).not.toHaveBeenCalled()
     expect(onTicketUpdated).not.toHaveBeenCalled()
   })
+
+  const MIXED_BLOCKED = [
+    {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Blocked one',
+      type: 'story',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: true,
+      blocked_reason: 'waiting on API',
+    },
+    {
+      id: 't2',
+      key: 'MP-2',
+      number: 2,
+      summary: 'Open one',
+      type: 'bug',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: false,
+    },
+  ] as never
+
+  it('offers a "Blocked only" filter when a sprint is active (S7.3 AC2)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: MIXED_BLOCKED }))
+    expect(screen.getByRole('checkbox', { name: /blocked only/i })).toBeInTheDocument()
+  })
+
+  it('does NOT offer the filter when there is no active sprint (negative control)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
+    expect(screen.queryByRole('checkbox', { name: /blocked only/i })).not.toBeInTheDocument()
+  })
+
+  it('shows only blocked cards when the filter is on, and restores when off (S7.3 AC2)', async () => {
+    renderTab(BoardTab, boardCtx({ tickets: MIXED_BLOCKED }))
+    // Both visible initially.
+    expect(screen.getByText('Blocked one')).toBeInTheDocument()
+    expect(screen.getByText('Open one')).toBeInTheDocument()
+    // Turn the filter on: the unblocked card disappears, the blocked one stays.
+    await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
+    expect(screen.getByText('Blocked one')).toBeInTheDocument()
+    expect(screen.queryByText('Open one')).not.toBeInTheDocument()
+    // Turn it off: the unblocked card returns.
+    await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
+    expect(screen.getByText('Open one')).toBeInTheDocument()
+  })
 })
 
 describe('BacklogTab', () => {

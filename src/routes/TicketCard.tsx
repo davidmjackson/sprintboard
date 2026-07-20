@@ -31,7 +31,7 @@ export function TicketCard({
       <div className="flex items-center justify-between gap-2">
         <span className="text-muted-foreground font-mono text-xs">{ticket.key}</span>
         <div className="flex items-center gap-1.5">
-          {ticket.is_blocked ? <BlockedBadge /> : null}
+          {ticket.is_blocked ? <BlockedBadge reason={ticket.blocked_reason} /> : null}
           <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium uppercase">
             {TICKET_TYPE_LABELS[ticket.type]}
           </span>
