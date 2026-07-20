@@ -1,4 +1,4 @@
-import type { Sprint } from './domain'
+import type { Sprint, Ticket } from './domain'
 
 /**
  * The board rule, in one place: **the board shows the ACTIVE sprint** — the one sprint whose
@@ -15,4 +15,14 @@ import type { Sprint } from './domain'
  */
 export function selectActiveSprint(sprints: readonly Sprint[]): Sprint | null {
   return sprints.find((s) => s.status === 'active') ?? null
+}
+
+/**
+ * The blocked-only board filter, in one place: the tickets whose `is_blocked` flag is set.
+ * Kept here beside `selectActiveSprint` rather than inlined in `BoardTab`, so "which tickets
+ * are visible" stays a named, tested selector (CLAUDE.md forbids inlining domain rules in
+ * components). Blocked is a flag, never a column — this narrows the set, it never moves a card.
+ */
+export function selectBlockedTickets(tickets: readonly Ticket[]): Ticket[] {
+  return tickets.filter((t) => t.is_blocked)
 }
