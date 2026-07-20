@@ -222,4 +222,6 @@ the endpoint cannot rot underneath the cron. `npm run keepalive` triggers it man
 ## Key files
 - `docs/sprintboard_phase1_schema.sql` — the database schema.
 - `docs/sprintboard_phase1_backlog.md` — epics and stories with acceptance criteria.
+- `docs/sprintboard_phase1_traceability.md` — E8 audit trail: each DoD/RLS-in-CI AC mapped
+  to the artefact that satisfies it.
 - `CLAUDE.md` — this file.
