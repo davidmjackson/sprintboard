@@ -10,7 +10,9 @@ import type { Ticket, TicketBlockUpdate, TicketInsert, TicketType, TicketUpdate 
  * `owner_id`; the `tickets_owner` RLS policy scopes writes through the project, so a
  * cross-tenant insert is rejected by the database, not by this function. A failure is
  * not user-correctable (no per-field unique constraint reachable here), so the error
- * result is a single `'unknown'`.
+ * result is a single `'unknown'`. `parentEpicId` is optional and set for AI-decomposition
+ * children; the composite fk `tickets_epic_fk` keeps the parent in the same project, which
+ * holds because the caller passes the epic's own project id.
  */
 export type CreateTicketResult = { ok: true; ticket: Ticket } | { ok: false; error: 'unknown' }
 
@@ -22,6 +24,7 @@ export async function createTicket(input: {
   storyPoints?: number
   labels?: string[]
   acceptanceCriteria?: string
+  parentEpicId?: string
 }): Promise<CreateTicketResult> {
   // `satisfies TicketInsert` binds the write to the guard type (Omit key/number), so a
   // future edit that adds `key` or `number` here fails to compile at the call site —
@@ -36,6 +39,7 @@ export async function createTicket(input: {
       story_points: input.storyPoints ?? null,
       labels: input.labels ?? [],
       acceptance_criteria: input.acceptanceCriteria ?? null,
+      parent_epic_id: input.parentEpicId ?? null,
     } satisfies TicketInsert)
     .select()
     .single()
