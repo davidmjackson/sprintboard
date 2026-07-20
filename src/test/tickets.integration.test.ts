@@ -8,6 +8,7 @@ import {
   hasRlsCredentials,
   RLS_USERS,
   signIn,
+  userId,
 } from './supabase-clients'
 
 assertCredentialsOrExplain()
@@ -34,7 +35,7 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
     projectKey = runKey()
     const { data, error } = await a
@@ -108,9 +109,9 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
-    userBId = (await b.auth.getUser()).data.user!.id
+    userBId = await userId(b)
     const { data: proj, error: projErr } = await a
       .from('projects')
       .insert({ owner_id: userAId, name: 'Update contract', key: runKey() })
@@ -226,7 +227,7 @@ describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
     const { data: proj, error: projErr } = await a
       .from('projects')
@@ -292,7 +293,7 @@ describe.skipIf(!hasRlsCredentials)('S4.4 ticket-block contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
     const { data: proj, error: projErr } = await a
       .from('projects')
@@ -446,7 +447,7 @@ describe.skipIf(!hasRlsCredentials)(
 
     beforeAll(async () => {
       a = await signIn('A')
-      userAId = (await a.auth.getUser()).data.user!.id
+      userAId = await userId(a)
       p1 = await newProject('Epic contract P1')
       p2 = await newProject('Epic contract P2')
       epic1 = await newTicket(p1, 'epic', 'Epic one')
@@ -567,7 +568,7 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
 
     const { data: project, error: projectErr } = await a
       .from('projects')
@@ -812,7 +813,7 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
 
     const { data: proj, error: projErr } = await a
       .from('projects')

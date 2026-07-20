@@ -7,6 +7,7 @@ import {
   hasRlsCredentials,
   RLS_USERS,
   signIn,
+  userId,
 } from './supabase-clients'
 
 assertCredentialsOrExplain()
@@ -31,7 +32,7 @@ describe.skipIf(!hasRlsCredentials)('S6.1 sprint-creation contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
     const { data, error } = await a
       .from('projects')
@@ -141,7 +142,7 @@ describe.skipIf(!hasRlsCredentials)(
 
     beforeAll(async () => {
       a = await signIn('A')
-      userAId = (await a.auth.getUser()).data.user!.id
+      userAId = await userId(a)
 
       const { data, error } = await a
         .from('projects')

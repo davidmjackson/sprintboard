@@ -71,6 +71,12 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 - GitHub Flow. One feature branch and one small PR per story. Squash merge.
 - Acceptance tests are written from the story's ACs before implementation.
 - Imperative commit summaries.
+- **After opening a PR, watch its CI checks and diagnose any red before doing anything
+  else.** A red required `verify` blocks the merge — do not merge around it, and do not
+  blindly re-run it. First read the failure: is it the one known transient (the auth
+  rate-limit flake below) or a real regression? Only the former is safe to re-run, and
+  only after a short cooldown. Never report a PR as shipped until its required check is
+  green on the PR's own head commit.
 
 ---
 
@@ -117,6 +123,29 @@ configured for the suites to exercise isolation and signup rather than skip them
 CI run reporting 103 tests instead of 127 means exactly that, and must be treated as a
 failure. (103 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
 the RLS, keepalive, signup, login **and** project suites vanish.)
+
+## The live-suite auth rate-limit flake
+
+The live integration suites sign in the real `RLS_TEST_{A,B}` users against GoTrue. A
+single `npm test` run signs in across several suites; fired back-to-back (a local run and
+a CI run, or two CI runs close together) they can trip GoTrue's auth rate limiter. The
+symptom is a **bare `TypeError: Cannot read properties of null (reading 'id')` in a
+suite's `beforeAll`** — not an assertion failure — turning the required `verify` check red
+on a branch whose code is fine.
+
+Two defences, both load-bearing — do not undo either while "tidying up":
+
+- **Never follow `signIn()` with `auth.getUser()` to fetch the user id.** `signIn()`
+  already established and validated the session, so read the id with `userId(client)` in
+  `src/test/supabase-clients.ts`, which reads the **in-memory** session — no network call,
+  nothing to rate-limit. Reintroducing a `getUser()` per `beforeAll` (there were ~14 of
+  them) is exactly what caused this flake; a green suite would tempt you to add one back.
+- **When it still bites, it is transient — never "fix" it by weakening a suite.** Confirm
+  the failing test *is* the null-`id` setup crash (any other failure is real), wait ~2–5
+  minutes with no sign-ins, then re-run the failed job (`gh run rerun <id> --failed`).
+  Confirm the rerun's `headSha` equals the PR head, and trust the CI result over a local
+  run. Serialising CI against the shared database (the `verify` concurrency group) already
+  keeps two CI runs apart; the remaining risk is a local run overlapping a CI run.
 
 ## End-to-end suite (Playwright)
 

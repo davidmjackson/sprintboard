@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
-import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
+import { assertCredentialsOrExplain, hasRlsCredentials, signIn, userId } from './supabase-clients'
 
 assertCredentialsOrExplain()
 
@@ -27,8 +27,8 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   beforeAll(async () => {
     a = await signIn('A')
     b = await signIn('B')
-    userAId = (await a.auth.getUser()).data.user!.id
-    userBId = (await b.auth.getUser()).data.user!.id
+    userAId = await userId(a)
+    userBId = await userId(b)
 
     keyA = runKey()
 
