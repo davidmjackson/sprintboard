@@ -69,11 +69,32 @@ function renderTab(Tab: ComponentType, ctx: ProjectShellContext = ctxWith()) {
 }
 
 // An active sprint and tickets tagged to it: the board now shows the ACTIVE sprint's tickets.
-const ACTIVE_SPRINT = { id: 's-active', status: 'active', name: 'Sprint 1', project_id: 'p1' } as never
+const ACTIVE_SPRINT = {
+  id: 's-active',
+  status: 'active',
+  name: 'Sprint 1',
+  project_id: 'p1',
+} as never
 
 const SPRINT_TICKETS = [
-  { id: 't1', key: 'MP-1', number: 1, summary: 'Do the todo', type: 'story', status: 'todo', sprint_id: 's-active' },
-  { id: 't2', key: 'MP-2', number: 2, summary: 'Ship it', type: 'bug', status: 'done', sprint_id: 's-active' },
+  {
+    id: 't1',
+    key: 'MP-1',
+    number: 1,
+    summary: 'Do the todo',
+    type: 'story',
+    status: 'todo',
+    sprint_id: 's-active',
+  },
+  {
+    id: 't2',
+    key: 'MP-2',
+    number: 2,
+    summary: 'Ship it',
+    type: 'bug',
+    status: 'done',
+    sprint_id: 's-active',
+  },
 ] as never
 
 function boardCtx(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
@@ -113,9 +134,33 @@ describe('BoardTab', () => {
     // The board is the active-sprint board (reverses the S5.1 sprint-blind board). A backlog
     // ticket (sprint_id null) and a ticket in a DIFFERENT sprint must not appear.
     const mixed = [
-      { id: 'a', key: 'MP-9', number: 9, summary: 'In the active sprint', type: 'story', status: 'todo', sprint_id: 's-active' },
-      { id: 'b', key: 'MP-10', number: 10, summary: 'In the backlog', type: 'story', status: 'todo', sprint_id: null },
-      { id: 'c', key: 'MP-11', number: 11, summary: 'In another sprint', type: 'story', status: 'todo', sprint_id: 's-future' },
+      {
+        id: 'a',
+        key: 'MP-9',
+        number: 9,
+        summary: 'In the active sprint',
+        type: 'story',
+        status: 'todo',
+        sprint_id: 's-active',
+      },
+      {
+        id: 'b',
+        key: 'MP-10',
+        number: 10,
+        summary: 'In the backlog',
+        type: 'story',
+        status: 'todo',
+        sprint_id: null,
+      },
+      {
+        id: 'c',
+        key: 'MP-11',
+        number: 11,
+        summary: 'In another sprint',
+        type: 'story',
+        status: 'todo',
+        sprint_id: 's-future',
+      },
     ] as never
     renderTab(BoardTab, boardCtx({ tickets: mixed }))
     expect(screen.getByText('In the active sprint')).toBeInTheDocument()
@@ -161,11 +206,28 @@ describe('BoardTab', () => {
   })
 
   it('prioritises the ticket failure when BOTH reads fail (one alert, one Retry)', () => {
-    renderTab(BoardTab, boardCtx({ tickets: [], ticketsPhase: 'failed', sprints: [], sprintsPhase: 'failed' }))
+    renderTab(
+      BoardTab,
+      boardCtx({ tickets: [], ticketsPhase: 'failed', sprints: [], sprintsPhase: 'failed' }),
+    )
     expect(screen.getAllByRole('alert')).toHaveLength(1)
     expect(screen.getByRole('alert')).toHaveTextContent('Could not load tickets.')
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1)
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
+  })
+
+  it('shows the sprints failure, not a loading spinner, when tickets are still loading but sprints failed', () => {
+    // The failure checks run before the loading check, so a definite failure outranks an
+    // in-flight load: a board that cannot know its active sprint offers Retry now rather than
+    // spinning until the doomed sprints read is re-attempted. Honest, and never a wrong-empty
+    // board. This pins the two-read priority ordering — the story's most novel logic.
+    renderTab(
+      BoardTab,
+      boardCtx({ tickets: [], ticketsPhase: 'loading', sprints: [], sprintsPhase: 'failed' }),
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load sprints.')
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+    expect(screen.queryByText('No tickets yet.')).not.toBeInTheDocument()
   })
 
   it('calls onRetry when Retry is clicked', async () => {
@@ -197,7 +259,17 @@ describe('BoardTab', () => {
 
   it('keeps a blocked active-sprint ticket in its status column and marks it blocked (S4.4)', () => {
     const blocked = [
-      { id: 't1', key: 'MP-1', number: 1, summary: 'Do the todo', type: 'story', status: 'in_progress', sprint_id: 's-active', is_blocked: true, blocked_reason: 'waiting on API' },
+      {
+        id: 't1',
+        key: 'MP-1',
+        number: 1,
+        summary: 'Do the todo',
+        type: 'story',
+        status: 'in_progress',
+        sprint_id: 's-active',
+        is_blocked: true,
+        blocked_reason: 'waiting on API',
+      },
     ] as never
     renderTab(BoardTab, boardCtx({ tickets: blocked }))
     const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!

@@ -95,6 +95,11 @@ const ticketB: Ticket = {
   number: 2,
   summary: 'Beta summary',
 }
+// The board renders only the ACTIVE sprint's tickets (S7.1), so a test that opens a ticket from
+// its board card must supply an active sprint and tag the ticket to it — a backlog ticket
+// (sprint_id null) no longer appears on the board.
+const activeSprint: Sprint = { ...sprintBase, id: 's-active', status: 'active' }
+const onBoard = (t: Ticket): Ticket => ({ ...t, sprint_id: activeSprint.id })
 
 /**
  * Reads back the sprint fields the shell publishes on its outlet context — the contract
@@ -219,7 +224,8 @@ describe('ProjectShell', () => {
 
   it('opens a ticket from its board card and resets edit state across a ticket switch (key remount)', async () => {
     const u = userEvent.setup()
-    mockList.mockReset().mockResolvedValue([ticketA, ticketB])
+    mockList.mockReset().mockResolvedValue([onBoard(ticketA), onBoard(ticketB)])
+    mockListSprints.mockResolvedValue([activeSprint])
     renderShell('/projects/p1')
 
     // The board renders both cards once the (mocked) fetch lands.
@@ -263,7 +269,10 @@ describe('ProjectShell', () => {
       summary: 'Child story',
       type: 'story',
     }
-    mockList.mockResolvedValue([epic, story])
+    // The story is opened from its board card, so it must be in the active sprint. The epic need
+    // not be — the parent-epic picker draws from all of the project's tickets, not the board.
+    mockList.mockResolvedValue([epic, onBoard(story)])
+    mockListSprints.mockResolvedValue([activeSprint])
     renderShell('/projects/p1')
 
     await u.click(await screen.findByRole('button', { name: /Child story/i }))
@@ -276,9 +285,17 @@ describe('ProjectShell', () => {
   it('removes a ticket from the board after confirming delete', async () => {
     const user = userEvent.setup()
     mockList.mockResolvedValue([
-      { ...ticketBase, id: 't1', key: 'MP-1', number: 1, summary: 'Keep me' },
-      { ...ticketBase, id: 't2', key: 'MP-2', number: 2, summary: 'Delete me', type: 'bug' },
+      onBoard({ ...ticketBase, id: 't1', key: 'MP-1', number: 1, summary: 'Keep me' }),
+      onBoard({
+        ...ticketBase,
+        id: 't2',
+        key: 'MP-2',
+        number: 2,
+        summary: 'Delete me',
+        type: 'bug',
+      }),
     ])
+    mockListSprints.mockResolvedValue([activeSprint])
     mockDelete.mockResolvedValue({ ok: true })
     renderShell('/projects/p1')
 
