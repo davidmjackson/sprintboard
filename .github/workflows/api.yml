@@ -1,0 +1,43 @@
+name: api
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# This job is deterministic: it mocks the model and touches NO live database and NO
+# live Anthropic API, so it shares no resource with verify/e2e and needs its own
+# concurrency group (not the global `verify` group those two share to serialize
+# live-DB access). It is NOT the required gate — `verify` is, and only `verify`. The
+# Python side may be made a required check in its own right via the branch ruleset;
+# that is a server-side setting, decided at ship time.
+concurrency:
+  group: api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    name: api
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Repo convention is to SHA-pin actions (see verify.yml). Pin this to a real
+      # setup-python v5 commit SHA when you have it; the @v5 tag is a working stand-in.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install -r api/requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check api
+
+      - name: Pytest (model mocked)
+        working-directory: api
+        run: python -m pytest -q
