@@ -4,7 +4,7 @@ import { useOutletContext } from 'react-router-dom'
 
 import { TICKET_STATUSES, TICKET_STATUS_LABELS } from '@/lib/domain'
 import type { TicketStatus } from '@/lib/domain'
-import { selectActiveSprint } from '@/lib/board'
+import { selectActiveSprint, selectBlockedTickets } from '@/lib/board'
 import { selectSprintTickets } from '@/lib/backlog'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
@@ -47,6 +47,8 @@ export function BoardTab() {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   // The last failed move's message, shown as a role="alert" above the grid.
   const [moveError, setMoveError] = useState<string | null>(null)
+  // S7.3 AC2: the blocked-only board filter, off by default.
+  const [blockedOnly, setBlockedOnly] = useState(false)
 
   // Optimistic status change with rollback — the board's first write. Mirrors
   // `TicketDetailDialog.commit()`: apply optimistically, persist, then reconcile the
@@ -101,6 +103,7 @@ export function BoardTab() {
 
   const activeSprint = selectActiveSprint(sprints)
   const boardTickets = activeSprint ? selectSprintTickets(tickets, activeSprint.id) : []
+  const visibleTickets = blockedOnly ? selectBlockedTickets(boardTickets) : boardTickets
 
   return (
     <div className="flex flex-col gap-4">
@@ -114,9 +117,20 @@ export function BoardTab() {
           {moveError}
         </p>
       ) : null}
+      {activeSprint !== null ? (
+        <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={blockedOnly}
+            onChange={(e) => setBlockedOnly(e.target.checked)}
+            className="size-4"
+          />
+          Blocked only
+        </label>
+      ) : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {TICKET_STATUSES.map((status) => {
-          const column = boardTickets.filter((ticket) => ticket.status === status)
+          const column = visibleTickets.filter((ticket) => ticket.status === status)
           return (
             <section
               key={status}
