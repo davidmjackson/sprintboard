@@ -1,0 +1,54 @@
+name: e2e
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Reads code and the live database, writes nothing to the repo.
+permissions:
+  contents: read
+
+# Deliberately the SAME global group as verify.yml. The end-to-end suite signs up a
+# real user and writes a project, sprint and tickets to the ONE shared Supabase
+# project — the same database the RLS suite in `verify` uses. Serializing every run
+# that touches it into a single group keeps concurrent signups from tripping auth
+# rate-limiting and concurrent writers from colliding. cancel-in-progress is false
+# for the same reason it is in verify.yml: cancelling mid-suite would strand the
+# throwaway user (and its cascade of rows) in the live database, since teardown runs
+# in the test's afterAll.
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+# This job is intentionally NOT a required status check. It exercises a real browser
+# against a remote database and a real signup, so it is inherently more flake-prone
+# than the deterministic `verify` gate. It runs on every PR for signal, but a red run
+# never blocks a merge — the required gate remains `verify`, and only `verify`.
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: npm run e2e
+        run: npm run e2e
+        env:
+          # Public by design — the same values that ship to every browser in dist/.
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          # Test-only admin key, used solely to delete the throwaway signup user in
+          # teardown. Server-side only, never VITE_-prefixed, never in the bundle.
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
