@@ -41,6 +41,11 @@ export async function decomposeEpic(epic: {
   }
 
   if (!resp.ok) return { ok: false, error: 'request_failed' }
-  const body = (await resp.json()) as { proposals: DecomposeProposal[] }
-  return { ok: true, proposals: body.proposals }
+  try {
+    const body = (await resp.json()) as { proposals?: DecomposeProposal[] }
+    if (!Array.isArray(body?.proposals)) return { ok: false, error: 'request_failed' }
+    return { ok: true, proposals: body.proposals }
+  } catch {
+    return { ok: false, error: 'request_failed' }
+  }
 }

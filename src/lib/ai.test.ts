@@ -43,4 +43,13 @@ describe('decomposeEpic', () => {
     vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response)
     expect(await decomposeEpic(epic)).toEqual({ ok: false, error: 'request_failed' })
   })
+
+  it('returns request_failed when the 200 body is malformed', async () => {
+    getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({ notProposals: 1 }),
+    } as unknown as Response)
+    expect(await decomposeEpic(epic)).toEqual({ ok: false, error: 'request_failed' })
+  })
 })

@@ -1,7 +1,7 @@
 import json
 import os
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIError
 from pydantic import ValidationError
 
 from .schemas import EpicIn, Proposal
@@ -48,21 +48,20 @@ PROPOSALS_SCHEMA = {
 def propose(epic: EpicIn) -> list[Proposal]:
     """Ask Claude to decompose the epic. This is the single seam tests mock — CI never
     reaches this code, so it makes no network call and needs no ANTHROPIC_API_KEY."""
-    client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
     deliverables = "\n".join(f"- {d}" for d in epic.deliverables) or "(none listed)"
     user = f"Epic: {epic.summary}\n\nContext:\n{epic.context}\n\nDeliverables:\n{deliverables}"
-
-    resp = client.messages.create(
-        model=_MODEL,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        output_config={"format": {"type": "json_schema", "schema": PROPOSALS_SCHEMA}},
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": user}],
-    )
     try:
+        client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
+        resp = client.messages.create(
+            model=_MODEL,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            output_config={"format": {"type": "json_schema", "schema": PROPOSALS_SCHEMA}},
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": user}],
+        )
         text = next(block.text for block in resp.content if block.type == "text")
         data = json.loads(text)
         return [Proposal(**item) for item in data["proposals"]]
-    except (StopIteration, json.JSONDecodeError, KeyError, TypeError, ValidationError) as exc:
+    except (StopIteration, json.JSONDecodeError, KeyError, TypeError, ValidationError, APIError) as exc:
         raise LLMError("Claude returned a response we could not parse into proposals") from exc
