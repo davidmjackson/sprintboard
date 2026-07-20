@@ -441,12 +441,14 @@ export function TicketDetailDialog({
     }
     setAccepting(false)
     if (created.length > 0) onTicketsCreated?.(created)
-    if (created.length < selected.size) {
-      setAiError('Some tickets could not be created. Please try again.')
-      return
-    }
+    // Always clear the panel after an attempt: a re-click must never re-create a ticket
+    // that already succeeded (duplicate writes). Successful children are already on the
+    // board via onTicketsCreated; on partial failure the user re-runs decomposition.
     setProposals(null)
     setSelected(new Set())
+    if (created.length < selected.size) {
+      setAiError('Some tickets could not be created. Run "Decompose with AI" again to retry the rest.')
+    }
   }
 
   async function handleDelete() {
@@ -771,7 +773,7 @@ export function TicketDetailDialog({
                               type="checkbox"
                               className="mt-1"
                               checked={selected.has(i)}
-                              aria-label={`Include ${p.title}`}
+                              aria-label={`Include ${p.title} (#${i + 1})`}
                               onChange={(e) =>
                                 setSelected((prev) => {
                                   const next = new Set(prev)

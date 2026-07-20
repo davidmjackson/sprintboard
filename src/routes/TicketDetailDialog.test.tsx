@@ -1245,6 +1245,58 @@ describe('TicketDetailDialog — epic fields', () => {
     ])
   })
 
+  // Fix: a partial accept failure must clear the panel so a re-click can't re-create the
+  // proposal that already succeeded (duplicate real backlog tickets).
+  it('clears the proposals panel on a partial accept failure, so a retry cannot duplicate the created ticket', async () => {
+    const epic: Ticket = {
+      ...base,
+      id: 'e1',
+      type: 'epic',
+      summary: 'Authentication',
+      context: 'Users must sign in',
+      deliverables: ['login form', 'session handling'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
+        { title: 'Persist sessions', description: 'd2', type: 'task', rationale: 'session handling' },
+      ],
+    })
+    createTicket
+      .mockResolvedValueOnce({ ok: true, ticket: { ...base, id: 'c1' } })
+      .mockResolvedValueOnce({ ok: false, error: 'unknown' })
+    const onTicketsCreated = vi.fn()
+
+    render(
+      <TicketDetailDialog
+        ticket={epic}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+        onTicketsCreated={onTicketsCreated}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+    expect(screen.getByText('Persist sessions')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /add .* to backlog/i }))
+
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(2))
+    expect(onTicketsCreated).toHaveBeenCalledWith([expect.objectContaining({ id: 'c1' })])
+    await screen.findByRole('alert')
+    expect(screen.getByText(/could not be created/i)).toBeInTheDocument()
+
+    // Panel is cleared — no in-place retry is possible.
+    expect(
+      screen.getByRole('button', { name: /decompose with ai/i }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add .* to backlog/i })).not.toBeInTheDocument()
+  })
+
   it('does not show the decompose button on a non-epic ticket', () => {
     render(
       <TicketDetailDialog
