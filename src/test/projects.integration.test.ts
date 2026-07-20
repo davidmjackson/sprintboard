@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
-import { assertCredentialsOrExplain, hasRlsCredentials, signIn } from './supabase-clients'
+import { assertCredentialsOrExplain, hasRlsCredentials, signIn, userId } from './supabase-clients'
 
 assertCredentialsOrExplain()
 
@@ -29,9 +29,9 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
 
   beforeAll(async () => {
     a = await signIn('A')
-    userAId = (await a.auth.getUser()).data.user!.id
+    userAId = await userId(a)
     b = await signIn('B')
-    userBId = (await b.auth.getUser()).data.user!.id
+    userBId = await userId(b)
   }, 30_000)
 
   afterAll(async () => {

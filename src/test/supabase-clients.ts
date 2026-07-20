@@ -112,3 +112,25 @@ export async function signIn(user: RlsUser): Promise<SupabaseClient<Database>> {
 
   return client
 }
+
+/**
+ * The signed-in user's id, read from the client's in-memory session — NOT via a
+ * fresh `auth.getUser()` network call.
+ *
+ * Why this exists: every live suite used to follow `signIn()` with
+ * `(await client.auth.getUser()).data.user!.id`. That is a second auth round-trip
+ * per `beforeAll`, on top of the sign-in itself — ~14 of them across the suites in
+ * one `npm test`. GoTrue's rate limiter would trip mid-run, `getUser()` would come
+ * back with a null user, and the `!` turned that into a bare
+ * `TypeError: Cannot read properties of null (reading 'id')` — a red required check
+ * on a branch whose code was fine. `signInWithPassword` already established and
+ * validated the session, so the id is available locally with no extra request and
+ * nothing to rate-limit. A missing session here is a real bug, not a transient.
+ */
+export async function userId(client: SupabaseClient<Database>): Promise<string> {
+  const { data, error } = await client.auth.getSession()
+  if (error) throw new Error(`Could not read the in-memory session: ${error.message}`)
+  const id = data.session?.user.id
+  if (id === undefined) throw new Error('No active session — was signIn awaited before userId?')
+  return id
+}
