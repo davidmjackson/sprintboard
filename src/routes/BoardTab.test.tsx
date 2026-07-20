@@ -1,12 +1,19 @@
 import type { ComponentType } from 'react'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import type { ProjectShellContext } from './ProjectShell'
+import * as tickets from '@/lib/tickets'
+
+vi.mock('@/lib/tickets', async (orig) => ({
+  ...(await orig<typeof tickets>()),
+  updateTicket: vi.fn(),
+}))
+const updateTicket = vi.mocked(tickets.updateTicket)
 
 const USER = { id: 'u1', email: 'dev@example.com' }
 
@@ -102,6 +109,8 @@ function boardCtx(fields: Partial<ProjectShellContext> = {}): ProjectShellContex
 }
 
 describe('BoardTab', () => {
+  beforeEach(() => updateTicket.mockReset())
+
   it('renders all four columns in board order', () => {
     renderTab(BoardTab, boardCtx())
     const headings = screen.getAllByRole('heading').map((h) => h.textContent)
@@ -275,6 +284,76 @@ describe('BoardTab', () => {
     const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!
     expect(within(inProgress).getByText('MP-1')).toBeInTheDocument()
     expect(within(inProgress).getByText(/blocked/i)).toBeInTheDocument()
+  })
+
+  it('marks active-sprint cards as draggable (S7.2)', () => {
+    renderTab(BoardTab, boardCtx())
+    expect(screen.getByRole('button', { name: /do the todo/i })).toHaveAttribute(
+      'draggable',
+      'true',
+    )
+  })
+
+  it('optimistically moves a card to the drop column and persists the new status (S7.2 AC1/AC3)', async () => {
+    updateTicket.mockResolvedValue({
+      ok: true,
+      // The reconcile reads only `status` and `updated_at` off the returned row; a minimal
+      // object suffices (SPRINT_TICKETS is typed `as never`, so it cannot be spread here).
+      ticket: {
+        id: 't1',
+        key: 'MP-1',
+        status: 'in_progress',
+        updated_at: '2026-07-20T00:00:00Z',
+      },
+    } as never)
+    const onTicketUpdated = vi.fn()
+    renderTab(BoardTab, boardCtx({ onTicketUpdated }))
+
+    const card = screen.getByRole('button', { name: /do the todo/i }) // t1, status todo
+    const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!
+    fireEvent.dragStart(card)
+    fireEvent.drop(inProgress)
+
+    // Optimistic apply is synchronous (before the awaited write).
+    expect(onTicketUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 't1', status: 'in_progress' }),
+    )
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }))
+  })
+
+  it('reverts the optimistic move and shows an error when the write fails (S7.2 AC3)', async () => {
+    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onTicketUpdated = vi.fn()
+    renderTab(BoardTab, boardCtx({ onTicketUpdated }))
+
+    const card = screen.getByRole('button', { name: /do the todo/i }) // t1, status todo
+    const inReview = screen.getByRole('heading', { name: 'In Review' }).closest('section')!
+    fireEvent.dragStart(card)
+    fireEvent.drop(inReview)
+
+    // Optimistic to in_review, then reverted back to todo after the failed write.
+    expect(onTicketUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 't1', status: 'in_review' }),
+    )
+    await waitFor(() =>
+      expect(onTicketUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 't1', status: 'todo' }),
+      ),
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not move MP-1/i)
+  })
+
+  it('does not write when a card is dropped on its own column (no-op)', () => {
+    const onTicketUpdated = vi.fn()
+    renderTab(BoardTab, boardCtx({ onTicketUpdated }))
+
+    const card = screen.getByRole('button', { name: /do the todo/i }) // t1 is already todo
+    const todo = screen.getByRole('heading', { name: 'To Do' }).closest('section')!
+    fireEvent.dragStart(card)
+    fireEvent.drop(todo)
+
+    expect(updateTicket).not.toHaveBeenCalled()
+    expect(onTicketUpdated).not.toHaveBeenCalled()
   })
 })
 

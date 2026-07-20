@@ -1,12 +1,30 @@
+import type { DragEvent } from 'react'
 import type { Ticket } from '@/lib/domain'
 import { TICKET_TYPE_LABELS } from '@/lib/domain'
 import { BlockedBadge } from './BlockedBadge'
 
-/** A ticket at a glance: its key, type, and summary. Clicking opens the detail modal. */
-export function TicketCard({ ticket, onOpen }: { ticket: Ticket; onOpen?: () => void }) {
+/** A ticket at a glance: its key, type, and summary. Clicking opens the detail modal;
+ *  on the board, dragging it to another column changes its status (S7.2). The card is
+ *  draggable ONLY when `onDragStart` is supplied — the backlog and other non-board usages
+ *  pass nothing and stay non-draggable. A click and a drag are distinct gestures, so
+ *  click-to-open coexists with drag. */
+export function TicketCard({
+  ticket,
+  onOpen,
+  onDragStart,
+  onDragEnd,
+}: {
+  ticket: Ticket
+  onOpen?: () => void
+  onDragStart?: (e: DragEvent) => void
+  onDragEnd?: (e: DragEvent) => void
+}) {
   return (
     <button
       type="button"
+      draggable={onDragStart != null}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onClick={onOpen}
       className="bg-background hover:border-ring flex w-full flex-col gap-1 rounded-md border p-2 text-left shadow-xs transition-colors"
     >

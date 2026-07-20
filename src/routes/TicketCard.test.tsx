@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketCard } from './TicketCard'
 import type { Ticket } from '@/lib/domain'
@@ -22,5 +22,22 @@ describe('TicketCard', () => {
   it('shows no Blocked marker when the ticket is not blocked', () => {
     render(<TicketCard ticket={{ ...ticket, is_blocked: false } as Ticket} />)
     expect(screen.queryByText(/blocked/i)).not.toBeInTheDocument()
+  })
+
+  it('is draggable and fires onDragStart when a drag begins (S7.2)', () => {
+    const onDragStart = vi.fn()
+    render(<TicketCard ticket={ticket} onDragStart={onDragStart} />)
+    const card = screen.getByRole('button', { name: /wire the board/i })
+    expect(card).toHaveAttribute('draggable', 'true')
+    fireEvent.dragStart(card)
+    expect(onDragStart).toHaveBeenCalledTimes(1)
+  })
+
+  it('is not draggable when no onDragStart is given (backlog / non-board usage)', () => {
+    render(<TicketCard ticket={ticket} onOpen={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /wire the board/i })).toHaveAttribute(
+      'draggable',
+      'false',
+    )
   })
 })

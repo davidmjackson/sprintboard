@@ -199,6 +199,23 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
     const { data: row } = await a.from('tickets').select('project_id').eq('id', ticketId).single()
     expect(row!.project_id).toBe(projectId)
   }, 30_000)
+
+  it('persists a status change and it survives a fresh re-read (S7.2 AC1/AC2)', async () => {
+    const { data, error } = await a
+      .from('tickets')
+      .update({ status: 'in_review' })
+      .eq('id', ticketId)
+      .select()
+      .single()
+
+    expect(error).toBeNull()
+    expect(data!.status).toBe('in_review')
+
+    // Independent re-read — the "survives a refresh" AC. A fresh SELECT is what a page reload
+    // issues; it proves the value persisted, not merely that RETURNING echoed the request.
+    const { data: reread } = await a.from('tickets').select('status').eq('id', ticketId).single()
+    expect(reread!.status).toBe('in_review')
+  }, 30_000)
 })
 
 describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
