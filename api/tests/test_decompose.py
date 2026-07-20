@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app import decompose as decompose_module
 from app.auth import require_user
+from app.llm import LLMError
 from app.main import app
 from app.schemas import Proposal
 
@@ -39,3 +40,25 @@ def test_bad_body_is_422(monkeypatch):
     monkeypatch.setattr(decompose_module.llm, "propose", lambda epic: _CANNED)
     resp = client.post("/decompose", json={"not_epic": True})
     assert resp.status_code == 422
+
+
+def test_llm_error_is_502(monkeypatch):
+    _override_auth()
+
+    def _raise(epic):
+        raise LLMError("boom")
+
+    monkeypatch.setattr(decompose_module.llm, "propose", _raise)
+    resp = client.post(
+        "/decompose",
+        json={"epic": {"summary": "Auth", "context": "c", "deliverables": ["auth UI"]}},
+    )
+    assert resp.status_code == 502
+
+
+def test_decompose_requires_auth():
+    resp = client.post(
+        "/decompose",
+        json={"epic": {"summary": "Auth", "context": "c", "deliverables": ["auth UI"]}},
+    )
+    assert resp.status_code == 401

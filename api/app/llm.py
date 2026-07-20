@@ -2,8 +2,13 @@ import json
 import os
 
 from anthropic import Anthropic
+from pydantic import ValidationError
 
 from .schemas import EpicIn, Proposal
+
+
+class LLMError(Exception):
+    """The model returned a response we could not turn into proposals."""
 
 _MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
 
@@ -55,6 +60,9 @@ def propose(epic: EpicIn) -> list[Proposal]:
         system=_SYSTEM,
         messages=[{"role": "user", "content": user}],
     )
-    text = next(block.text for block in resp.content if block.type == "text")
-    data = json.loads(text)
-    return [Proposal(**item) for item in data["proposals"]]
+    try:
+        text = next(block.text for block in resp.content if block.type == "text")
+        data = json.loads(text)
+        return [Proposal(**item) for item in data["proposals"]]
+    except (StopIteration, json.JSONDecodeError, KeyError, TypeError, ValidationError) as exc:
+        raise LLMError("Claude returned a response we could not parse into proposals") from exc

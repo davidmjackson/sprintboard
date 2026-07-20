@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from . import llm
 from .auth import require_user
+from .llm import LLMError
 from .schemas import DecomposeRequest, DecomposeResponse
 
 router = APIRouter()
@@ -12,5 +13,10 @@ async def decompose(
     body: DecomposeRequest,
     user_id: str = Depends(require_user),
 ) -> DecomposeResponse:
-    proposals = llm.propose(body.epic)
+    try:
+        proposals = llm.propose(body.epic)
+    except LLMError as exc:
+        raise HTTPException(
+            status_code=502, detail="The AI service returned an unusable response."
+        ) from exc
     return DecomposeResponse(proposals=proposals)
