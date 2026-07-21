@@ -404,6 +404,7 @@ export function TicketDetailDialog({
       setSelected(new Set())
       setCoverageGaps([])
       setScopeCreep([])
+      setEstimateTotal(0)
     }
     return ok
   }

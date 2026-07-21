@@ -1307,8 +1307,9 @@ describe('TicketDetailDialog — epic fields', () => {
     await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
     await screen.findByText('Build login form')
     // The per-proposal pts chip renders as exactly "{n} pts" (e.g. "5 pts"); anchor the
-    // match to that shape so it doesn't also catch the always-on "Estimated total: 0 pts"
-    // summary line (brief's own Step 5 renders that unconditionally inside the panel).
+    // match to that shape so it can never be confused with the "Estimated total: N pts"
+    // summary line. (Here estimate_total is 0, so that line is gated off entirely — but the
+    // anchor keeps the assertion precise whenever a non-zero total IS shown.)
     expect(screen.queryByText(/^\d+ pts$/)).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /add .* to backlog/i }))
     await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
