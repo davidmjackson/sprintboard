@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
 import type { Sprint, Ticket } from '@/lib/domain'
@@ -1321,6 +1321,58 @@ describe('TicketDetailDialog — epic fields', () => {
     // Panel is cleared — no in-place retry is possible.
     expect(screen.getByRole('button', { name: /decompose with ai/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /add .* to backlog/i })).not.toBeInTheDocument()
+  })
+
+  it('shows the coverage summary, gap callout, delivers chips, and creep flag', async () => {
+    const epic: Ticket = {
+      ...base,
+      id: 'e1',
+      type: 'epic',
+      summary: 'Authentication',
+      context: 'Users must sign in',
+      deliverables: ['login form', 'session handling'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'r1',
+          covers: [0],
+        },
+        { title: 'Add analytics', description: 'd2', type: 'task', rationale: 'r2', covers: [] },
+      ],
+      coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
+      scope_creep: [{ proposal_index: 1, title: 'Add analytics' }],
+    })
+
+    render(
+      <TicketDetailDialog
+        ticket={epic}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+        onTicketsCreated={() => {}}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+
+    // Coverage summary: 1 of 2 covered.
+    expect(screen.getByText(/covers 1 of 2 deliverables/i)).toBeInTheDocument()
+    // Gap callout names the uncovered deliverable (appears in the callout list).
+    expect(screen.getByText(/not covered by any proposal/i)).toBeInTheDocument()
+    // The creep proposal shows the soft flag.
+    expect(screen.getByText(/not tied to a deliverable/i)).toBeInTheDocument()
+    // The covering proposal shows a delivers chip for deliverable 0. ("login form" also
+    // appears as the epic's own deliverable text above, so scope the query to the
+    // proposal's <li> to target the chip specifically.
+    const proposalItem = screen.getByText('Build login form').closest('li')!
+    expect(within(proposalItem).getByText('login form')).toBeInTheDocument()
   })
 
   it('does not show the decompose button on a non-epic ticket', () => {
