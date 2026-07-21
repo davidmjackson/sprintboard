@@ -1375,6 +1375,74 @@ describe('TicketDetailDialog — epic fields', () => {
     expect(within(proposalItem).getByText('login form')).toBeInTheDocument()
   })
 
+  // Review finding: editing/removing a deliverable while the decompose panel is open left
+  // the proposals' `covers` and `coverageGaps` frozen at the OLD indices — a "delivers" chip
+  // could then name the wrong deliverable and the coverage count could go negative. The fix
+  // drops the stale decomposition on any successful deliverables write.
+  it('invalidates a stale decomposition when a deliverable is edited while the panel is open', async () => {
+    const epic: Ticket = {
+      ...epicTicket,
+      deliverables: ['login form', 'session handling'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'r1',
+          covers: [0],
+        },
+      ],
+      coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
+      scope_creep: [],
+    })
+    renderDialog({ ticket: epic })
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { ...epic, deliverables: ['session handling'] },
+    })
+    await userEvent.click(screen.getByRole('button', { name: /remove deliverable 1/i }))
+
+    // The decompose panel is gone — the "Decompose with AI" button is back and the stale
+    // proposal is no longer shown.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /decompose with ai/i })).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Build login form')).not.toBeInTheDocument()
+  })
+
+  // Review finding: cover the zero-deliverable branch — no summary line, only the
+  // "nothing to trace against" message.
+  it('shows "No deliverables to trace against." and no coverage summary when the epic has none', async () => {
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'r1',
+          covers: [],
+        },
+      ],
+      coverage_gaps: [],
+      scope_creep: [],
+    })
+    renderDialog({ ticket: epicTicket }) // deliverables: []
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+
+    expect(screen.getByText('No deliverables to trace against.')).toBeInTheDocument()
+    expect(screen.queryByText(/covers .* of .* deliverables/i)).not.toBeInTheDocument()
+  })
+
   it('does not show the decompose button on a non-epic ticket', () => {
     render(
       <TicketDetailDialog

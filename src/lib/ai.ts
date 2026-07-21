@@ -60,10 +60,13 @@ export async function decomposeEpic(epic: {
     }
     if (!Array.isArray(body?.proposals)) return { ok: false, error: 'request_failed' }
     // Defensive defaults: a forward-compatible service that omitted the trace fields (or
-    // a proposal's covers) still decomposes — the panel just shows no trace.
+    // a proposal's covers) still decomposes — the panel just shows no trace. The server
+    // sanitises (dedupes) covers, but a malformed/forward service could still send
+    // duplicates, which would produce duplicate React keys in the chip list — dedupe here
+    // too.
     const proposals = body.proposals.map((p) => ({
       ...p,
-      covers: Array.isArray(p?.covers) ? p.covers : [],
+      covers: Array.isArray(p?.covers) ? [...new Set(p.covers)] : [],
     }))
     return {
       ok: true,

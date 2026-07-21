@@ -385,6 +385,18 @@ export function TicketDetailDialog({
     const ok = await commit({ deliverables: next })
     if (!mountedRef.current) return ok
     setDeliverablesPending(false)
+    // A successful deliverables write changes the array this decomposition's `covers`
+    // indices and `coverageGaps`/`scopeCreep` positions were computed against — a "delivers"
+    // chip could then name the wrong deliverable, and the coverage count could go negative.
+    // Drop the now-stale decomposition rather than let it lie; the user re-runs to refresh.
+    // A FAILED write rolls the optimistic change back (indices stay valid), so only reset
+    // on ok.
+    if (ok) {
+      setProposals(null)
+      setSelected(new Set())
+      setCoverageGaps([])
+      setScopeCreep([])
+    }
     return ok
   }
   async function addDeliverable() {
@@ -778,7 +790,7 @@ export function TicketDetailDialog({
                     <div className="space-y-2">
                       {deliverables.length > 0 ? (
                         <p className="text-muted-foreground text-xs">
-                          Covers {deliverables.length - coverageGaps.length} of{' '}
+                          Covers {Math.max(0, deliverables.length - coverageGaps.length)} of{' '}
                           {deliverables.length} deliverables
                         </p>
                       ) : (
