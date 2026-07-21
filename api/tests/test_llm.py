@@ -47,6 +47,14 @@ def test_schema_requires_covers():
     assert "covers" in items["required"]
 
 
+def test_schema_requires_estimate_fields():
+    items = llm.PROPOSALS_SCHEMA["properties"]["proposals"]["items"]
+    assert "estimate" in items["properties"]
+    assert "estimate_reason" in items["properties"]
+    assert "estimate" in items["required"]
+    assert "estimate_reason" in items["required"]
+
+
 def test_response_with_covers_parses(monkeypatch):
     payload = {
         "proposals": [
@@ -56,6 +64,8 @@ def test_response_with_covers_parses(monkeypatch):
                 "type": "story",
                 "rationale": "r",
                 "covers": [0],
+                "estimate": 5,
+                "estimate_reason": "moderate scope",
             }
         ]
     }
@@ -76,3 +86,5 @@ def test_response_with_covers_parses(monkeypatch):
     monkeypatch.setattr(llm, "Anthropic", lambda *a, **k: _Client())
     result = llm.propose(_EPIC)
     assert result[0].covers == [0]
+    assert result[0].estimate == 5
+    assert result[0].estimate_reason == "moderate scope"

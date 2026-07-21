@@ -15,6 +15,8 @@ _CANNED = [
         type="story",
         rationale="Deliverable: auth UI",
         covers=[0],
+        estimate=5,
+        estimate_reason="a form with validation",
     ),
     Proposal(
         title="Fix token refresh",
@@ -22,6 +24,8 @@ _CANNED = [
         type="bug",
         rationale="Context: sessions expire",
         covers=[],
+        estimate=7,
+        estimate_reason="unclear repro",
     ),
 ]
 
@@ -94,3 +98,18 @@ def test_decompose_includes_coverage_analysis(monkeypatch):
     assert body["proposals"][0]["covers"] == [0]
     assert body["coverage_gaps"] == [{"index": 1, "deliverable": "token refresh"}]
     assert body["scope_creep"] == [{"proposal_index": 1, "title": "Fix token refresh"}]
+
+
+def test_decompose_includes_estimates_and_total(monkeypatch):
+    _override_auth()
+    monkeypatch.setattr(decompose_module.llm, "propose", lambda epic: _CANNED)
+    resp = client.post(
+        "/decompose",
+        json={"epic": {"summary": "Auth", "context": "c", "deliverables": ["auth UI"]}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["proposals"][0]["estimate"] == 5
+    assert body["proposals"][0]["estimate_reason"] == "a form with validation"
+    assert body["proposals"][1]["estimate"] == 8  # 7 snapped up to 8
+    assert body["estimate_total"] == 13  # 5 + 8

@@ -21,7 +21,9 @@ _SYSTEM = (
     "deliverable or part of the context it serves. Also set `covers` to the 0-based "
     "indices of the deliverables (in the order given) that the item directly delivers; "
     "leave `covers` empty for an item that serves the epic's context but no listed "
-    "deliverable."
+    "deliverable. Estimate each item's size in story points as `estimate`, choosing "
+    "from the Scrum scale 1, 2, 3, 5, 8, 13; give a one-line `estimate_reason` naming the "
+    "main size driver — uncertainty, scope, or dependencies."
 )
 
 # Structured-output schema: every object needs additionalProperties:false + required;
@@ -41,8 +43,18 @@ PROPOSALS_SCHEMA = {
                     "type": {"type": "string", "enum": ["story", "bug", "task"]},
                     "rationale": {"type": "string"},
                     "covers": {"type": "array", "items": {"type": "integer"}},
+                    "estimate": {"type": "integer"},
+                    "estimate_reason": {"type": "string"},
                 },
-                "required": ["title", "description", "type", "rationale", "covers"],
+                "required": [
+                    "title",
+                    "description",
+                    "type",
+                    "rationale",
+                    "covers",
+                    "estimate",
+                    "estimate_reason",
+                ],
             },
         }
     },
