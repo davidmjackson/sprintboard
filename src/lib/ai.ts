@@ -2,17 +2,28 @@ import { supabase } from './supabase'
 import { getEnv } from './env'
 import type { TicketType } from './domain'
 
-/** A single AI-proposed child work item. `type` is a non-epic ticket type; `rationale`
- *  is display-only in R2.0 (a forward-nod to R2.1 traceability). */
+/** A single AI-proposed child work item. `covers` is the 0-based indices of the epic's
+ *  deliverables this item serves (R2.1 traceability). */
 export type DecomposeProposal = {
   title: string
   description: string
   type: Exclude<TicketType, 'epic'>
   rationale: string
+  covers: number[]
 }
 
+/** A deliverable no proposal covers. */
+export type CoverageGap = { index: number; deliverable: string }
+/** A proposal tied to no listed deliverable (soft "review scope" signal). */
+export type ScopeCreep = { proposal_index: number; title: string }
+
 export type DecomposeResult =
-  | { ok: true; proposals: DecomposeProposal[] }
+  | {
+      ok: true
+      proposals: DecomposeProposal[]
+      coverage_gaps: CoverageGap[]
+      scope_creep: ScopeCreep[]
+    }
   | { ok: false; error: 'unauthenticated' | 'request_failed' }
 
 /**
@@ -42,9 +53,27 @@ export async function decomposeEpic(epic: {
 
   if (!resp.ok) return { ok: false, error: 'request_failed' }
   try {
-    const body = (await resp.json()) as { proposals?: DecomposeProposal[] }
+    const body = (await resp.json()) as {
+      proposals?: DecomposeProposal[]
+      coverage_gaps?: CoverageGap[]
+      scope_creep?: ScopeCreep[]
+    }
     if (!Array.isArray(body?.proposals)) return { ok: false, error: 'request_failed' }
-    return { ok: true, proposals: body.proposals }
+    // Defensive defaults: a forward-compatible service that omitted the trace fields (or
+    // a proposal's covers) still decomposes — the panel just shows no trace. The server
+    // sanitises (dedupes) covers, but a malformed/forward service could still send
+    // duplicates, which would produce duplicate React keys in the chip list — dedupe here
+    // too.
+    const proposals = body.proposals.map((p) => ({
+      ...p,
+      covers: Array.isArray(p?.covers) ? [...new Set(p.covers)] : [],
+    }))
+    return {
+      ok: true,
+      proposals,
+      coverage_gaps: Array.isArray(body?.coverage_gaps) ? body.coverage_gaps : [],
+      scope_creep: Array.isArray(body?.scope_creep) ? body.scope_creep : [],
+    }
   } catch {
     return { ok: false, error: 'request_failed' }
   }

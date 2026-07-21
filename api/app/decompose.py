@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from . import llm
+from . import llm, traceability
 from .auth import require_user
 from .llm import LLMError
 from .schemas import DecomposeRequest, DecomposeResponse
@@ -19,4 +19,4 @@ async def decompose(
         raise HTTPException(
             status_code=502, detail="The AI service returned an unusable response."
         ) from exc
-    return DecomposeResponse(proposals=proposals)
+    return traceability.analyze(body.epic.deliverables, proposals)

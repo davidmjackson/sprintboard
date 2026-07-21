@@ -10,7 +10,7 @@ import {
   unblockTicket,
   updateTicket,
 } from '@/lib/tickets'
-import { decomposeEpic, type DecomposeProposal } from '@/lib/ai'
+import { decomposeEpic, type DecomposeProposal, type CoverageGap, type ScopeCreep } from '@/lib/ai'
 import { parseLabels } from '@/lib/labels'
 import { parseDeliverables } from '@/lib/deliverables'
 import {
@@ -287,6 +287,8 @@ export function TicketDetailDialog({
   // button); once set, it shows the proposal list until accepted or discarded.
   const [proposals, setProposals] = useState<DecomposeProposal[] | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [coverageGaps, setCoverageGaps] = useState<CoverageGap[]>([])
+  const [scopeCreep, setScopeCreep] = useState<ScopeCreep[]>([])
   const [decomposing, setDecomposing] = useState(false)
   const [accepting, setAccepting] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
@@ -326,6 +328,8 @@ export function TicketDetailDialog({
   // editor always rebuilds the whole array and commits it through `commit`, so a write is
   // always a well-formed `string[]` and never a half-mutated jsonb value.
   const deliverables = parseDeliverables(ticket.deliverables)
+  // Proposal indices flagged as not tied to any deliverable (R2.1 scope-creep signal).
+  const creepIndices = new Set(scopeCreep.map((c) => c.proposal_index))
 
   async function commit(patch: TicketUpdate): Promise<boolean> {
     const current = ticketRef.current!
@@ -381,6 +385,18 @@ export function TicketDetailDialog({
     const ok = await commit({ deliverables: next })
     if (!mountedRef.current) return ok
     setDeliverablesPending(false)
+    // A successful deliverables write changes the array this decomposition's `covers`
+    // indices and `coverageGaps`/`scopeCreep` positions were computed against — a "delivers"
+    // chip could then name the wrong deliverable, and the coverage count could go negative.
+    // Drop the now-stale decomposition rather than let it lie; the user re-runs to refresh.
+    // A FAILED write rolls the optimistic change back (indices stay valid), so only reset
+    // on ok.
+    if (ok) {
+      setProposals(null)
+      setSelected(new Set())
+      setCoverageGaps([])
+      setScopeCreep([])
+    }
     return ok
   }
   async function addDeliverable() {
@@ -420,6 +436,8 @@ export function TicketDetailDialog({
       return
     }
     setProposals(result.proposals)
+    setCoverageGaps(result.coverage_gaps)
+    setScopeCreep(result.scope_creep)
     setSelected(new Set(result.proposals.map((_, i) => i)))
   }
 
@@ -446,6 +464,8 @@ export function TicketDetailDialog({
     // board via onTicketsCreated; on partial failure the user re-runs decomposition.
     setProposals(null)
     setSelected(new Set())
+    setCoverageGaps([])
+    setScopeCreep([])
     if (created.length < selected.size) {
       setAiError(
         'Some tickets could not be created. The ones that succeeded were added to the backlog.',
@@ -768,6 +788,28 @@ export function TicketDetailDialog({
                     </Button>
                   ) : (
                     <div className="space-y-2">
+                      {deliverables.length > 0 ? (
+                        <p className="text-muted-foreground text-xs">
+                          Covers {Math.max(0, deliverables.length - coverageGaps.length)} of{' '}
+                          {deliverables.length} deliverables
+                        </p>
+                      ) : (
+                        <p className="text-muted-foreground text-xs">
+                          No deliverables to trace against.
+                        </p>
+                      )}
+                      {coverageGaps.length > 0 ? (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                          <p className="font-medium text-amber-700 dark:text-amber-400">
+                            Not covered by any proposal
+                          </p>
+                          <ul className="mt-1 list-disc pl-4">
+                            {coverageGaps.map((g) => (
+                              <li key={g.index}>{g.deliverable}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
                       <ul className="space-y-2">
                         {proposals.map((p, i) => (
                           <li key={i} className="flex items-start gap-2">
@@ -796,6 +838,24 @@ export function TicketDetailDialog({
                               <p className="text-muted-foreground/80 text-xs italic">
                                 {p.rationale}
                               </p>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {creepIndices.has(i) ? (
+                                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                                    Not tied to a deliverable
+                                  </span>
+                                ) : (
+                                  p.covers
+                                    .filter((idx) => deliverables[idx] !== undefined)
+                                    .map((idx) => (
+                                      <span
+                                        key={idx}
+                                        className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px]"
+                                      >
+                                        {deliverables[idx]}
+                                      </span>
+                                    ))
+                                )}
+                              </div>
                             </div>
                           </li>
                         ))}
@@ -817,6 +877,8 @@ export function TicketDetailDialog({
                           onClick={() => {
                             setProposals(null)
                             setSelected(new Set())
+                            setCoverageGaps([])
+                            setScopeCreep([])
                           }}
                         >
                           Discard

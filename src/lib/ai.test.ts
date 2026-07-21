@@ -24,18 +24,47 @@ describe('decomposeEpic', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('sends the JWT and returns proposals on 200', async () => {
+  it('sends the JWT and returns proposals with trace on 200', async () => {
     getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
-    const proposals = [{ title: 'T', description: 'd', type: 'story', rationale: 'r' }]
-    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => ({ proposals }) } as Response)
+    const proposals = [{ title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [0] }]
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        proposals,
+        coverage_gaps: [{ index: 1, deliverable: 'b' }],
+        scope_creep: [{ proposal_index: 2, title: 'Extra' }],
+      }),
+    } as Response)
 
     const result = await decomposeEpic(epic)
-    expect(result).toEqual({ ok: true, proposals })
+    expect(result).toEqual({
+      ok: true,
+      proposals,
+      coverage_gaps: [{ index: 1, deliverable: 'b' }],
+      scope_creep: [{ proposal_index: 2, title: 'Extra' }],
+    })
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]!
     expect(url).toBe('http://localhost:8787/decompose')
     expect((init!.headers as Record<string, string>).authorization).toBe('Bearer jwt-123')
     expect(JSON.parse(init!.body as string)).toEqual({ epic })
+  })
+
+  it('defaults covers and trace fields to [] when the service omits them', async () => {
+    getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        proposals: [{ title: 'T', description: 'd', type: 'story', rationale: 'r' }],
+      }),
+    } as Response)
+    const result = await decomposeEpic(epic)
+    expect(result).toEqual({
+      ok: true,
+      proposals: [{ title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [] }],
+      coverage_gaps: [],
+      scope_creep: [],
+    })
   })
 
   it('returns request_failed on a non-ok response', async () => {

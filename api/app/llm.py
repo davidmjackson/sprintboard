@@ -10,6 +10,7 @@ from .schemas import EpicIn, Proposal
 class LLMError(Exception):
     """The model returned a response we could not turn into proposals."""
 
+
 _MODEL = os.environ.get("AI_MODEL", "claude-opus-4-8")
 
 _SYSTEM = (
@@ -17,7 +18,10 @@ _SYSTEM = (
     "propose the child work items needed to deliver it. Each item is a story, bug, or "
     "task — never an epic. Prefer one item per deliverable where sensible; keep titles "
     "short and imperative. For each item, give a one-line rationale naming the "
-    "deliverable or part of the context it serves."
+    "deliverable or part of the context it serves. Also set `covers` to the 0-based "
+    "indices of the deliverables (in the order given) that the item directly delivers; "
+    "leave `covers` empty for an item that serves the epic's context but no listed "
+    "deliverable."
 )
 
 # Structured-output schema: every object needs additionalProperties:false + required;
@@ -36,8 +40,9 @@ PROPOSALS_SCHEMA = {
                     "description": {"type": "string"},
                     "type": {"type": "string", "enum": ["story", "bug", "task"]},
                     "rationale": {"type": "string"},
+                    "covers": {"type": "array", "items": {"type": "integer"}},
                 },
-                "required": ["title", "description", "type", "rationale"],
+                "required": ["title", "description", "type", "rationale", "covers"],
             },
         }
     },
@@ -63,5 +68,12 @@ def propose(epic: EpicIn) -> list[Proposal]:
         text = next(block.text for block in resp.content if block.type == "text")
         data = json.loads(text)
         return [Proposal(**item) for item in data["proposals"]]
-    except (StopIteration, json.JSONDecodeError, KeyError, TypeError, ValidationError, APIError) as exc:
+    except (
+        StopIteration,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValidationError,
+        APIError,
+    ) as exc:
         raise LLMError("Claude returned a response we could not parse into proposals") from exc

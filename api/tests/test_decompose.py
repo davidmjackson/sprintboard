@@ -9,8 +9,20 @@ from app.schemas import Proposal
 client = TestClient(app)
 
 _CANNED = [
-    Proposal(title="Build login form", description="…", type="story", rationale="Deliverable: auth UI"),
-    Proposal(title="Fix token refresh", description="…", type="bug", rationale="Context: sessions expire"),
+    Proposal(
+        title="Build login form",
+        description="…",
+        type="story",
+        rationale="Deliverable: auth UI",
+        covers=[0],
+    ),
+    Proposal(
+        title="Fix token refresh",
+        description="…",
+        type="bug",
+        rationale="Context: sessions expire",
+        covers=[],
+    ),
 ]
 
 
@@ -62,3 +74,23 @@ def test_decompose_requires_auth():
         json={"epic": {"summary": "Auth", "context": "c", "deliverables": ["auth UI"]}},
     )
     assert resp.status_code == 401
+
+
+def test_decompose_includes_coverage_analysis(monkeypatch):
+    _override_auth()
+    monkeypatch.setattr(decompose_module.llm, "propose", lambda epic: _CANNED)
+    resp = client.post(
+        "/decompose",
+        json={
+            "epic": {
+                "summary": "Auth",
+                "context": "c",
+                "deliverables": ["auth UI", "token refresh"],
+            }
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["proposals"][0]["covers"] == [0]
+    assert body["coverage_gaps"] == [{"index": 1, "deliverable": "token refresh"}]
+    assert body["scope_creep"] == [{"proposal_index": 1, "title": "Fix token refresh"}]
