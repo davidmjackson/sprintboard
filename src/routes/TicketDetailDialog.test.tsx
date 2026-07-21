@@ -1210,6 +1210,8 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'login form',
           covers: [],
+          estimate: null,
+          estimate_reason: '',
         },
         {
           title: 'Persist sessions',
@@ -1217,10 +1219,13 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'task',
           rationale: 'session handling',
           covers: [],
+          estimate: null,
+          estimate_reason: '',
         },
       ],
       coverage_gaps: [],
       scope_creep: [],
+      estimate_total: 0,
     })
     createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
     const onTicketsCreated = vi.fn()
@@ -1279,6 +1284,8 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'login form',
           covers: [],
+          estimate: null,
+          estimate_reason: '',
         },
         {
           title: 'Persist sessions',
@@ -1286,10 +1293,13 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'task',
           rationale: 'session handling',
           covers: [],
+          estimate: null,
+          estimate_reason: '',
         },
       ],
       coverage_gaps: [],
       scope_creep: [],
+      estimate_total: 0,
     })
     createTicket
       .mockResolvedValueOnce({ ok: true, ticket: { ...base, id: 'c1' } })
@@ -1341,11 +1351,14 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'r1',
           covers: [0],
+          estimate: null,
+          estimate_reason: '',
         },
-        { title: 'Add analytics', description: 'd2', type: 'task', rationale: 'r2', covers: [] },
+        { title: 'Add analytics', description: 'd2', type: 'task', rationale: 'r2', covers: [], estimate: null, estimate_reason: '' },
       ],
       coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
       scope_creep: [{ proposal_index: 1, title: 'Add analytics' }],
+      estimate_total: 0,
     })
 
     render(
@@ -1393,10 +1406,13 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'r1',
           covers: [0],
+          estimate: null,
+          estimate_reason: '',
         },
       ],
       coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
       scope_creep: [],
+      estimate_total: 0,
     })
     renderDialog({ ticket: epic })
 
@@ -1435,10 +1451,13 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'r1',
           covers: [0],
+          estimate: null,
+          estimate_reason: '',
         },
       ],
       coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
       scope_creep: [],
+      estimate_total: 0,
     })
     renderDialog({ ticket: epic })
 
@@ -1468,10 +1487,13 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'r1',
           covers: [],
+          estimate: null,
+          estimate_reason: '',
         },
       ],
       coverage_gaps: [],
       scope_creep: [],
+      estimate_total: 0,
     })
     renderDialog({ ticket: epicTicket }) // deliverables: []
 

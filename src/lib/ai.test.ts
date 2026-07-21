@@ -26,13 +26,16 @@ describe('decomposeEpic', () => {
 
   it('sends the JWT and returns proposals with trace on 200', async () => {
     getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
-    const proposals = [{ title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [0] }]
+    const proposals = [
+      { title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [0], estimate: 5, estimate_reason: 'why' },
+    ]
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({
         proposals,
         coverage_gaps: [{ index: 1, deliverable: 'b' }],
         scope_creep: [{ proposal_index: 2, title: 'Extra' }],
+        estimate_total: 5,
       }),
     } as Response)
 
@@ -42,6 +45,7 @@ describe('decomposeEpic', () => {
       proposals,
       coverage_gaps: [{ index: 1, deliverable: 'b' }],
       scope_creep: [{ proposal_index: 2, title: 'Extra' }],
+      estimate_total: 5,
     })
 
     const [url, init] = vi.mocked(fetch).mock.calls[0]!
@@ -61,9 +65,12 @@ describe('decomposeEpic', () => {
     const result = await decomposeEpic(epic)
     expect(result).toEqual({
       ok: true,
-      proposals: [{ title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [] }],
+      proposals: [
+        { title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [], estimate: null, estimate_reason: '' },
+      ],
       coverage_gaps: [],
       scope_creep: [],
+      estimate_total: 0,
     })
   })
 
