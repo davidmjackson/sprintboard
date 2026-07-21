@@ -1210,8 +1210,8 @@ describe('TicketDetailDialog — epic fields', () => {
           type: 'story',
           rationale: 'login form',
           covers: [],
-          estimate: null,
-          estimate_reason: '',
+          estimate: 5,
+          estimate_reason: 'similar to prior login forms',
         },
         {
           title: 'Persist sessions',
@@ -1225,7 +1225,7 @@ describe('TicketDetailDialog — epic fields', () => {
       ],
       coverage_gaps: [],
       scope_creep: [],
-      estimate_total: 0,
+      estimate_total: 8,
     })
     createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
     const onTicketsCreated = vi.fn()
@@ -1245,6 +1245,8 @@ describe('TicketDetailDialog — epic fields', () => {
     // Both proposals render.
     await screen.findByText('Build login form')
     expect(screen.getByText('Persist sessions')).toBeInTheDocument()
+    expect(screen.getByText('5 pts')).toBeInTheDocument()
+    expect(screen.getByText(/estimated total: 8 pts/i)).toBeInTheDocument()
 
     // Accept — creates one child per selected proposal (both selected by default).
     await userEvent.click(screen.getByRole('button', { name: /add .* to backlog/i }))
@@ -1256,12 +1258,42 @@ describe('TicketDetailDialog — epic fields', () => {
         summary: 'Build login form',
         type: 'story',
         parentEpicId: 'e1',
+        storyPoints: 5,
       }),
     )
     expect(onTicketsCreated).toHaveBeenCalledWith([
       expect.objectContaining({ id: 'c1' }),
       expect.objectContaining({ id: 'c1' }),
     ])
+  })
+
+  it('omits the pts chip and storyPoints when an estimate is absent', async () => {
+    const epic: Ticket = {
+      ...base, id: 'e1', type: 'epic', summary: 'Auth', context: 'c', deliverables: ['login form'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        { title: 'Build login form', description: 'd', type: 'story', rationale: 'r', covers: [], estimate: null, estimate_reason: '' },
+      ],
+      coverage_gaps: [],
+      scope_creep: [],
+      estimate_total: 0,
+    })
+    createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
+    render(
+      <TicketDetailDialog ticket={epic} currentUser={user} onOpenChange={() => {}}
+        onUpdated={() => {}} onDeleted={() => {}} onTicketsCreated={vi.fn()} />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+    // The per-proposal pts chip renders as exactly "{n} pts" (e.g. "5 pts"); anchor the
+    // match to that shape so it doesn't also catch the always-on "Estimated total: 0 pts"
+    // summary line (brief's own Step 5 renders that unconditionally inside the panel).
+    expect(screen.queryByText(/^\d+ pts$/)).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /add .* to backlog/i }))
+    await waitFor(() => expect(createTicket).toHaveBeenCalledTimes(1))
+    expect(createTicket.mock.calls[0]![0]).not.toHaveProperty('storyPoints')
   })
 
   // Fix: a partial accept failure must clear the panel so a re-click can't re-create the

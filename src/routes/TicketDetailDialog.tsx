@@ -289,6 +289,7 @@ export function TicketDetailDialog({
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [coverageGaps, setCoverageGaps] = useState<CoverageGap[]>([])
   const [scopeCreep, setScopeCreep] = useState<ScopeCreep[]>([])
+  const [estimateTotal, setEstimateTotal] = useState(0)
   const [decomposing, setDecomposing] = useState(false)
   const [accepting, setAccepting] = useState(false)
   const [aiError, setAiError] = useState<string | null>(null)
@@ -445,6 +446,7 @@ export function TicketDetailDialog({
     setProposals(result.proposals)
     setCoverageGaps(result.coverage_gaps)
     setScopeCreep(result.scope_creep)
+    setEstimateTotal(result.estimate_total)
     setSelected(new Set(result.proposals.map((_, i) => i)))
   }
 
@@ -461,6 +463,7 @@ export function TicketDetailDialog({
         type: p.type,
         description: p.description,
         parentEpicId: ticket.id,
+        ...(p.estimate != null ? { storyPoints: p.estimate } : {}),
       })
       if (result.ok) created.push(result.ticket)
     }
@@ -473,6 +476,7 @@ export function TicketDetailDialog({
     setSelected(new Set())
     setCoverageGaps([])
     setScopeCreep([])
+    setEstimateTotal(0)
     if (created.length < selected.size) {
       setAiError(
         'Some tickets could not be created. The ones that succeeded were added to the backlog.',
@@ -805,6 +809,9 @@ export function TicketDetailDialog({
                           No deliverables to trace against.
                         </p>
                       )}
+                      <p className="text-muted-foreground text-xs">
+                        Estimated total: {estimateTotal} pts
+                      </p>
                       {coverageGaps.length > 0 ? (
                         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
                           <p className="font-medium text-amber-700 dark:text-amber-400">
@@ -845,7 +852,17 @@ export function TicketDetailDialog({
                               <p className="text-muted-foreground/80 text-xs italic">
                                 {p.rationale}
                               </p>
+                              {p.estimate_reason ? (
+                                <p className="text-muted-foreground/80 text-xs">
+                                  {p.estimate_reason}
+                                </p>
+                              ) : null}
                               <div className="mt-1 flex flex-wrap gap-1">
+                                {p.estimate != null ? (
+                                  <span className="bg-primary/10 text-primary rounded px-1.5 py-0.5 text-[10px] font-medium">
+                                    {p.estimate} pts
+                                  </span>
+                                ) : null}
                                 {creepIndices.has(i) ? (
                                   <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
                                     Not tied to a deliverable
@@ -886,6 +903,7 @@ export function TicketDetailDialog({
                             setSelected(new Set())
                             setCoverageGaps([])
                             setScopeCreep([])
+                            setEstimateTotal(0)
                           }}
                         >
                           Discard
