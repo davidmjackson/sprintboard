@@ -10,6 +10,10 @@ export type DecomposeProposal = {
   type: Exclude<TicketType, 'epic'>
   rationale: string
   covers: number[]
+  /** AI story-point estimate on the Scrum scale; null when the service omitted it. */
+  estimate: number | null
+  /** One-line justification of the size (R2.2). */
+  estimate_reason: string
 }
 
 /** A deliverable no proposal covers. */
@@ -23,6 +27,7 @@ export type DecomposeResult =
       proposals: DecomposeProposal[]
       coverage_gaps: CoverageGap[]
       scope_creep: ScopeCreep[]
+      estimate_total: number
     }
   | { ok: false; error: 'unauthenticated' | 'request_failed' }
 
@@ -57,6 +62,7 @@ export async function decomposeEpic(epic: {
       proposals?: DecomposeProposal[]
       coverage_gaps?: CoverageGap[]
       scope_creep?: ScopeCreep[]
+      estimate_total?: number
     }
     if (!Array.isArray(body?.proposals)) return { ok: false, error: 'request_failed' }
     // Defensive defaults: a forward-compatible service that omitted the trace fields (or
@@ -67,12 +73,15 @@ export async function decomposeEpic(epic: {
     const proposals = body.proposals.map((p) => ({
       ...p,
       covers: Array.isArray(p?.covers) ? [...new Set(p.covers)] : [],
+      estimate: typeof p?.estimate === 'number' ? p.estimate : null,
+      estimate_reason: typeof p?.estimate_reason === 'string' ? p.estimate_reason : '',
     }))
     return {
       ok: true,
       proposals,
       coverage_gaps: Array.isArray(body?.coverage_gaps) ? body.coverage_gaps : [],
       scope_creep: Array.isArray(body?.scope_creep) ? body.scope_creep : [],
+      estimate_total: typeof body?.estimate_total === 'number' ? body.estimate_total : 0,
     }
   } catch {
     return { ok: false, error: 'request_failed' }
