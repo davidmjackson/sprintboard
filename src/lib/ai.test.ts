@@ -27,7 +27,15 @@ describe('decomposeEpic', () => {
   it('sends the JWT and returns proposals with trace on 200', async () => {
     getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
     const proposals = [
-      { title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [0], estimate: 5, estimate_reason: 'why' },
+      {
+        title: 'T',
+        description: 'd',
+        type: 'story',
+        rationale: 'r',
+        covers: [0],
+        estimate: 5,
+        estimate_reason: 'why',
+      },
     ]
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
@@ -66,7 +74,15 @@ describe('decomposeEpic', () => {
     expect(result).toEqual({
       ok: true,
       proposals: [
-        { title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [], estimate: null, estimate_reason: '' },
+        {
+          title: 'T',
+          description: 'd',
+          type: 'story',
+          rationale: 'r',
+          covers: [],
+          estimate: null,
+          estimate_reason: '',
+        },
       ],
       coverage_gaps: [],
       scope_creep: [],

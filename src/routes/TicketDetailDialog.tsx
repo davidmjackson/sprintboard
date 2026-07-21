@@ -809,9 +809,11 @@ export function TicketDetailDialog({
                           No deliverables to trace against.
                         </p>
                       )}
-                      <p className="text-muted-foreground text-xs">
-                        Estimated total: {estimateTotal} pts
-                      </p>
+                      {estimateTotal > 0 ? (
+                        <p className="text-muted-foreground text-xs">
+                          Estimated total: {estimateTotal} pts
+                        </p>
+                      ) : null}
                       {coverageGaps.length > 0 ? (
                         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
                           <p className="font-medium text-amber-700 dark:text-amber-400">

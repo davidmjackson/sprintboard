@@ -1269,12 +1269,25 @@ describe('TicketDetailDialog — epic fields', () => {
 
   it('omits the pts chip and storyPoints when an estimate is absent', async () => {
     const epic: Ticket = {
-      ...base, id: 'e1', type: 'epic', summary: 'Auth', context: 'c', deliverables: ['login form'],
+      ...base,
+      id: 'e1',
+      type: 'epic',
+      summary: 'Auth',
+      context: 'c',
+      deliverables: ['login form'],
     }
     decomposeEpic.mockResolvedValue({
       ok: true,
       proposals: [
-        { title: 'Build login form', description: 'd', type: 'story', rationale: 'r', covers: [], estimate: null, estimate_reason: '' },
+        {
+          title: 'Build login form',
+          description: 'd',
+          type: 'story',
+          rationale: 'r',
+          covers: [],
+          estimate: null,
+          estimate_reason: '',
+        },
       ],
       coverage_gaps: [],
       scope_creep: [],
@@ -1282,8 +1295,14 @@ describe('TicketDetailDialog — epic fields', () => {
     })
     createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
     render(
-      <TicketDetailDialog ticket={epic} currentUser={user} onOpenChange={() => {}}
-        onUpdated={() => {}} onDeleted={() => {}} onTicketsCreated={vi.fn()} />,
+      <TicketDetailDialog
+        ticket={epic}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+        onTicketsCreated={vi.fn()}
+      />,
     )
     await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
     await screen.findByText('Build login form')
@@ -1386,7 +1405,15 @@ describe('TicketDetailDialog — epic fields', () => {
           estimate: null,
           estimate_reason: '',
         },
-        { title: 'Add analytics', description: 'd2', type: 'task', rationale: 'r2', covers: [], estimate: null, estimate_reason: '' },
+        {
+          title: 'Add analytics',
+          description: 'd2',
+          type: 'task',
+          rationale: 'r2',
+          covers: [],
+          estimate: null,
+          estimate_reason: '',
+        },
       ],
       coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
       scope_creep: [{ proposal_index: 1, title: 'Add analytics' }],
