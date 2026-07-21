@@ -391,6 +391,13 @@ export function TicketDetailDialog({
     // Drop the now-stale decomposition rather than let it lie; the user re-runs to refresh.
     // A FAILED write rolls the optimistic change back (indices stay valid), so only reset
     // on ok.
+    //
+    // Scope is deliberate: ONLY deliverable writes invalidate. Editing the epic's context or
+    // summary (which also feed the AI prompt) goes through commit() directly and does NOT
+    // reset the trace — those edits don't shift `covers` indices, so every chip and the count
+    // stay index-correct. The proposals are advisory and one click re-runs them, so that mild
+    // semantic staleness is acceptable; nuking them on a title/context tweak would be more
+    // disruptive than the staleness it prevents.
     if (ok) {
       setProposals(null)
       setSelected(new Set())

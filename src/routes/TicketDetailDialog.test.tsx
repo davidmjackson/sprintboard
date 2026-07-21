@@ -1417,6 +1417,45 @@ describe('TicketDetailDialog — epic fields', () => {
     expect(screen.queryByText('Build login form')).not.toBeInTheDocument()
   })
 
+  // Minor follow-up (peer review): the invalidation is guarded by `if (ok)`. A FAILED
+  // deliverable write rolls the optimistic change back, so the `covers`/gap indices stay
+  // valid and the decomposition must SURVIVE — only a successful write drops it. This pins
+  // the previously-untested other half of that branch.
+  it('keeps the decomposition when a deliverable write fails', async () => {
+    const epic: Ticket = {
+      ...epicTicket,
+      deliverables: ['login form', 'session handling'],
+    }
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'r1',
+          covers: [0],
+        },
+      ],
+      coverage_gaps: [{ index: 1, deliverable: 'session handling' }],
+      scope_creep: [],
+    })
+    renderDialog({ ticket: epic })
+
+    await userEvent.click(screen.getByRole('button', { name: /decompose with ai/i }))
+    await screen.findByText('Build login form')
+
+    // The remove fails — commit() reverts the optimistic change and surfaces an error.
+    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    await userEvent.click(screen.getByRole('button', { name: /remove deliverable 1/i }))
+    await waitFor(() => expect(updateTicket).toHaveBeenCalled())
+
+    // Indices never shifted, so the decomposition stays: the proposal is still shown and the
+    // "Decompose with AI" button has NOT come back.
+    expect(screen.getByText('Build login form')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /decompose with ai/i })).not.toBeInTheDocument()
+  })
+
   // Review finding: cover the zero-deliverable branch — no summary line, only the
   // "nothing to trace against" message.
   it('shows "No deliverables to trace against." and no coverage summary when the epic has none', async () => {
