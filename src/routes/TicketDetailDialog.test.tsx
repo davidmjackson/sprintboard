@@ -1204,14 +1204,23 @@ describe('TicketDetailDialog — epic fields', () => {
     decomposeEpic.mockResolvedValue({
       ok: true,
       proposals: [
-        { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'login form',
+          covers: [],
+        },
         {
           title: 'Persist sessions',
           description: 'd2',
           type: 'task',
           rationale: 'session handling',
+          covers: [],
         },
       ],
+      coverage_gaps: [],
+      scope_creep: [],
     })
     createTicket.mockResolvedValue({ ok: true, ticket: { ...base, id: 'c1' } })
     const onTicketsCreated = vi.fn()
@@ -1264,14 +1273,23 @@ describe('TicketDetailDialog — epic fields', () => {
     decomposeEpic.mockResolvedValue({
       ok: true,
       proposals: [
-        { title: 'Build login form', description: 'd1', type: 'story', rationale: 'login form' },
+        {
+          title: 'Build login form',
+          description: 'd1',
+          type: 'story',
+          rationale: 'login form',
+          covers: [],
+        },
         {
           title: 'Persist sessions',
           description: 'd2',
           type: 'task',
           rationale: 'session handling',
+          covers: [],
         },
       ],
+      coverage_gaps: [],
+      scope_creep: [],
     })
     createTicket
       .mockResolvedValueOnce({ ok: true, ticket: { ...base, id: 'c1' } })
