@@ -1,3 +1,5 @@
+import json
+
 import anthropic
 import pytest
 from app import llm
@@ -18,6 +20,7 @@ def test_api_error_becomes_llmerror(monkeypatch):
             @staticmethod
             def create(**kw):
                 raise _FakeAPIError()
+
     monkeypatch.setattr(llm, "Anthropic", lambda *a, **k: _Client())
     with pytest.raises(LLMError):
         llm.propose(_EPIC)
@@ -26,11 +29,50 @@ def test_api_error_becomes_llmerror(monkeypatch):
 def test_missing_text_block_becomes_llmerror(monkeypatch):
     class _Resp:
         content = []  # no text block -> StopIteration in the genexpr
+
     class _Client:
         class messages:
             @staticmethod
             def create(**kw):
                 return _Resp()
+
     monkeypatch.setattr(llm, "Anthropic", lambda *a, **k: _Client())
     with pytest.raises(LLMError):
         llm.propose(_EPIC)
+
+
+def test_schema_requires_covers():
+    items = llm.PROPOSALS_SCHEMA["properties"]["proposals"]["items"]
+    assert "covers" in items["properties"]
+    assert "covers" in items["required"]
+
+
+def test_response_with_covers_parses(monkeypatch):
+    payload = {
+        "proposals": [
+            {
+                "title": "t",
+                "description": "d",
+                "type": "story",
+                "rationale": "r",
+                "covers": [0],
+            }
+        ]
+    }
+
+    class _Block:
+        type = "text"
+        text = json.dumps(payload)
+
+    class _Resp:
+        content = [_Block()]
+
+    class _Client:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                return _Resp()
+
+    monkeypatch.setattr(llm, "Anthropic", lambda *a, **k: _Client())
+    result = llm.propose(_EPIC)
+    assert result[0].covers == [0]
