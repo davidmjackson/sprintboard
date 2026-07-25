@@ -146,9 +146,11 @@ extracted into hooks (`.ts`), T1 applies to it automatically"), and no new ADR o
 `eslint-disable` was used to sidestep the threshold here; the code simply meets it.
 
 The five new test files — the four hook modules plus the decomposition panel — hold
-**44 tests**; repo-wide the slice adds **51 new tests**, the extra 7 being additions
+**46 tests**; repo-wide the slice adds **53 new tests**, the extra 7 being additions
 to the existing `src/lib/tickets.test.ts`. (Two different measurements: the first is
-the new files, the second the whole slice.)
+the new files, the second the whole slice.) The full unit suite (`npm run test:unit`)
+now runs **426 tests across 37 files**. All figures measured at the branch head,
+2026-07-25 — a point-in-time count, not a running total.
 `TicketDetailDialog.test.tsx` and `ProjectShell.test.tsx` were **not**
 modified — which is what makes the behaviour-preservation claim checkable rather
 than asserted.
