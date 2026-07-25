@@ -119,10 +119,12 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
 needs no secrets, so CI would stay green while the "RLS still holds" line above went
 quietly unmet on every future PR. `test:unit` is a local fast-loop convenience, never
 a gate. CI needs the `RLS_TEST_*` **and** `SUPABASE_SERVICE_ROLE_KEY` secrets/variables
-configured for the suites to exercise isolation and signup rather than skip them — a
-CI run reporting 103 tests instead of 127 means exactly that, and must be treated as a
-failure. (103 is what `test:unit` yields: it excludes every `*.integration.test.ts`, so
-the RLS, keepalive, signup, login **and** project suites vanish.)
+configured for the suites to exercise isolation and signup rather than skip them — a CI
+run that collects only the unit-test file count means exactly that, and must be treated
+as a failure. **Compare test *files*, not test totals:** the totals move with every story
+and go stale, the file split does not. `npm test` collects **45** files; `test:unit`
+collects **38**, because it excludes every `*.integration.test.ts` — so the RLS,
+keepalive, signup, login **and** project suites vanish.
 
 ## The live-suite auth rate-limit flake
 
@@ -146,6 +148,39 @@ Two defences, both load-bearing — do not undo either while "tidying up":
   Confirm the rerun's `headSha` equals the PR head, and trust the CI result over a local
   run. Serialising CI against the shared database (the `verify` concurrency group) already
   keeps two CI runs apart; the remaining risk is a local run overlapping a CI run.
+
+## The service-role key travels in `apikey`, never `Authorization` (SPRIN-46)
+
+A **second, different** live-suite flake, fixed by removing its cause. Match the signature
+before reaching for the rate-limit playbook above — this one is a **named error thrown by
+the suite's own guard**, not a bare `TypeError`:
+
+```
+createUser failed: invalid JWT: unable to parse or verify signature, token is
+unverifiable: error while executing keyfunc: unrecognized JWT kid <nil> for algorithm ES256
+```
+
+This project's API keys are the **new opaque format** (`sb_publishable_…` / `sb_secret_…`),
+not legacy HS256 JWTs, and its JWKS holds exactly one key (ES256, no HS256 entry).
+supabase-js still copies the key into `Authorization: Bearer` as well as `apikey` — a
+leftover from when service-role keys really were JWTs. Supabase documents that opaque keys
+must **not** be sent as a bearer token. GoTrue tries to verify that copy anyway, finds no
+`kid`, and — intermittently, when it does not fall back to the `apikey` header — fails the
+request. Both CI occurrences hit the **first** `createUser` of the run while later,
+identical calls on the same client succeeded: the tell that the *request* failed, not the
+credential.
+
+- **`adminClient()` passes `global: { fetch: apikeyOnlyFetch }`**, which deletes the
+  `Authorization` header. `e2e/support/admin.ts` sends `apikey` alone for the same reason —
+  there, a rejected teardown strands a signed-up user and everything cascading from it.
+  Both are pinned by `src/test/supabase-clients.test.ts`.
+- **Never apply that wrapper to `anonClient()` or a `signIn()` client.** For those,
+  `Authorization` carries the **user's** access token; stripping it silently downgrades
+  every request to the anon role, and RLS then *hides rows* rather than raising — a suite
+  that passes for the wrong reason. A test goes red if anyone shares the wrapper.
+- **It was never a key-rotation problem.** The standing remedy used to be "re-issue
+  `SUPABASE_SERVICE_ROLE_KEY`". That was wrong and would not have fixed it: the key was
+  healthy throughout. No dashboard change is required.
 
 ## End-to-end suite (Playwright)
 

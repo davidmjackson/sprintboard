@@ -69,11 +69,43 @@ export function assertServiceRoleOrExplain(): void {
 }
 
 /**
+ * `fetch`, minus the `Authorization` header — for the admin client only.
+ *
+ * supabase-js copies the API key into `Authorization: Bearer <key>` as well as
+ * `apikey`. That dates from when service-role keys really were HS256 JWTs. This
+ * project's keys are the new opaque format (`sb_secret_…`), and Supabase is
+ * explicit that those must not be sent as a bearer token, because they are not
+ * JWTs at all. GoTrue tries to verify the bearer copy anyway, finds no `kid`, and
+ * — intermittently, when it does not fall back to the `apikey` header — fails the
+ * request with:
+ *
+ *     invalid JWT: unable to parse or verify signature, token is unverifiable:
+ *     error while executing keyfunc: unrecognized JWT kid <nil> for algorithm ES256
+ *
+ * That turned the required `verify` check red on branches whose code was fine.
+ * Both observed CI failures hit the *first* `createUser` of the run while later,
+ * identical calls on the same client succeeded — the tell that it is the request
+ * that fails, not the credential. Deleting the duplicate header removes the
+ * JWT-parsing path entirely, so the failure mode cannot occur.
+ *
+ * Scope matters: this is correct ONLY where the API key *is* the authorization.
+ * `anonClient()` and `signIn()` clients must keep their `Authorization` header —
+ * for them it carries the signed-in user's access token, and stripping it would
+ * silently downgrade every request to the anon role. See [[live-suite-auth-flake]].
+ */
+export function apikeyOnlyFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers)
+  headers.delete('authorization')
+  return fetch(input, { ...init, headers })
+}
+
+/**
  * A service-role admin client. Test-only: it bypasses RLS entirely, so it must
  * NEVER be imported by application code — only by the integration suite, to read
  * the auto-created profile and delete the throwaway signup user afterwards.
  *
- * Sessions are not persisted: the key IS the authorization.
+ * Sessions are not persisted: the key IS the authorization, and it travels in the
+ * `apikey` header alone (see `apikeyOnlyFetch`).
  */
 export function adminClient(): SupabaseClient<Database> {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -81,6 +113,7 @@ export function adminClient(): SupabaseClient<Database> {
   }
   return createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    global: { fetch: apikeyOnlyFetch },
   })
 }
 
