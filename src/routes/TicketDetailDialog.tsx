@@ -14,11 +14,17 @@ import { TicketEpicSection } from './TicketEpicSection'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 
 /**
- * Jira-style ticket detail modal. Every field edits in place and commits independently.
- * Saves are optimistic against `onUpdated`, persisted with `updateTicket`, and rolled
- * back on failure. `updated_at` comes from the DB trigger via the reconciled row.
- * Assignee is deliberately `{ Unassigned, current user }` — Phase 1 is single-owner, and
- * widening the profiles read would leak every user's email.
+ * Jira-style ticket detail modal. This component is the composition root: it owns the
+ * public prop contract, calls the extracted hooks (`useTicketCommit`, `useDecomposition`,
+ * `useDeliverables`, `useBlockFlow`, `useDeleteFlow`), and assembles their state into the
+ * header, fields, sidebar and action dialogs below. The optimistic-save write engine —
+ * commit/rollback/reconcile against `updateTicket`, with `updated_at` coming from the DB
+ * trigger via the reconciled row — lives in `useTicketCommit` (`src/lib/ticket-commit.ts`),
+ * not here. The Escape-key policy also stays here rather than in a child: Radix dismisses
+ * the whole dialog at the document level, so only the component holding `onEscapeKeyDown`
+ * can decide whether a field's own edit or the add-deliverable draft should swallow it
+ * instead of dismissing the dialog. Assignee is deliberately `{ Unassigned, current user }`
+ * — Phase 1 is single-owner, and widening the profiles read would leak every user's email.
  */
 export function TicketDetailDialog({
   ticket,

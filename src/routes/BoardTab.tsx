@@ -36,7 +36,8 @@ export function BoardTab() {
 
   // The freshest ticket list, readable from inside an in-flight `moveTicket` async closure.
   // Writing a ref during render is forbidden by the project's react-hooks/refs rule, so the
-  // sync happens in an effect — the same pattern `TicketDetailDialog` uses for `ticketRef`.
+  // sync happens in an effect — the same pattern `useTicketCommit` (`src/lib/ticket-commit.ts`)
+  // uses for its own ticket ref.
   const ticketsRef = useRef(tickets)
   useEffect(() => {
     ticketsRef.current = tickets

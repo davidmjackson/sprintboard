@@ -102,7 +102,9 @@ export function TicketDetailSidebar({
           sprint", and one click would quietly unsprint it. */}
       {/* The current sprint isn't in the list (deleted, or the list hasn't loaded):
           still render its value so the <select> stays controlled and the membership
-          isn't silently shown as "Backlog". Mirrors the parent-epic picker's guard. */}
+          isn't silently shown as "Backlog". Same guard as the parent-epic picker above —
+          both are the same `TicketReferenceSelect` component, so it's one implementation
+          used twice, not a rule mirrored by hand in two places. */}
       <TicketReferenceSelect
         label="Sprint"
         ariaLabel="sprint"

@@ -73,9 +73,10 @@ export function TicketDeliverablesEditor({
               e.preventDefault()
               void deliverables.add()
             }
-            // Escape is handled by the dialog's onEscapeKeyDown below (Radix
-            // dismisses at the document level, so a local stopPropagation can't
-            // keep the dialog open) — it clears the draft and stays open.
+            // Escape is handled by the parent dialog's onEscapeKeyDown, in
+            // TicketDetailDialog.tsx (Radix dismisses at the document level, so a
+            // local stopPropagation can't keep the dialog open) — it clears the
+            // draft and stays open.
           }}
         />
         <Button
