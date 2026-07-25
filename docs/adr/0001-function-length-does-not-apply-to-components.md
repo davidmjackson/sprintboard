@@ -36,3 +36,14 @@ oversized components — `TicketDetailDialog.tsx` is flagged by both.
   measured by the rules that survive JSX.
 - If component logic is later extracted into hooks (`.ts`), T1 applies to it
   automatically.
+
+## Addendum, 2026-07-25
+
+The T2/T5 example above named `TicketDetailDialog.tsx`. SPRIN-45 has since split
+that file; it now reports zero findings under the standard. This does not change
+the decision recorded above — T1 is still off for `.tsx` and on everywhere else —
+it only retires the specific example. The stated consequence that component logic
+extracted into hooks (`.ts`) becomes subject to T1 automatically was exercised by
+that slice: the four new `src/lib` hook modules were held to the 30-line cap as
+written, not exempted. This entry is a note on outcome; the original record above
+is left as written.

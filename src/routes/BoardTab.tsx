@@ -36,7 +36,8 @@ export function BoardTab() {
 
   // The freshest ticket list, readable from inside an in-flight `moveTicket` async closure.
   // Writing a ref during render is forbidden by the project's react-hooks/refs rule, so the
-  // sync happens in an effect — the same pattern `TicketDetailDialog` uses for `ticketRef`.
+  // sync happens in an effect — the same pattern `useTicketCommit` (`src/lib/ticket-commit.ts`)
+  // uses for its own ticket ref.
   const ticketsRef = useRef(tickets)
   useEffect(() => {
     ticketsRef.current = tickets
@@ -51,7 +52,7 @@ export function BoardTab() {
   const [blockedOnly, setBlockedOnly] = useState(false)
 
   // Optimistic status change with rollback — the board's first write. Mirrors
-  // `TicketDetailDialog.commit()`: apply optimistically, persist, then reconcile the
+  // `commit()` in `src/lib/ticket-commit.ts`: apply optimistically, persist, then reconcile the
   // DB-refreshed row on success or revert ONLY this write's field (status) on failure —
   // merged onto whatever is latest NOW (from `ticketsRef`), so a concurrent edit to a
   // DIFFERENT field of the same ticket is preserved, not clobbered.

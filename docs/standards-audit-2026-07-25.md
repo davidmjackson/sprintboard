@@ -122,3 +122,35 @@ Coverage is **not** currently gated in `verify`, and this change does not add it
    optimistic-write race, so it wants its own slice and the deep review.
 4. **Only then**, per stack, fold the rules into `lint` and let `verify` gate
    them.
+
+### Pass B, first slice: `TicketDetailDialog.tsx` split (2026-07-25)
+
+Landed on `refactor/split-ticket-detail-dialog`. `TicketDetailDialog.tsx` went from
+945 countable lines / cyclomatic 45 / cognitive 44 (3 findings) to **181 raw lines,
+~112 countable, 0 findings** — complexity and cognitive no longer apply to a file
+this shape. Repo-wide: **7 findings → 4**. The 4 remaining are unchanged from the
+baseline above and out of this slice's scope: `e2e/happy-path.spec.ts` (complexity
+11), `src/lib/ai.ts` (`decomposeEpic`, 44 lines + complexity 14), and
+`src/routes/ProjectShell.tsx` (complexity 25).
+
+Logic moved into four `src/lib` hooks — `ticket-commit.ts`, `ticket-decomposition.ts`,
+`ticket-deliverables.ts`, `ticket-actions.ts` — and markup into eight `src/routes`
+components — `EditableText.tsx`, `TicketDetailHeader.tsx`, `TicketActionDialogs.tsx`,
+`TicketMainFields.tsx`, `TicketDetailSidebar.tsx`, `TicketReferenceSelect.tsx`,
+`TicketEpicSection.tsx`, `TicketDecompositionPanel.tsx`. The reusable rule this
+slice establishes: **logic goes in `src/lib` hooks, markup in `src/routes`
+components; hook bodies stay under 30 lines by hoisting substantial async logic to
+module-level functions with a named argument-object type.** This is not a new
+exemption — ADR 0001 already anticipated it ("if component logic is later
+extracted into hooks (`.ts`), T1 applies to it automatically"), and no new ADR or
+`eslint-disable` was used to sidestep the threshold here; the code simply meets it.
+
+The five new test files — the four hook modules plus the decomposition panel — hold
+**46 tests**; repo-wide the slice adds **53 new tests**, the extra 7 being additions
+to the existing `src/lib/tickets.test.ts`. (Two different measurements: the first is
+the new files, the second the whole slice.) The full unit suite (`npm run test:unit`)
+now runs **426 tests across 37 files**. All figures measured at the branch head,
+2026-07-25 — a point-in-time count, not a running total.
+`TicketDetailDialog.test.tsx` and `ProjectShell.test.tsx` were **not**
+modified — which is what makes the behaviour-preservation claim checkable rather
+than asserted.
