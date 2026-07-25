@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
-import { Ban, CircleCheck, MoreHorizontal, Trash2, X } from 'lucide-react'
+import { X } from 'lucide-react'
 
-import { BLOCK_REASON_MAX, parseBlockReason, parseStoryPoints, parseSummary } from '@/lib/tickets'
+import { parseStoryPoints, parseSummary } from '@/lib/tickets'
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDecomposition } from '@/lib/ticket-decomposition'
@@ -11,40 +11,17 @@ import {
   SPRINT_STATUS_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
-  TICKET_STATUS_LABELS,
   type Sprint,
   type Ticket,
   type TicketType,
 } from '@/lib/domain'
 import type { SprintsPhase } from './ProjectShell'
 import { EditableText, FieldLabel, selectClass } from './EditableText'
+import { TicketDetailHeader, TicketBlockedBanner } from './TicketDetailHeader'
+import { TicketBlockDialog, TicketDeleteDialog } from './TicketActionDialogs'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
 
 /**
  * Jira-style ticket detail modal. Every field edits in place and commits independently.
@@ -154,75 +131,16 @@ export function TicketDetailDialog({
           }
         }}
       >
-        <DialogHeader className="border-border/70 flex-row items-center gap-2 space-y-0 border-b px-6 py-4">
-          <DialogTitle className="flex items-center gap-2.5 text-base font-normal">
-            <span className="text-muted-foreground font-mono text-sm font-medium tracking-tight">
-              {ticket.key}
-            </span>
-            <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium uppercase">
-              {TICKET_TYPE_LABELS[ticket.type]}
-            </span>
-            <span className="bg-border/60 h-3.5 w-px" aria-hidden="true" />
-            <span className="text-muted-foreground inline-flex items-center gap-1.5 text-xs font-medium">
-              <span className="bg-foreground/40 size-1.5 rounded-full" aria-hidden="true" />
-              {TICKET_STATUS_LABELS[ticket.status]}
-            </span>
-          </DialogTitle>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label="Ticket actions"
-                className="hover:bg-muted focus-visible:bg-muted text-muted-foreground mr-7 ml-auto inline-flex size-7 items-center justify-center rounded-md outline-none"
-              >
-                <MoreHorizontal className="size-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {ticket.is_blocked ? (
-                <DropdownMenuItem onSelect={() => void blockFlow.unblock()}>
-                  <CircleCheck />
-                  Unblock
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => blockFlow.open()}>
-                  <Ban />
-                  Block
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() => deleteFlow.setConfirming(true)}
-              >
-                <Trash2 />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </DialogHeader>
+        <TicketDetailHeader
+          ticket={ticket}
+          onBlock={blockFlow.open}
+          onUnblock={() => void blockFlow.unblock()}
+          onDelete={() => deleteFlow.setConfirming(true)}
+        />
 
         <div className="grid gap-x-8 gap-y-6 px-6 py-5 sm:grid-cols-[1fr_240px]">
           {ticket.is_blocked ? (
-            <div
-              role="status"
-              className="border-destructive/30 bg-destructive/10 text-destructive flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm sm:col-span-2"
-            >
-              <Ban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="font-medium">
-                  {blockFlow.unblockPending ? 'Unblocking…' : 'Blocked'}
-                </span>
-                {ticket.blocked_reason ? (
-                  <span className="text-destructive/90 break-words">{ticket.blocked_reason}</span>
-                ) : null}
-                {ticket.blocked_since ? (
-                  <span className="text-destructive/70 text-xs">
-                    Since {new Date(ticket.blocked_since).toLocaleString()}
-                  </span>
-                ) : null}
-              </div>
-            </div>
+            <TicketBlockedBanner ticket={ticket} unblockPending={blockFlow.unblockPending} />
           ) : null}
 
           {/* Main column: summary + description */}
@@ -642,83 +560,8 @@ export function TicketDetailDialog({
           </p>
         ) : null}
 
-        <Dialog
-          open={blockFlow.blocking}
-          onOpenChange={(open) => {
-            // Ignore dismissal while the block is in flight; reset on any close.
-            if (blockFlow.pending) return
-            if (!open) blockFlow.close()
-          }}
-        >
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Block {ticket.key}?</DialogTitle>
-              <DialogDescription>
-                Blocking flags the ticket — it stays in its column. A reason is required.
-              </DialogDescription>
-            </DialogHeader>
-            <label className="flex flex-col gap-1.5">
-              <FieldLabel>Reason</FieldLabel>
-              <Textarea
-                aria-label="reason"
-                rows={3}
-                autoFocus
-                maxLength={BLOCK_REASON_MAX}
-                value={blockFlow.reason}
-                placeholder="Why is this blocked?"
-                // `setReason` also clears any stale validation error — that rule moved into
-                // the flow with the error it owns.
-                onChange={(e) => blockFlow.setReason(e.target.value)}
-              />
-            </label>
-            {blockFlow.error ? (
-              <p role="alert" className="text-destructive text-sm">
-                {blockFlow.error}
-              </p>
-            ) : null}
-            <DialogFooter>
-              <Button variant="outline" onClick={blockFlow.close} disabled={blockFlow.pending}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => void blockFlow.submit()}
-                disabled={blockFlow.pending || !parseBlockReason(blockFlow.reason).ok}
-              >
-                {blockFlow.pending ? 'Blocking…' : 'Block'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <AlertDialog
-          open={deleteFlow.confirming}
-          onOpenChange={(open) => {
-            if (!deleteFlow.deleting) deleteFlow.setConfirming(open)
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete {ticket.key}?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This can’t be undone. The ticket will be removed from the board and backlog.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel asChild>
-                <Button variant="outline" disabled={deleteFlow.deleting}>
-                  Cancel
-                </Button>
-              </AlertDialogCancel>
-              <Button
-                variant="destructive"
-                onClick={() => void deleteFlow.submit()}
-                disabled={deleteFlow.deleting}
-              >
-                {deleteFlow.deleting ? 'Deleting…' : 'Delete'}
-              </Button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <TicketBlockDialog ticketKey={ticket.key} blockFlow={blockFlow} />
+        <TicketDeleteDialog ticketKey={ticket.key} deleteFlow={deleteFlow} />
       </DialogContent>
     </Dialog>
   )
