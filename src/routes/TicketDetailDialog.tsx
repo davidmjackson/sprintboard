@@ -4,7 +4,6 @@ import { Ban, CircleCheck, MoreHorizontal, Trash2, X } from 'lucide-react'
 import {
   BLOCK_REASON_MAX,
   blockTicket,
-  createTicket,
   deleteTicket,
   parseBlockReason,
   parseStoryPoints,
@@ -12,7 +11,7 @@ import {
   unblockTicket,
 } from '@/lib/tickets'
 import { useTicketCommit } from '@/lib/ticket-commit'
-import { decomposeEpic, type DecomposeProposal, type CoverageGap, type ScopeCreep } from '@/lib/ai'
+import { useDecomposition } from '@/lib/ticket-decomposition'
 import { parseLabels } from '@/lib/labels'
 import { parseDeliverables } from '@/lib/deliverables'
 import {
@@ -119,16 +118,9 @@ export function TicketDetailDialog({
   // field" (clear the draft, stay open) from "Esc anywhere else" (dismiss the dialog).
   const newDeliverableRef = useRef<HTMLInputElement>(null)
 
-  // AI decomposition (epic only). `proposals === null` is "not decomposed yet" (shows the
-  // button); once set, it shows the proposal list until accepted or discarded.
-  const [proposals, setProposals] = useState<DecomposeProposal[] | null>(null)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [coverageGaps, setCoverageGaps] = useState<CoverageGap[]>([])
-  const [scopeCreep, setScopeCreep] = useState<ScopeCreep[]>([])
-  const [estimateTotal, setEstimateTotal] = useState(0)
-  const [decomposing, setDecomposing] = useState(false)
-  const [accepting, setAccepting] = useState(false)
-  const [aiError, setAiError] = useState<string | null>(null)
+  // The AI decomposition trace (epic only): the proposal list, its traceability signals,
+  // and the two async operations that fill and drain it. `reset()` drops the whole trace.
+  const decomposition = useDecomposition({ ticket, onTicketsCreated })
 
   // The optimistic write engine: field-scoped commit/rollback/reconcile, the ticket-scoped
   // error, and the mounted flag every async continuation checks after its `await`.
@@ -144,7 +136,7 @@ export function TicketDetailDialog({
   // always a well-formed `string[]` and never a half-mutated jsonb value.
   const deliverables = parseDeliverables(ticket.deliverables)
   // Proposal indices flagged as not tied to any deliverable (R2.1 scope-creep signal).
-  const creepIndices = new Set(scopeCreep.map((c) => c.proposal_index))
+  const creepIndices = new Set(decomposition.scopeCreep.map((c) => c.proposal_index))
 
   // Deliverables are an epic-only, order-preserving `string[]`. Each mutation rebuilds the
   // WHOLE array and commits it — which makes two concurrent mutations conflicting writes to
@@ -172,13 +164,7 @@ export function TicketDetailDialog({
     // stay index-correct. The proposals are advisory and one click re-runs them, so that mild
     // semantic staleness is acceptable; nuking them on a title/context tweak would be more
     // disruptive than the staleness it prevents.
-    if (ok) {
-      setProposals(null)
-      setSelected(new Set())
-      setCoverageGaps([])
-      setScopeCreep([])
-      setEstimateTotal(0)
-    }
+    if (ok) decomposition.reset()
     return ok
   }
   async function addDeliverable() {
@@ -197,65 +183,6 @@ export function TicketDetailDialog({
     // list never holds an empty deliverable (the same rule `parseDeliverables` enforces).
     const next = deliverables.map((d, i) => (i === index ? value.trim() : d)).filter(Boolean)
     void writeDeliverables(next)
-  }
-
-  async function runDecompose() {
-    if (!ticket) return
-    setDecomposing(true)
-    setAiError(null)
-    const result = await decomposeEpic({
-      summary: ticket.summary,
-      context: ticket.context ?? '',
-      deliverables: parseDeliverables(ticket.deliverables),
-    })
-    setDecomposing(false)
-    if (!result.ok) {
-      setAiError(
-        result.error === 'unauthenticated'
-          ? 'Your session expired — sign in again.'
-          : 'Could not reach the AI service. Is it running?',
-      )
-      return
-    }
-    setProposals(result.proposals)
-    setCoverageGaps(result.coverage_gaps)
-    setScopeCreep(result.scope_creep)
-    setEstimateTotal(result.estimate_total)
-    setSelected(new Set(result.proposals.map((_, i) => i)))
-  }
-
-  async function acceptSelected() {
-    if (!ticket || !proposals) return
-    setAccepting(true)
-    setAiError(null)
-    const created: Ticket[] = []
-    for (const [i, p] of proposals.entries()) {
-      if (!selected.has(i)) continue
-      const result = await createTicket({
-        projectId: ticket.project_id,
-        summary: p.title,
-        type: p.type,
-        description: p.description,
-        parentEpicId: ticket.id,
-        ...(p.estimate != null ? { storyPoints: p.estimate } : {}),
-      })
-      if (result.ok) created.push(result.ticket)
-    }
-    setAccepting(false)
-    if (created.length > 0) onTicketsCreated?.(created)
-    // Always clear the panel after an attempt: a re-click must never re-create a ticket
-    // that already succeeded (duplicate writes). Successful children are already on the
-    // board via onTicketsCreated; on partial failure the user re-runs decomposition.
-    setProposals(null)
-    setSelected(new Set())
-    setCoverageGaps([])
-    setScopeCreep([])
-    setEstimateTotal(0)
-    if (created.length < selected.size) {
-      setAiError(
-        'Some tickets could not be created. The ones that succeeded were added to the backlog.',
-      )
-    }
   }
 
   async function handleDelete() {
@@ -547,21 +474,22 @@ export function TicketDetailDialog({
 
                 <div className="space-y-2 border-t pt-4">
                   <FieldLabel>AI decomposition</FieldLabel>
-                  {proposals === null ? (
+                  {decomposition.proposals === null ? (
                     <Button
                       type="button"
                       size="sm"
                       variant="secondary"
-                      disabled={decomposing}
-                      onClick={() => void runDecompose()}
+                      disabled={decomposition.decomposing}
+                      onClick={() => void decomposition.runDecompose()}
                     >
-                      {decomposing ? 'Thinking…' : 'Decompose with AI'}
+                      {decomposition.decomposing ? 'Thinking…' : 'Decompose with AI'}
                     </Button>
                   ) : (
                     <div className="space-y-2">
                       {deliverables.length > 0 ? (
                         <p className="text-muted-foreground text-xs">
-                          Covers {Math.max(0, deliverables.length - coverageGaps.length)} of{' '}
+                          Covers{' '}
+                          {Math.max(0, deliverables.length - decomposition.coverageGaps.length)} of{' '}
                           {deliverables.length} deliverables
                         </p>
                       ) : (
@@ -569,39 +497,32 @@ export function TicketDetailDialog({
                           No deliverables to trace against.
                         </p>
                       )}
-                      {estimateTotal > 0 ? (
+                      {decomposition.estimateTotal > 0 ? (
                         <p className="text-muted-foreground text-xs">
-                          Estimated total: {estimateTotal} pts
+                          Estimated total: {decomposition.estimateTotal} pts
                         </p>
                       ) : null}
-                      {coverageGaps.length > 0 ? (
+                      {decomposition.coverageGaps.length > 0 ? (
                         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
                           <p className="font-medium text-amber-700 dark:text-amber-400">
                             Not covered by any proposal
                           </p>
                           <ul className="mt-1 list-disc pl-4">
-                            {coverageGaps.map((g) => (
+                            {decomposition.coverageGaps.map((g) => (
                               <li key={g.index}>{g.deliverable}</li>
                             ))}
                           </ul>
                         </div>
                       ) : null}
                       <ul className="space-y-2">
-                        {proposals.map((p, i) => (
+                        {decomposition.proposals.map((p, i) => (
                           <li key={i} className="flex items-start gap-2">
                             <input
                               type="checkbox"
                               className="mt-1"
-                              checked={selected.has(i)}
+                              checked={decomposition.selected.has(i)}
                               aria-label={`Include ${p.title} (#${i + 1})`}
-                              onChange={(e) =>
-                                setSelected((prev) => {
-                                  const next = new Set(prev)
-                                  if (e.target.checked) next.add(i)
-                                  else next.delete(i)
-                                  return next
-                                })
-                              }
+                              onChange={(e) => decomposition.toggle(i, e.target.checked)}
                             />
                             <div className="text-sm">
                               <p className="font-medium">
@@ -650,32 +571,28 @@ export function TicketDetailDialog({
                         <Button
                           type="button"
                           size="sm"
-                          disabled={accepting || selected.size === 0}
-                          onClick={() => void acceptSelected()}
+                          disabled={decomposition.accepting || decomposition.selected.size === 0}
+                          onClick={() => void decomposition.acceptSelected()}
                         >
-                          {accepting ? 'Adding…' : `Add ${selected.size} to backlog`}
+                          {decomposition.accepting
+                            ? 'Adding…'
+                            : `Add ${decomposition.selected.size} to backlog`}
                         </Button>
                         <Button
                           type="button"
                           size="sm"
                           variant="ghost"
-                          disabled={accepting}
-                          onClick={() => {
-                            setProposals(null)
-                            setSelected(new Set())
-                            setCoverageGaps([])
-                            setScopeCreep([])
-                            setEstimateTotal(0)
-                          }}
+                          disabled={decomposition.accepting}
+                          onClick={decomposition.reset}
                         >
                           Discard
                         </Button>
                       </div>
                     </div>
                   )}
-                  {aiError ? (
+                  {decomposition.aiError ? (
                     <p role="alert" className="text-destructive text-sm">
-                      {aiError}
+                      {decomposition.aiError}
                     </p>
                   ) : null}
                 </div>
