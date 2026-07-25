@@ -109,7 +109,40 @@ describe('useDecomposition', () => {
     expect(result.current.aiError).toBe('Could not reach the AI service. Is it running?')
   })
 
-  it('creates only the selected proposals and clears the panel even on partial failure', async () => {
+  it('toggles a proposal off and creates only the still-selected one', async () => {
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [proposal, { ...proposal, title: 'Story two' }],
+      coverage_gaps: [],
+      scope_creep: [],
+      estimate_total: 6,
+    })
+    createTicket.mockResolvedValue({ ok: true, ticket: { id: 'c1' } as Ticket })
+    const onTicketsCreated = vi.fn()
+
+    const { result } = renderHook(() => useDecomposition({ ticket: epic, onTicketsCreated }))
+    await act(async () => {
+      await result.current.runDecompose()
+    })
+    expect([...result.current.selected]).toEqual([0, 1])
+
+    act(() => {
+      result.current.toggle(1, false)
+    })
+    expect([...result.current.selected]).toEqual([0])
+
+    await act(async () => {
+      await result.current.acceptSelected()
+    })
+
+    // Only the still-selected proposal (index 0) was created; the toggled-off one (index 1)
+    // never reached createTicket.
+    expect(createTicket).toHaveBeenCalledTimes(1)
+    expect(onTicketsCreated).toHaveBeenCalledWith([{ id: 'c1' }])
+    expect(result.current.proposals).toBeNull()
+  })
+
+  it('clears the panel and reports an error when a selected proposal fails to create', async () => {
     decomposeEpic.mockResolvedValue({
       ok: true,
       proposals: [proposal, { ...proposal, title: 'Story two' }],
@@ -136,6 +169,20 @@ describe('useDecomposition', () => {
     expect(result.current.aiError).toBe(
       'Some tickets could not be created. The ones that succeeded were added to the backlog.',
     )
+  })
+
+  it('does nothing for a null ticket: neither decomposeEpic nor createTicket are called', async () => {
+    const { result } = renderHook(() => useDecomposition({ ticket: null }))
+
+    await act(async () => {
+      await result.current.runDecompose()
+    })
+    await act(async () => {
+      await result.current.acceptSelected()
+    })
+
+    expect(decomposeEpic).not.toHaveBeenCalled()
+    expect(createTicket).not.toHaveBeenCalled()
   })
 
   it('passes the epic summary, context and parsed deliverables to the model', async () => {
