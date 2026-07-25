@@ -12,8 +12,8 @@ import {
 } from '@/lib/tickets'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDecomposition } from '@/lib/ticket-decomposition'
+import { useDeliverables } from '@/lib/ticket-deliverables'
 import { parseLabels } from '@/lib/labels'
-import { parseDeliverables } from '@/lib/deliverables'
 import {
   SPRINT_STATUS_LABELS,
   TICKET_TYPES,
@@ -109,13 +109,12 @@ export function TicketDetailDialog({
   const [blockPending, setBlockPending] = useState(false)
   const [unblockPending, setUnblockPending] = useState(false)
 
-  // The draft for the "add a deliverable" input (epic only). Cleared on a successful add.
-  const [deliverableDraft, setDeliverableDraft] = useState('')
-  // True while a deliverables write is in flight — serializes them so two quick add/remove/
-  // edits can't race into a lost update (they are whole-array overwrites of one column).
-  const [deliverablesPending, setDeliverablesPending] = useState(false)
   // The add-deliverable input, so the dialog's Escape handler can tell "Esc in the add
   // field" (clear the draft, stay open) from "Esc anywhere else" (dismiss the dialog).
+  // Stays HERE rather than moving into `useDeliverables`: Radix dismisses the dialog at the
+  // document level in the capture phase, so a child's stopPropagation cannot keep it open —
+  // the escape policy has to live with the dialog. The hook owns the draft state; the dialog
+  // owns the ref.
   const newDeliverableRef = useRef<HTMLInputElement>(null)
 
   // The AI decomposition trace (epic only): the proposal list, its traceability signals,
@@ -129,61 +128,20 @@ export function TicketDetailDialog({
     onUpdated,
   })
 
+  // The epic's deliverables list, its add-input draft, and the serialized add/remove/edit
+  // writes. Declared AFTER `useDecomposition` because it invalidates that trace on every
+  // successful write — the write shifts the `covers` indices the trace was computed against.
+  const deliverables = useDeliverables({
+    ticket,
+    commit,
+    isMounted,
+    onWritten: decomposition.reset,
+  })
+
   if (!ticket) return null
 
-  // The epic's deliverables, narrowed from the `jsonb` column to a clean string list. The
-  // editor always rebuilds the whole array and commits it through `commit`, so a write is
-  // always a well-formed `string[]` and never a half-mutated jsonb value.
-  const deliverables = parseDeliverables(ticket.deliverables)
   // Proposal indices flagged as not tied to any deliverable (R2.1 scope-creep signal).
   const creepIndices = new Set(decomposition.scopeCreep.map((c) => c.proposal_index))
-
-  // Deliverables are an epic-only, order-preserving `string[]`. Each mutation rebuilds the
-  // WHOLE array and commits it — which makes two concurrent mutations conflicting writes to
-  // one column, not the coexisting edits the user intends ("add A", "add B"). Out-of-order
-  // resolution would then persist last-write-wins and silently drop an item. So deliverable
-  // writes are SERIALIZED: `deliverablesPending` blocks a second mutation until the first
-  // reconciles, and Add/remove are disabled meanwhile. Each still rides the shared optimistic
-  // commit, so a failed save reverts just `deliverables`.
-  async function writeDeliverables(next: string[]): Promise<boolean> {
-    if (deliverablesPending) return false
-    setDeliverablesPending(true)
-    const ok = await commit({ deliverables: next })
-    if (!isMounted()) return ok
-    setDeliverablesPending(false)
-    // A successful deliverables write changes the array this decomposition's `covers`
-    // indices and `coverageGaps`/`scopeCreep` positions were computed against — a "delivers"
-    // chip could then name the wrong deliverable, and the coverage count could go negative.
-    // Drop the now-stale decomposition rather than let it lie; the user re-runs to refresh.
-    // A FAILED write rolls the optimistic change back (indices stay valid), so only reset
-    // on ok.
-    //
-    // Scope is deliberate: ONLY deliverable writes invalidate. Editing the epic's context or
-    // summary (which also feed the AI prompt) goes through commit() directly and does NOT
-    // reset the trace — those edits don't shift `covers` indices, so every chip and the count
-    // stay index-correct. The proposals are advisory and one click re-runs them, so that mild
-    // semantic staleness is acceptable; nuking them on a title/context tweak would be more
-    // disruptive than the staleness it prevents.
-    if (ok) decomposition.reset()
-    return ok
-  }
-  async function addDeliverable() {
-    const trimmed = deliverableDraft.trim()
-    if (!trimmed) return
-    const ok = await writeDeliverables([...deliverables, trimmed])
-    // Clear the input only once the add persisted — a failed save keeps the typed text so
-    // the user can retry without re-entering it.
-    if (ok && isMounted()) setDeliverableDraft('')
-  }
-  function removeDeliverable(index: number) {
-    void writeDeliverables(deliverables.filter((_, i) => i !== index))
-  }
-  function editDeliverable(index: number, value: string) {
-    // Editing an item to blank removes it — `filter(Boolean)` after the replace, so the
-    // list never holds an empty deliverable (the same rule `parseDeliverables` enforces).
-    const next = deliverables.map((d, i) => (i === index ? value.trim() : d)).filter(Boolean)
-    void writeDeliverables(next)
-  }
 
   async function handleDelete() {
     const id = ticket!.id
@@ -269,9 +227,9 @@ export function TicketDetailDialog({
           // Esc in the add-deliverable input clears its draft rather than dismissing the
           // whole dialog — the same "Esc cancels the field, not the modal" contract every
           // other editable field has.
-          if (document.activeElement === newDeliverableRef.current && deliverableDraft) {
+          if (document.activeElement === newDeliverableRef.current && deliverables.draft) {
             e.preventDefault()
-            setDeliverableDraft('')
+            deliverables.setDraft('')
           }
         }}
       >
@@ -405,9 +363,9 @@ export function TicketDetailDialog({
 
                 <div className="flex flex-col gap-1.5">
                   <FieldLabel>Deliverables</FieldLabel>
-                  {deliverables.length > 0 ? (
+                  {deliverables.items.length > 0 ? (
                     <ul className="flex flex-col gap-1">
-                      {deliverables.map((d, i) => (
+                      {deliverables.items.map((d, i) => (
                         // Key by index+value, not index alone: if a structural change (a
                         // failed remove's rollback, or an edit-to-blank) shifts a row's value
                         // while another row is mid-edit, the key changes and React remounts
@@ -422,15 +380,15 @@ export function TicketDetailDialog({
                             <EditableText
                               value={d}
                               ariaLabel={`deliverable ${i + 1}`}
-                              onCommit={(v) => editDeliverable(i, v)}
+                              onCommit={(v) => deliverables.edit(i, v)}
                               onEditingChange={handleEditingChange}
                             />
                           </div>
                           <button
                             type="button"
                             aria-label={`Remove deliverable ${i + 1}`}
-                            onClick={() => removeDeliverable(i)}
-                            disabled={deliverablesPending}
+                            onClick={() => deliverables.remove(i)}
+                            disabled={deliverables.pending}
                             className="text-muted-foreground hover:bg-muted hover:text-destructive focus-visible:bg-muted mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-md outline-none disabled:pointer-events-none disabled:opacity-50"
                           >
                             <X className="size-3.5" />
@@ -445,14 +403,14 @@ export function TicketDetailDialog({
                     <Input
                       ref={newDeliverableRef}
                       aria-label="new deliverable"
-                      value={deliverableDraft}
+                      value={deliverables.draft}
                       placeholder="Add a deliverable…"
-                      disabled={deliverablesPending}
-                      onChange={(e) => setDeliverableDraft(e.target.value)}
+                      disabled={deliverables.pending}
+                      onChange={(e) => deliverables.setDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault()
-                          void addDeliverable()
+                          void deliverables.add()
                         }
                         // Escape is handled by the dialog's onEscapeKeyDown below (Radix
                         // dismisses at the document level, so a local stopPropagation can't
@@ -464,8 +422,8 @@ export function TicketDetailDialog({
                       size="sm"
                       variant="outline"
                       aria-label="Add deliverable"
-                      onClick={() => void addDeliverable()}
-                      disabled={!deliverableDraft.trim() || deliverablesPending}
+                      onClick={() => void deliverables.add()}
+                      disabled={!deliverables.draft.trim() || deliverables.pending}
                     >
                       Add
                     </Button>
@@ -486,11 +444,14 @@ export function TicketDetailDialog({
                     </Button>
                   ) : (
                     <div className="space-y-2">
-                      {deliverables.length > 0 ? (
+                      {deliverables.items.length > 0 ? (
                         <p className="text-muted-foreground text-xs">
                           Covers{' '}
-                          {Math.max(0, deliverables.length - decomposition.coverageGaps.length)} of{' '}
-                          {deliverables.length} deliverables
+                          {Math.max(
+                            0,
+                            deliverables.items.length - decomposition.coverageGaps.length,
+                          )}{' '}
+                          of {deliverables.items.length} deliverables
                         </p>
                       ) : (
                         <p className="text-muted-foreground text-xs">
@@ -552,13 +513,13 @@ export function TicketDetailDialog({
                                   </span>
                                 ) : (
                                   p.covers
-                                    .filter((idx) => deliverables[idx] !== undefined)
+                                    .filter((idx) => deliverables.items[idx] !== undefined)
                                     .map((idx) => (
                                       <span
                                         key={idx}
                                         className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px]"
                                       >
-                                        {deliverables[idx]}
+                                        {deliverables.items[idx]}
                                       </span>
                                     ))
                                 )}
