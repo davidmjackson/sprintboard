@@ -52,7 +52,7 @@ export function BoardTab() {
   const [blockedOnly, setBlockedOnly] = useState(false)
 
   // Optimistic status change with rollback — the board's first write. Mirrors
-  // `TicketDetailDialog.commit()`: apply optimistically, persist, then reconcile the
+  // `commit()` in `src/lib/ticket-commit.ts`: apply optimistically, persist, then reconcile the
   // DB-refreshed row on success or revert ONLY this write's field (status) on failure —
   // merged onto whatever is latest NOW (from `ticketsRef`), so a concurrent edit to a
   // DIFFERENT field of the same ticket is preserved, not clobbered.
