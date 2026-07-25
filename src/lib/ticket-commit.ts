@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 
 import { updateTicket } from './tickets'
 import type { Ticket, TicketUpdate } from './domain'
@@ -36,6 +36,110 @@ export function useIsMounted(): () => boolean {
   return () => mountedRef.current
 }
 
+export type TicketError = {
+  error: string | null
+  setError: (ticketId: string, message: string) => void
+  clearError: () => void
+}
+
+/** The save-failure message for ONE ticket. A separate concern from the write itself:
+ *  the write decides *whether* there is an error, this decides *whose* it is. */
+export function useTicketError(ticket: Ticket | null): TicketError {
+  // Keyed to the ticket id so switching tickets resets any stale error without a
+  // synchronous "reset on prop change" effect (the project's react-hooks lint rule
+  // forbids deriving state that way).
+  const [errorFor, setErrorFor] = useState<{ ticketId: string; message: string } | null>(null)
+
+  const error = ticket && errorFor?.ticketId === ticket.id ? errorFor.message : null
+
+  function setError(ticketId: string, message: string) {
+    setErrorFor({ ticketId, message })
+  }
+  function clearError() {
+    setErrorFor(null)
+  }
+
+  return { error, setError, clearError }
+}
+
+/** `ticketRef` is the REF, not its value: `commitTicket` must read `.current` at
+ *  continuation time (after the await), never at call time. */
+type CommitTicketArgs = {
+  patch: TicketUpdate
+  ticketRef: RefObject<Ticket | null>
+  isMounted: () => boolean
+  onUpdated: (ticket: Ticket) => void
+  setError: (ticketId: string, message: string) => void
+  clearError: () => void
+}
+
+async function commitTicket({
+  patch,
+  ticketRef,
+  isMounted,
+  onUpdated,
+  setError,
+  clearError,
+}: CommitTicketArgs): Promise<boolean> {
+  const current = ticketRef.current!
+  const keys = Object.keys(patch) as (keyof TicketUpdate)[]
+  const revert = pickFields(current, keys) // pre-change values of ONLY the changed keys
+
+  onUpdated({ ...current, ...patch } as Ticket) // optimistic — merge onto the latest ticket
+  const result = await updateTicket(current.id, patch)
+  // This instance is gone (close→reopen remounted a fresh one that now owns the ticket):
+  // its optimistic value was already applied to parent state before the await and carried
+  // forward by the fresh instance, so reconciling here would only clobber the live
+  // instance's newer edits. Bail (Ultracode Critical — the mountedRef guard).
+  if (!isMounted()) return false
+  // `ticketRef.current` may also have moved on WITHIN this live instance — to a DIFFERENT
+  // ticket (the dialog switched tickets while this save was in flight) or to `null`.
+  // Merging onto it unguarded would emit a wrong-identity object (or, for null, an id-less
+  // `{}`). Fall back to the commit-time `current` — always non-null, always
+  // `id === current.id` — whenever the live ref no longer matches this save's ticket.
+  const base = ticketRef.current?.id === current.id ? ticketRef.current : current
+  if (!result.ok) {
+    // Revert only the fields this commit changed, merged onto whatever is latest NOW —
+    // preserves any other field a concurrent commit has since applied.
+    onUpdated({ ...base, ...revert } as Ticket)
+    setError(current.id, 'Could not save your change. Please try again.')
+    return false
+  } else {
+    // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
+    // ticket — never swap in the whole `result.ticket`, which would clobber a
+    // concurrent in-flight optimistic edit to a different field.
+    // NOTE: two in-flight saves to the SAME field resolving out of order can still
+    // reconcile/revert in the wrong order (last-resolved wins, not last-committed) —
+    // a known, deliberately deferred limitation.
+    const reconciled = pickFields(result.ticket, keys)
+    onUpdated({ ...base, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
+    clearError()
+    return true
+  }
+}
+
+type ApplyServerRowArgs = {
+  id: string
+  next: Ticket
+  keys: readonly (keyof Ticket)[]
+  ticketRef: RefObject<Ticket | null>
+  onUpdated: (ticket: Ticket) => void
+}
+
+// Block/unblock are NOT optimistic: the `sync_blocked_fields` trigger stamps/clears
+// `blocked_since` server-side, so we apply the row the DB returns rather than guess it.
+// Reconcile is field-scoped (only the three blocked fields + the refreshed updated_at)
+// onto whatever is latest NOW — the same discipline as `commit()`, so a concurrent
+// in-flight optimistic edit to a different field is never clobbered.
+function applyServerRowOnto({ id, next, keys, ticketRef, onUpdated }: ApplyServerRowArgs) {
+  const base = ticketRef.current?.id === id ? ticketRef.current : next
+  onUpdated({
+    ...base,
+    ...pickFields(next, keys),
+    updated_at: next.updated_at,
+  } as Ticket)
+}
+
 export type TicketCommit = {
   commit: (patch: TicketUpdate) => Promise<boolean>
   error: string | null
@@ -45,17 +149,13 @@ export type TicketCommit = {
   isMounted: () => boolean
 }
 
-export function useTicketCommit({
-  ticket,
-  onUpdated,
-}: {
+type UseTicketCommitArgs = {
   ticket: Ticket | null
   onUpdated: (ticket: Ticket) => void
-}): TicketCommit {
-  // Keyed to the ticket id so switching tickets resets any stale error without a
-  // synchronous "reset on prop change" effect (the project's react-hooks lint rule
-  // forbids deriving state that way).
-  const [errorFor, setErrorFor] = useState<{ ticketId: string; message: string } | null>(null)
+}
+
+export function useTicketCommit({ ticket, onUpdated }: UseTicketCommitArgs): TicketCommit {
+  const { error, setError, clearError } = useTicketError(ticket)
 
   // The freshest ticket, readable from inside an in-flight async `commit()` closure.
   // Without this, a rollback/reconcile that fires after a concurrent edit to a
@@ -78,65 +178,11 @@ export function useTicketCommit({
   // mount→unmount→mount.
   const isMounted = useIsMounted()
 
-  const error = ticket && errorFor?.ticketId === ticket.id ? errorFor.message : null
-
-  function setError(ticketId: string, message: string) {
-    setErrorFor({ ticketId, message })
+  function commit(patch: TicketUpdate) {
+    return commitTicket({ patch, ticketRef, isMounted, onUpdated, setError, clearError })
   }
-  function clearError() {
-    setErrorFor(null)
-  }
-
-  async function commit(patch: TicketUpdate): Promise<boolean> {
-    const current = ticketRef.current!
-    const keys = Object.keys(patch) as (keyof TicketUpdate)[]
-    const revert = pickFields(current, keys) // pre-change values of ONLY the changed keys
-
-    onUpdated({ ...current, ...patch } as Ticket) // optimistic — merge onto the latest ticket
-    const result = await updateTicket(current.id, patch)
-    // This instance is gone (close→reopen remounted a fresh one that now owns the ticket):
-    // its optimistic value was already applied to parent state before the await and carried
-    // forward by the fresh instance, so reconciling here would only clobber the live
-    // instance's newer edits. Bail (Ultracode Critical — the mountedRef guard).
-    if (!isMounted()) return false
-    // `ticketRef.current` may also have moved on WITHIN this live instance — to a DIFFERENT
-    // ticket (the dialog switched tickets while this save was in flight) or to `null`.
-    // Merging onto it unguarded would emit a wrong-identity object (or, for null, an id-less
-    // `{}`). Fall back to the commit-time `current` — always non-null, always
-    // `id === current.id` — whenever the live ref no longer matches this save's ticket.
-    const base = ticketRef.current?.id === current.id ? ticketRef.current : current
-    if (!result.ok) {
-      // Revert only the fields this commit changed, merged onto whatever is latest NOW —
-      // preserves any other field a concurrent commit has since applied.
-      onUpdated({ ...base, ...revert } as Ticket)
-      setError(current.id, 'Could not save your change. Please try again.')
-      return false
-    } else {
-      // Reconcile only the changed fields (+ the DB-refreshed updated_at) onto the latest
-      // ticket — never swap in the whole `result.ticket`, which would clobber a
-      // concurrent in-flight optimistic edit to a different field.
-      // NOTE: two in-flight saves to the SAME field resolving out of order can still
-      // reconcile/revert in the wrong order (last-resolved wins, not last-committed) —
-      // a known, deliberately deferred limitation.
-      const reconciled = pickFields(result.ticket, keys)
-      onUpdated({ ...base, ...reconciled, updated_at: result.ticket.updated_at } as Ticket)
-      clearError()
-      return true
-    }
-  }
-
-  // Block/unblock are NOT optimistic: the `sync_blocked_fields` trigger stamps/clears
-  // `blocked_since` server-side, so we apply the row the DB returns rather than guess it.
-  // Reconcile is field-scoped (only the three blocked fields + the refreshed updated_at)
-  // onto whatever is latest NOW — the same discipline as `commit()`, so a concurrent
-  // in-flight optimistic edit to a different field is never clobbered.
   function applyServerRow(id: string, next: Ticket, keys: readonly (keyof Ticket)[]) {
-    const base = ticketRef.current?.id === id ? ticketRef.current : next
-    onUpdated({
-      ...base,
-      ...pickFields(next, keys),
-      updated_at: next.updated_at,
-    } as Ticket)
+    applyServerRowOnto({ id, next, keys, ticketRef, onUpdated })
   }
 
   return { commit, error, setError, clearError, applyServerRow, isMounted }
