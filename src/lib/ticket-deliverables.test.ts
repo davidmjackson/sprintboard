@@ -71,6 +71,7 @@ describe('useDeliverables', () => {
     expect(commit).toHaveBeenCalledWith({ deliverables: ['A', 'B', 'C'] })
     expect(result.current.draft).toBe('C')
     expect(onWritten).not.toHaveBeenCalled()
+    expect(result.current.pending).toBe(false)
   })
 
   it('ignores a blank or whitespace-only draft', async () => {
@@ -106,6 +107,12 @@ describe('useDeliverables', () => {
       resolve(true)
     })
     expect(result.current.pending).toBe(false)
+
+    // Positive control: prove the guard actually re-opens rather than closing permanently.
+    await act(async () => {
+      result.current.remove(1)
+    })
+    expect(commit).toHaveBeenCalledTimes(2)
   })
 
   it('removes an item by index', async () => {
