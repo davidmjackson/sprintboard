@@ -5,6 +5,7 @@ import { useDecomposition } from './ticket-decomposition'
 import * as ai from './ai'
 import type { DecomposeProposal } from './ai'
 import * as tickets from './tickets'
+import type { CreateTicketResult } from './tickets'
 import type { Ticket } from './domain'
 
 vi.mock('./ai', () => ({ decomposeEpic: vi.fn() }))
@@ -169,6 +170,41 @@ describe('useDecomposition', () => {
     expect(result.current.aiError).toBe(
       'Some tickets could not be created. The ones that succeeded were added to the backlog.',
     )
+  })
+
+  // `accepting` is the ONLY thing standing between a double-click on Accept and duplicate
+  // child tickets, so it needs its own assertion: deleting `setAccepting(true)` from
+  // `acceptProposals` leaves every other test in this file green. Same defect shape the
+  // block flow's `setPending(true)` had. A deferred `createTicket` holds the loop open so
+  // the mid-flight value is observable.
+  it('sets accepting for the duration of the accept, then clears it', async () => {
+    decomposeEpic.mockResolvedValue({
+      ok: true,
+      proposals: [proposal],
+      coverage_gaps: [],
+      scope_creep: [],
+      estimate_total: 3,
+    })
+    const { result } = renderHook(() => useDecomposition({ ticket: epic }))
+    await act(async () => {
+      await result.current.runDecompose()
+    })
+    expect(result.current.accepting).toBe(false)
+
+    let resolveCreate: (value: CreateTicketResult) => void = () => {}
+    createTicket.mockReturnValue(new Promise<CreateTicketResult>((r) => (resolveCreate = r)))
+
+    let accepted: Promise<void> = Promise.resolve()
+    act(() => {
+      accepted = result.current.acceptSelected()
+    })
+    expect(result.current.accepting).toBe(true) // in flight
+
+    await act(async () => {
+      resolveCreate({ ok: true, ticket: { id: 'c1' } as Ticket })
+      await accepted
+    })
+    expect(result.current.accepting).toBe(false) // settled
   })
 
   it('does nothing for a null ticket: neither decomposeEpic nor createTicket are called', async () => {

@@ -67,19 +67,41 @@ describe('useTicketCommit', () => {
   })
 
   it('reverts only the fields the failed commit changed, and surfaces an error', async () => {
-    const ticket = makeTicket()
     const onUpdated = vi.fn()
-    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    let resolve: (value: UpdateTicketResult) => void = () => {}
+    updateTicket.mockReturnValue(new Promise((r) => (resolve = r)))
 
-    const { result } = renderHook(() => useTicketCommit({ ticket, onUpdated }))
-    await act(async () => {
-      await result.current.commit({ summary: 'New summary' })
+    const { result, rerender } = renderHook(
+      (props: { ticket: Ticket }) => useTicketCommit({ ticket: props.ticket, onUpdated }),
+      { initialProps: { ticket: makeTicket() } },
+    )
+
+    let committed: Promise<boolean> = Promise.resolve(false)
+    act(() => {
+      committed = result.current.commit({ summary: 'New summary' })
     })
 
-    const reverted = nthTicket(onUpdated, 1)
-    expect(reverted.summary).toBe('Original summary')
-    expect(reverted.description).toBe('Original description')
+    // Feed the optimistic value back in, as the parent (ProjectShell) does: `onUpdated`
+    // lifts it into parent state, which re-renders us with it. Without this the hook's
+    // `ticketRef` still holds the PRE-change ticket at failure time, `base` already carries
+    // `summary: 'Original summary'`, and `{ ...base, ...revert }` is byte-identical to
+    // `{ ...base }` — so the revert would be unobservable and this test could not fail.
+    // The concurrent `description` edit is here for the same reason: it is what distinguishes
+    // a FIELD-SCOPED revert from a whole-ticket one, which would clobber it.
+    rerender({
+      ticket: makeTicket({ summary: 'New summary', description: 'Concurrent description' }),
+    })
+
+    await act(async () => {
+      resolve({ ok: false, error: 'unknown' })
+      await committed
+    })
+
+    const reverted = nthTicket(onUpdated, -1)
+    expect(reverted.summary).toBe('Original summary') // the failed write's field, rolled back
+    expect(reverted.description).toBe('Concurrent description') // untouched by this commit
     expect(result.current.error).toBe('Could not save your change. Please try again.')
+    await expect(committed).resolves.toBe(false)
   })
 
   it('bails without reconciling once the instance has unmounted (Ultracode Critical)', async () => {
