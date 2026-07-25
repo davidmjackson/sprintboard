@@ -11,6 +11,7 @@ import {
 } from '@/lib/domain'
 import type { SprintsPhase } from './ProjectShell'
 import { EditableText, FieldLabel, selectClass } from './EditableText'
+import { TicketReferenceSelect } from './TicketReferenceSelect'
 
 /** Sidebar: a quiet "Details" panel, the Jira right rail */
 export function TicketDetailSidebar({
@@ -68,32 +69,22 @@ export function TicketDetailSidebar({
           under another epic in Phase 1, so the picker is hidden for epics. The options
           are the project's epics; the composite fk `tickets_epic_fk` keeps the parent
           in the same project, so cross-project references are rejected at the DB. */}
+      {/* If the current parent isn't in the epics list (it was deleted or
+          demoted from epic, and the list is refetch-free), still render its
+          value so the <select> stays controlled and the link isn't silently
+          shown as "No epic" — the user can see it exists and change or clear it. */}
       {ticket.type !== 'epic' ? (
-        <label className="flex flex-col gap-1">
-          <FieldLabel>Parent epic</FieldLabel>
-          <select
-            aria-label="parent epic"
-            className={selectClass}
-            value={ticket.parent_epic_id ?? ''}
-            onChange={(e) => commit({ parent_epic_id: e.target.value || null })}
-          >
-            <option value="">No epic</option>
-            {/* If the current parent isn't in the epics list (it was deleted or
-                demoted from epic, and the list is refetch-free), still render its
-                value so the <select> stays controlled and the link isn't silently
-                shown as "No epic" — the user can see it exists and change or clear it. */}
-            {ticket.parent_epic_id && !epics.some((e) => e.id === ticket.parent_epic_id) ? (
-              <option value={ticket.parent_epic_id}>Current parent (unavailable)</option>
-            ) : null}
-            {epics
-              .filter((e) => e.id !== ticket.id)
-              .map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.key} · {e.summary}
-                </option>
-              ))}
-          </select>
-        </label>
+        <TicketReferenceSelect
+          label="Parent epic"
+          ariaLabel="parent epic"
+          value={ticket.parent_epic_id}
+          noneLabel="No epic"
+          unavailableLabel="Current parent (unavailable)"
+          options={epics
+            .filter((e) => e.id !== ticket.id)
+            .map((e) => ({ id: e.id, label: `${e.key} · ${e.summary}` }))}
+          onChange={(next) => commit({ parent_epic_id: next })}
+        />
       ) : null}
 
       {/* Sprint membership (S6.2). `''` is the backlog: `backlog.ts` defines the backlog
@@ -109,29 +100,22 @@ export function TicketDetailSidebar({
           loading AND after a failed read, so an empty list never means "no sprints". An
           enabled picker would then offer only "Backlog", read as "this ticket is in no
           sprint", and one click would quietly unsprint it. */}
-      <label className="flex flex-col gap-1">
-        <FieldLabel>Sprint</FieldLabel>
-        <select
-          aria-label="sprint"
-          className={selectClass}
-          disabled={sprintsPhase !== 'loaded'}
-          value={ticket.sprint_id ?? ''}
-          onChange={(e) => commit({ sprint_id: e.target.value || null })}
-        >
-          <option value="">Backlog</option>
-          {/* The current sprint isn't in the list (deleted, or the list hasn't loaded):
-              still render its value so the <select> stays controlled and the membership
-              isn't silently shown as "Backlog". Mirrors the parent-epic picker's guard. */}
-          {ticket.sprint_id && !sprints.some((s) => s.id === ticket.sprint_id) ? (
-            <option value={ticket.sprint_id}>Current sprint (unavailable)</option>
-          ) : null}
-          {sprints.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} · {SPRINT_STATUS_LABELS[s.status]}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* The current sprint isn't in the list (deleted, or the list hasn't loaded):
+          still render its value so the <select> stays controlled and the membership
+          isn't silently shown as "Backlog". Mirrors the parent-epic picker's guard. */}
+      <TicketReferenceSelect
+        label="Sprint"
+        ariaLabel="sprint"
+        value={ticket.sprint_id}
+        noneLabel="Backlog"
+        unavailableLabel="Current sprint (unavailable)"
+        options={sprints.map((s) => ({
+          id: s.id,
+          label: `${s.name} · ${SPRINT_STATUS_LABELS[s.status]}`,
+        }))}
+        disabled={sprintsPhase !== 'loaded'}
+        onChange={(next) => commit({ sprint_id: next })}
+      />
 
       <label className="flex flex-col gap-1">
         <FieldLabel>Assignee</FieldLabel>
