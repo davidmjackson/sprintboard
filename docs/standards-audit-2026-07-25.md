@@ -60,6 +60,20 @@ is the correct outcome — but the blind catch also swallows programming errors 
 that function, and `raise ... from` would keep the cause. Worth a look on their
 own merits, not as a formatting chore.
 
+> **Separate finding: the Python tooling is unpinned.**
+> `api/requirements-dev.txt` asks for `ruff>=0.6`, so CI resolves whatever is
+> newest. On 2026-07-25 it resolved **0.16.0**, whose expanded default rule set
+> flags 6 errors (2×RUF012, 2×B017, I001, BLE001) in `api/` — turning the `api`
+> check red **on unchanged code**. The local venv is on 0.15.22 and passes, so
+> the drift is invisible locally. It last passed on `4e5c701` (2026-07-21) with
+> an older ruff.
+>
+> This is not caused by the standard, and not by this change — the diff contains
+> zero Python files. Fix it by pinning (`ruff==0.15.22`) in its own commit, then
+> take the findings deliberately. A floating linter is the opposite of what a
+> standard is for: the same code must give the same verdict tomorrow. `api` is a
+> non-required check, so this does not block a merge.
+
 ## Duplication (jscpd, whole repo)
 
 **6.07% overall** (867 / 14,288 lines, 78 clones) against a 3% threshold — but
