@@ -200,4 +200,36 @@ describe('useTicketCommit', () => {
     expect(applied.updated_at).toBe('T2')
     expect(applied.summary).toBe('Original summary')
   })
+
+  it('applyServerRow merges onto the server row, not the live ref, when the live ticket has moved to another ticket', () => {
+    const onUpdated = vi.fn()
+    const { result, rerender } = renderHook(
+      (props: { ticket: Ticket }) => useTicketCommit({ ticket: props.ticket, onUpdated }),
+      { initialProps: { ticket: makeTicket({ id: 't1' }) } },
+    )
+    // The dialog has since switched to a DIFFERENT ticket; the live ref now points at t2.
+    rerender({ ticket: makeTicket({ id: 't2', summary: 'Other ticket summary' }) })
+
+    const serverRow = makeTicket({
+      id: 't1',
+      is_blocked: true,
+      blocked_reason: 'waiting',
+      blocked_since: 'S',
+      summary: 'Server summary',
+      updated_at: 'T2',
+    })
+    act(() => {
+      result.current.applyServerRow('t1', serverRow, [
+        'is_blocked',
+        'blocked_reason',
+        'blocked_since',
+      ])
+    })
+
+    // Merging onto the live ref (t2) would emit a wrong-identity object carrying t2's id
+    // and its non-reconciled fields; it must fall back to the server row (t1) instead.
+    const applied = nthTicket(onUpdated, 0)
+    expect(applied.id).toBe('t1')
+    expect(applied.summary).toBe('Server summary')
+  })
 })
