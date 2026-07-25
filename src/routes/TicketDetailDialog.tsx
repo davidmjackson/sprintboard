@@ -7,6 +7,8 @@ import {
   createTicket,
   deleteTicket,
   parseBlockReason,
+  parseStoryPoints,
+  parseSummary,
   unblockTicket,
   updateTicket,
 } from '@/lib/tickets'
@@ -194,30 +196,6 @@ function pickFields<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T
   const out = {} as Pick<T, K>
   for (const key of keys) out[key] = source[key]
   return out
-}
-
-/** Same rule as `CreateTicketDialog`'s zod schema (`^\d{0,3}$`, "Whole numbers only") —
- *  the edit path has no `<form>`/zod, so it re-validates the same shape by hand. Empty
- *  means "no estimate" (→ null); a non-negative whole number of up to 3 digits (→
- *  Number); anything else (negative, decimal, non-numeric) is rejected. */
-function parseStoryPoints(raw: string): { ok: true; value: number | null } | { ok: false } {
-  const trimmed = raw.trim()
-  if (trimmed === '') return { ok: true, value: null }
-  if (!/^\d{0,3}$/.test(trimmed)) return { ok: false }
-  return { ok: true, value: Number(trimmed) }
-}
-
-/** Same rule as `CreateTicketDialog`'s zod schema for `summary`
- *  (`.trim().min(1).max(200)`) — the edit path has no `<form>`/zod, so it re-validates
- *  the same shape by hand. `summary text not null` accepts `''`, so without this a
- *  cleared or whitespace-only summary would persist and produce an untitled row.
- *  Returns the TRIMMED value on success. */
-function parseSummary(raw: string): { ok: true; value: string } | { ok: false; message: string } {
-  const trimmed = raw.trim()
-  if (trimmed.length < 1) return { ok: false, message: 'Summary is required' }
-  if (trimmed.length > 200)
-    return { ok: false, message: 'Keep the summary to 200 characters or fewer' }
-  return { ok: true, value: trimmed }
 }
 
 export function TicketDetailDialog({

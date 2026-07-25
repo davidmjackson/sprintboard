@@ -6,6 +6,8 @@ import {
   deleteTicket,
   listTickets,
   parseBlockReason,
+  parseStoryPoints,
+  parseSummary,
   unblockTicket,
 } from './tickets'
 import { supabase } from './supabase'
@@ -225,5 +227,46 @@ describe('unblockTicket', () => {
   it('maps a supabase error to unknown', async () => {
     single.mockResolvedValue({ data: null, error: { code: '42501', message: 'x' } })
     expect(await unblockTicket('t1')).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+describe('parseStoryPoints', () => {
+  it('reads an empty or whitespace value as "no estimate"', () => {
+    expect(parseStoryPoints('')).toEqual({ ok: true, value: null })
+    expect(parseStoryPoints('   ')).toEqual({ ok: true, value: null })
+  })
+
+  it('accepts a non-negative whole number of up to three digits', () => {
+    expect(parseStoryPoints('0')).toEqual({ ok: true, value: 0 })
+    expect(parseStoryPoints('999')).toEqual({ ok: true, value: 999 })
+  })
+
+  it('rejects negatives, decimals, non-numerics and more than three digits', () => {
+    expect(parseStoryPoints('-1')).toEqual({ ok: false })
+    expect(parseStoryPoints('1.5')).toEqual({ ok: false })
+    expect(parseStoryPoints('abc')).toEqual({ ok: false })
+    expect(parseStoryPoints('1000')).toEqual({ ok: false })
+  })
+})
+
+describe('parseSummary', () => {
+  it('trims and returns the trimmed value', () => {
+    expect(parseSummary('  Fix the thing  ')).toEqual({ ok: true, value: 'Fix the thing' })
+  })
+
+  it('rejects an empty or whitespace-only summary, which the column would accept', () => {
+    expect(parseSummary('')).toEqual({ ok: false, message: 'Summary is required' })
+    expect(parseSummary('   ')).toEqual({ ok: false, message: 'Summary is required' })
+  })
+
+  it('rejects a summary over 200 characters', () => {
+    expect(parseSummary('x'.repeat(201))).toEqual({
+      ok: false,
+      message: 'Keep the summary to 200 characters or fewer',
+    })
+  })
+
+  it('accepts exactly 200 characters', () => {
+    expect(parseSummary('x'.repeat(200))).toEqual({ ok: true, value: 'x'.repeat(200) })
   })
 })
