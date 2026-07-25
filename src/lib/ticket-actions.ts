@@ -26,7 +26,7 @@ type ApplyServerRow = (id: string, next: Ticket, keys: readonly (keyof Ticket)[]
  *  and the hook body stays a set of thin wrappers. */
 type BlockDialogSetters = {
   setBlocking: (value: boolean) => void
-  setReason: (value: string) => void
+  setReasonValue: (value: string) => void
   setBlockError: (value: string | null) => void
   setPending: (value: boolean) => void
 }
@@ -43,7 +43,7 @@ type SubmitBlockArgs = {
 }
 
 async function submitBlock({ ticket, reason, set, applyServerRow, isMounted }: SubmitBlockArgs) {
-  const { setBlocking, setReason, setBlockError, setPending } = set
+  const { setBlocking, setReasonValue, setBlockError, setPending } = set
   if (!ticket) return
   const id = ticket.id
   const parsed = parseBlockReason(reason)
@@ -60,7 +60,7 @@ async function submitBlock({ ticket, reason, set, applyServerRow, isMounted }: S
   if (result.ok) {
     applyServerRow(id, result.ticket, BLOCKED_FIELDS)
     setBlocking(false)
-    setReason('')
+    setReasonValue('')
     setBlockError(null)
   } else {
     // A failed block leaves the dialog OPEN so the reason survives the retry.
@@ -97,15 +97,18 @@ type UseBlockFlowArgs = {
  *  own state after its own await; `useBlockFlow` composes them back into one contract. */
 type BlockDialogFlow = Omit<BlockFlow, 'unblockPending' | 'unblock'>
 
-function useBlockDialog({ ticket, applyServerRow }: UseBlockFlowArgs): BlockDialogFlow {
-  // The reason dialog's open state, its draft reason, its validation error and an in-flight
-  // flag.
+function useBlockDialog({
+  ticket,
+  applyServerRow,
+}: Pick<UseBlockFlowArgs, 'ticket' | 'applyServerRow'>): BlockDialogFlow {
+  // Block flow: the reason dialog's open state, its draft reason, and an in-flight flag.
+  // (That undercounts by one: it also tracks its own validation-error string.)
   const [blocking, setBlocking] = useState(false)
   const [reason, setReasonValue] = useState('')
   const [error, setBlockError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const isMounted = useIsMounted()
-  const set = { setBlocking, setReason: setReasonValue, setBlockError, setPending }
+  const set = { setBlocking, setReasonValue, setBlockError, setPending }
 
   function open() {
     setReasonValue('')

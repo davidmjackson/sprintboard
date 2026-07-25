@@ -227,6 +227,7 @@ describe('useBlockFlow', () => {
     act(() => {
       void result.current.submit()
     })
+    expect(result.current.pending).toBe(true)
     unmount()
     await act(async () => {
       resolveBlock({ ok: true, ticket: serverRow })
@@ -239,7 +240,7 @@ describe('useBlockFlow', () => {
   it('guards a duplicate unblock while the first is in flight', async () => {
     let resolveUnblock: (value: UnblockTicketResult) => void = () => {}
     unblockTicket.mockReturnValue(new Promise<UnblockTicketResult>((r) => (resolveUnblock = r)))
-    const { result, clearError } = setupBlock()
+    const { result, applyServerRow, clearError } = setupBlock()
 
     act(() => {
       void result.current.unblock()
@@ -254,6 +255,11 @@ describe('useBlockFlow', () => {
       resolveUnblock({ ok: true, ticket: serverRow })
     })
     expect(result.current.unblockPending).toBe(false)
+    expect(applyServerRow).toHaveBeenCalledWith('t1', serverRow, [
+      'is_blocked',
+      'blocked_reason',
+      'blocked_since',
+    ])
     expect(clearError).toHaveBeenCalled()
 
     // Positive control: the guard re-opens rather than closing the flow permanently.
@@ -303,7 +309,7 @@ describe('useBlockFlow', () => {
   // The id is captured BEFORE the await, so the error lands on the ticket the unblock
   // belongs to. Reading it from the live ticket at continuation time would report against
   // the wrong ticket — or crash on the null the dialog can legitimately hold by then.
-  it('reports the failure against the ticket the unblock started on, not the one now shown', async () => {
+  it('survives the ticket going null mid-flight', async () => {
     let resolveUnblock: (value: UnblockTicketResult) => void = () => {}
     unblockTicket.mockReturnValue(new Promise<UnblockTicketResult>((r) => (resolveUnblock = r)))
     const { result, rerender, setError } = setupBlock()
