@@ -1,15 +1,8 @@
 import { useRef, useState } from 'react'
 import { Ban, CircleCheck, MoreHorizontal, Trash2, X } from 'lucide-react'
 
-import {
-  BLOCK_REASON_MAX,
-  blockTicket,
-  deleteTicket,
-  parseBlockReason,
-  parseStoryPoints,
-  parseSummary,
-  unblockTicket,
-} from '@/lib/tickets'
+import { BLOCK_REASON_MAX, parseBlockReason, parseStoryPoints, parseSummary } from '@/lib/tickets'
+import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDecomposition } from '@/lib/ticket-decomposition'
 import { useDeliverables } from '@/lib/ticket-deliverables'
@@ -98,17 +91,6 @@ export function TicketDetailDialog({
     setEditingCount((count) => count + (editing ? 1 : -1))
   }
 
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-
-  // Block flow: the reason dialog's open state, its draft reason, and an in-flight flag.
-  // Unblock has no dialog (it needs no input), so it only tracks its own in-flight flag.
-  const [blocking, setBlocking] = useState(false)
-  const [blockReason, setBlockReason] = useState('')
-  const [blockError, setBlockError] = useState<string | null>(null)
-  const [blockPending, setBlockPending] = useState(false)
-  const [unblockPending, setUnblockPending] = useState(false)
-
   // The add-deliverable input, so the dialog's Escape handler can tell "Esc in the add
   // field" (clear the draft, stay open) from "Esc anywhere else" (dismiss the dialog).
   // Stays HERE rather than moving into `useDeliverables`: Radix dismisses the dialog at the
@@ -138,77 +120,16 @@ export function TicketDetailDialog({
     onWritten: decomposition.reset,
   })
 
+  // Block/unblock (the reason dialog's draft, and the two writes behind Block and Unblock)
+  // and the delete confirm. Both are declared AFTER `useTicketCommit` because they reconcile
+  // through its field-scoped `applyServerRow` and report through its shared ticket error.
+  const blockFlow = useBlockFlow({ ticket, applyServerRow, setError, clearError })
+  const deleteFlow = useDeleteFlow({ ticket, onDeleted, setError })
+
   if (!ticket) return null
 
   // Proposal indices flagged as not tied to any deliverable (R2.1 scope-creep signal).
   const creepIndices = new Set(decomposition.scopeCreep.map((c) => c.proposal_index))
-
-  async function handleDelete() {
-    const id = ticket!.id
-    setDeleting(true)
-    const result = await deleteTicket(id)
-    if (!isMounted()) return // dialog was dismissed while the delete was in flight
-    if (result.ok) {
-      // Parent removes the row → `ticket` becomes null → this dialog unmounts. We don't
-      // reset local state (we're on our way out) and never close ourselves directly.
-      onDeleted(id)
-    } else {
-      setDeleting(false)
-      setConfirmingDelete(false)
-      setError(id, 'Could not delete this ticket. Please try again.')
-    }
-  }
-
-  function closeBlockDialog() {
-    setBlocking(false)
-    setBlockReason('')
-    setBlockError(null)
-  }
-
-  async function handleBlock() {
-    const id = ticket!.id
-    const parsed = parseBlockReason(blockReason)
-    if (!parsed.ok) {
-      // The confirm button is disabled while the reason is invalid, so this is a
-      // defensive backstop rather than the normal path.
-      setBlockError(parsed.message)
-      return
-    }
-    setBlockPending(true)
-    const result = await blockTicket(id, parsed.value)
-    if (!isMounted()) return // dialog was dismissed while the block was in flight
-    setBlockPending(false)
-    if (result.ok) {
-      applyServerRow(id, result.ticket, ['is_blocked', 'blocked_reason', 'blocked_since'])
-      setBlocking(false)
-      setBlockReason('')
-      setBlockError(null)
-    } else {
-      setBlockError(
-        result.error === 'invalid_reason'
-          ? result.message
-          : 'Could not block this ticket. Please try again.',
-      )
-    }
-  }
-
-  async function handleUnblock() {
-    // Unblock fires from the kebab (which closes on select) and is not optimistic, so
-    // without a guard an impatient second click would fire a duplicate request. The
-    // banner shows an "Unblocking…" state off this flag until the row reconciles.
-    if (unblockPending) return
-    const id = ticket!.id
-    setUnblockPending(true)
-    const result = await unblockTicket(id)
-    if (!isMounted()) return // dialog was dismissed while the unblock was in flight
-    setUnblockPending(false)
-    if (result.ok) {
-      applyServerRow(id, result.ticket, ['is_blocked', 'blocked_reason', 'blocked_since'])
-      clearError()
-    } else {
-      setError(id, 'Could not unblock this ticket. Please try again.')
-    }
-  }
 
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
   const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
@@ -259,24 +180,21 @@ export function TicketDetailDialog({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {ticket.is_blocked ? (
-                <DropdownMenuItem onSelect={() => void handleUnblock()}>
+                <DropdownMenuItem onSelect={() => void blockFlow.unblock()}>
                   <CircleCheck />
                   Unblock
                 </DropdownMenuItem>
               ) : (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setBlockReason('')
-                    setBlockError(null)
-                    setBlocking(true)
-                  }}
-                >
+                <DropdownMenuItem onSelect={() => blockFlow.open()}>
                   <Ban />
                   Block
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => setConfirmingDelete(true)}>
+              <DropdownMenuItem
+                variant="destructive"
+                onSelect={() => deleteFlow.setConfirming(true)}
+              >
                 <Trash2 />
                 Delete
               </DropdownMenuItem>
@@ -292,7 +210,9 @@ export function TicketDetailDialog({
             >
               <Ban aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
               <div className="flex min-w-0 flex-col gap-0.5">
-                <span className="font-medium">{unblockPending ? 'Unblocking…' : 'Blocked'}</span>
+                <span className="font-medium">
+                  {blockFlow.unblockPending ? 'Unblocking…' : 'Blocked'}
+                </span>
                 {ticket.blocked_reason ? (
                   <span className="text-destructive/90 break-words">{ticket.blocked_reason}</span>
                 ) : null}
@@ -723,11 +643,11 @@ export function TicketDetailDialog({
         ) : null}
 
         <Dialog
-          open={blocking}
+          open={blockFlow.blocking}
           onOpenChange={(open) => {
             // Ignore dismissal while the block is in flight; reset on any close.
-            if (blockPending) return
-            if (!open) closeBlockDialog()
+            if (blockFlow.pending) return
+            if (!open) blockFlow.close()
           }}
         >
           <DialogContent className="sm:max-w-md">
@@ -744,37 +664,36 @@ export function TicketDetailDialog({
                 rows={3}
                 autoFocus
                 maxLength={BLOCK_REASON_MAX}
-                value={blockReason}
+                value={blockFlow.reason}
                 placeholder="Why is this blocked?"
-                onChange={(e) => {
-                  setBlockReason(e.target.value)
-                  if (blockError) setBlockError(null)
-                }}
+                // `setReason` also clears any stale validation error — that rule moved into
+                // the flow with the error it owns.
+                onChange={(e) => blockFlow.setReason(e.target.value)}
               />
             </label>
-            {blockError ? (
+            {blockFlow.error ? (
               <p role="alert" className="text-destructive text-sm">
-                {blockError}
+                {blockFlow.error}
               </p>
             ) : null}
             <DialogFooter>
-              <Button variant="outline" onClick={closeBlockDialog} disabled={blockPending}>
+              <Button variant="outline" onClick={blockFlow.close} disabled={blockFlow.pending}>
                 Cancel
               </Button>
               <Button
-                onClick={handleBlock}
-                disabled={blockPending || !parseBlockReason(blockReason).ok}
+                onClick={() => void blockFlow.submit()}
+                disabled={blockFlow.pending || !parseBlockReason(blockFlow.reason).ok}
               >
-                {blockPending ? 'Blocking…' : 'Block'}
+                {blockFlow.pending ? 'Blocking…' : 'Block'}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
         <AlertDialog
-          open={confirmingDelete}
+          open={deleteFlow.confirming}
           onOpenChange={(open) => {
-            if (!deleting) setConfirmingDelete(open)
+            if (!deleteFlow.deleting) deleteFlow.setConfirming(open)
           }}
         >
           <AlertDialogContent>
@@ -786,12 +705,16 @@ export function TicketDetailDialog({
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel asChild>
-                <Button variant="outline" disabled={deleting}>
+                <Button variant="outline" disabled={deleteFlow.deleting}>
                   Cancel
                 </Button>
               </AlertDialogCancel>
-              <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-                {deleting ? 'Deleting…' : 'Delete'}
+              <Button
+                variant="destructive"
+                onClick={() => void deleteFlow.submit()}
+                disabled={deleteFlow.deleting}
+              >
+                {deleteFlow.deleting ? 'Deleting…' : 'Delete'}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
