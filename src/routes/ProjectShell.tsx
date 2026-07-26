@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
-import { Navigate, NavLink, Outlet, useOutletContext, useParams } from 'react-router-dom'
+import { useState } from 'react'
+import { Navigate, Outlet, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
+import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
-import { cn } from '@/lib/utils'
 import { useAuth } from '@/lib/auth-context'
-import { CreateTicketDialog } from './CreateTicketDialog'
+import { ProjectShellHeader } from './ProjectShellHeader'
 import { TicketDetailDialog } from './TicketDetailDialog'
 
 /**
@@ -19,9 +20,13 @@ import { TicketDetailDialog } from './TicketDetailDialog'
  * paused database rendered as "Nothing in the backlog." rather than an error. Both reads now
  * record `failed` rather than `[]`, and both tabs must consult the phase before treating an
  * empty list as "none".
+ *
+ * The invariant now lives in `useTaggedRead` (`@/lib/project-reads`), enforced once for both
+ * reads. These two aliases are kept because four other modules import them by name, and
+ * because "the sprints phase" reads better at a call site than "a read phase".
  */
-export type SprintsPhase = 'loading' | 'loaded' | 'failed'
-export type TicketsPhase = 'loading' | 'loaded' | 'failed'
+export type SprintsPhase = ReadPhase
+export type TicketsPhase = ReadPhase
 
 /** What the shell hands to its Board/Backlog/Sprints tabs via the nested <Outlet context>. */
 export type ProjectShellContext = {
@@ -83,65 +88,10 @@ export function ProjectShell() {
   const [reloadNonce, setReloadNonce] = useState(0)
   const onRetry = () => setReloadNonce((n) => n + 1)
 
-  // Each result is tagged with the project AND the nonce it belongs to. That makes "loading"
-  // a derived fact — "no result has landed for this project at this nonce yet" — so the
-  // effect never resets a loading flag synchronously (which `react-hooks/set-state-in-effect`
-  // rejects as a cascading-render hazard), and switching projects can never flash the
-  // previous project's tickets under the new header. `phase` is a real discriminant: a
-  // rejection is recorded as `failed`, never flattened into an empty list.
-  type TicketsLoaded =
-    | { projectId: string; nonce: number; phase: 'loaded'; tickets: Ticket[] }
-    | { projectId: string; nonce: number; phase: 'failed' }
-  const [loaded, setLoaded] = useState<TicketsLoaded | null>(null)
-
-  useEffect(() => {
-    if (!activeProjectId) return
-    let active = true
-    listTickets(activeProjectId)
-      .then(
-        (tickets) =>
-          active &&
-          setLoaded({ projectId: activeProjectId, nonce: reloadNonce, phase: 'loaded', tickets }),
-      )
-      .catch(
-        () =>
-          active && setLoaded({ projectId: activeProjectId, nonce: reloadNonce, phase: 'failed' }),
-      )
-    return () => {
-      active = false
-    }
-  }, [activeProjectId, reloadNonce])
-
-  // Tagged the same way, for the same reasons.
-  const [sprintsLoaded, setSprintsLoaded] = useState<
-    | { projectId: string; nonce: number; phase: 'loaded'; sprints: Sprint[] }
-    | { projectId: string; nonce: number; phase: 'failed' }
-    | null
-  >(null)
-
-  useEffect(() => {
-    if (!activeProjectId) return
-    let active = true
-    listSprints(activeProjectId)
-      .then(
-        (sprints) =>
-          active &&
-          setSprintsLoaded({
-            projectId: activeProjectId,
-            nonce: reloadNonce,
-            phase: 'loaded',
-            sprints,
-          }),
-      )
-      .catch(
-        () =>
-          active &&
-          setSprintsLoaded({ projectId: activeProjectId, nonce: reloadNonce, phase: 'failed' }),
-      )
-    return () => {
-      active = false
-    }
-  }, [activeProjectId, reloadNonce])
+  // Two reads, one implementation. `listTickets`/`listSprints` are module-level functions,
+  // so the references are stable and the effects do not re-run every render.
+  const ticketRead = useTaggedRead(activeProjectId, reloadNonce, listTickets)
+  const sprintRead = useTaggedRead(activeProjectId, reloadNonce, listSprints)
 
   if (loading) {
     return (
@@ -153,58 +103,33 @@ export function ProjectShell() {
 
   if (!project) return <Navigate to="/" replace />
 
-  const currentTickets =
-    loaded?.projectId === project.id && loaded.nonce === reloadNonce ? loaded : null
-  const ticketsPhase: TicketsPhase = currentTickets?.phase ?? 'loading'
-  const tickets = currentTickets?.phase === 'loaded' ? currentTickets.tickets : []
-
-  const currentSprints =
-    sprintsLoaded?.projectId === project.id && sprintsLoaded.nonce === reloadNonce
-      ? sprintsLoaded
-      : null
-  const sprintsPhase: SprintsPhase = currentSprints?.phase ?? 'loading'
-  const sprints = currentSprints?.phase === 'loaded' ? currentSprints.sprints : []
+  const { phase: ticketsPhase, items: tickets } = ticketRead
+  const { phase: sprintsPhase, items: sprints } = sprintRead
 
   const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
 
-  // `prev.phase === 'loaded'` is not decoration: without it these would read `.tickets` off a
-  // variant that has none, and construct a `loaded` state out of a `failed` one — resurrecting
-  // exactly the "a failed read looks successful" defect S4.6 removed. Spreading `prev`
-  // preserves the tag (project id and nonce) rather than rebuilding it.
+  // Every reducer below is a LOCAL mutation, never a refetch: an unguarded refetch resolving
+  // after a project switch would clobber the new project's list.
+  //
+  // The guard that used to be repeated at each of these call sites — "only patch a list that
+  // belongs to this project and actually loaded" — now lives once in `patchLoaded`
+  // (`@/lib/project-reads`). It is load-bearing, not decoration: patching a failed or loading
+  // variant would mean reading items off a variant that has none and constructing a `loaded`
+  // state out of a `failed` one, resurrecting the "a failed read looks successful" defect
+  // S4.6 removed.
   const onTicketUpdated = (updated: Ticket) =>
-    setLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, tickets: prev.tickets.map((t) => (t.id === updated.id ? updated : t)) }
-        : prev,
-    )
+    ticketRead.patch(project.id, (ts) => ts.map((t) => (t.id === updated.id ? updated : t)))
 
   const onTicketDeleted = (id: string) =>
-    setLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, tickets: prev.tickets.filter((t) => t.id !== id) }
-        : prev,
-    )
+    ticketRead.patch(project.id, (ts) => ts.filter((t) => t.id !== id))
 
-  // Prepend: the list is newest-first, so a new sprint belongs at the top. A local mutation,
-  // not a refetch — the same reasoning as the append-on-create above.
-  const onSprintCreated = (sprint: Sprint) =>
-    setSprintsLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, sprints: [sprint, ...prev.sprints] }
-        : prev,
-    )
+  // Prepend: the list is newest-first, so a new sprint belongs at the top.
+  const onSprintCreated = (sprint: Sprint) => sprintRead.patch(project.id, (ss) => [sprint, ...ss])
 
   // Replace by id. Starting a sprint touches only that sprint — enforcing one-active by
   // REJECTING a second start (not deactivating the current one) means no other row changes.
-  // The `phase === 'loaded'` guard is load-bearing for the same reason as `onTicketUpdated`:
-  // a failed/loading variant has no `sprints` to map, and rebuilding one would resurrect the
-  // "a failed read looks successful" defect S4.6 removed.
   const onSprintUpdated = (updated: Sprint) =>
-    setSprintsLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, sprints: prev.sprints.map((s) => (s.id === updated.id ? updated : s)) }
-        : prev,
-    )
+    sprintRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
 
   // Completing swaps the sprint by id AND clears sprint_id on the sprint's still-incomplete
   // tickets. The ticket patch is NOT driven solely by `returnedTickets`: a prior attempt can
@@ -213,95 +138,34 @@ export function ProjectShell() {
   // completed sprint itself — by the same rule the DB applies
   // (`sprint_id=null where sprint_id=id and status<>'done'`) — makes the patch idempotent and
   // correct on both the happy path and the retry path. Done tickets keep their sprint_id
-  // (retained history), exactly as the DB leaves them. Both guarded on `phase === 'loaded'`
-  // for the same reason as `onTicketUpdated` — a failed/loading variant has no list to map,
-  // and rebuilding one would resurrect the "a failed read looks successful" defect S4.6
-  // removed.
+  // (retained history), exactly as the DB leaves them.
+  //
+  // Both lists are patched so the count badge and the status badge never render out of step.
   const onSprintCompleted = (updated: Sprint, returnedTickets: Ticket[]) => {
-    setSprintsLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? { ...prev, sprints: prev.sprints.map((s) => (s.id === updated.id ? updated : s)) }
-        : prev,
-    )
+    sprintRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
     const returnedById = new Map(returnedTickets.map((t) => [t.id, t]))
-    setLoaded((prev) =>
-      prev && prev.projectId === project.id && prev.phase === 'loaded'
-        ? {
-            ...prev,
-            tickets: prev.tickets.map(
-              (t) =>
-                returnedById.get(t.id) ??
-                (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
-            ),
-          }
-        : prev,
+    ticketRead.patch(project.id, (ts) =>
+      ts.map(
+        (t) =>
+          returnedById.get(t.id) ??
+          (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
+      ),
     )
   }
 
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
-  const tabClass = ({ isActive }: { isActive: boolean }) =>
-    cn(
-      'border-b-2 px-1 pb-2 text-sm font-medium transition-colors',
-      isActive
-        ? 'border-foreground text-foreground'
-        : 'text-muted-foreground hover:text-foreground border-transparent',
-    )
-
   return (
     <div className="flex min-h-svh flex-col">
-      <header className="flex flex-col gap-3 border-b px-8 pt-6">
-        <div className="flex items-start justify-between gap-4">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
-            {project.name}
-          </h1>
-          {/* The trigger only renders once `ticketsPhase === 'loaded'`, and that gate is
-              load-bearing — do not remove it to "always let people create a ticket".
-
-              `onCreated` below appends only to a `loaded` list, because it cannot do
-              anything else: a `failed` state has no `tickets` to append to, and inventing
-              one would resurrect the very "a failed read looks successful" defect S4.6
-              removed. So an UNGATED trigger plus that guard equals an INVISIBLE CREATE:
-              `createTicket` succeeds, the row is really written and really holds a key,
-              the dialog closes — and the UI shows no trace at all. The user reads that as
-              "it didn't work", creates it again, and now owns duplicate tickets. A create
-              whose result you cannot see is worse than no create button, so the button is
-              withheld until we have a list to put the result into. Hiding rather than
-              disabling matches `SprintsTab`'s CreateSprintDialog, which gates on its own
-              phase for this same reason.
-
-              The Board and Backlog carry the error and the Retry for this failed read, so
-              the create affordance comes back on its own the moment the read recovers. */}
-          {ticketsPhase === 'loaded' ? (
-            <CreateTicketDialog
-              projectId={project.id}
-              onCreated={(ticket) => {
-                // A new ticket always carries the highest number, so appending it keeps
-                // the number order the board and backlog use — no refetch needed. That
-                // also avoids a stale-response race: an unguarded refetch resolving after
-                // a project switch would clobber the new project's list.
-                setLoaded((prev) =>
-                  prev && prev.projectId === project.id && prev.phase === 'loaded'
-                    ? { ...prev, tickets: [...prev.tickets, ticket] }
-                    : prev,
-                )
-              }}
-            />
-          ) : null}
-        </div>
-        <nav className="flex gap-4">
-          <NavLink to="board" className={tabClass}>
-            Board
-          </NavLink>
-          <NavLink to="backlog" className={tabClass}>
-            Backlog
-          </NavLink>
-          <NavLink to="sprints" className={tabClass}>
-            Sprints
-          </NavLink>
-        </nav>
-      </header>
+      <ProjectShellHeader
+        project={project}
+        ticketsPhase={ticketsPhase}
+        // A new ticket always carries the highest number, so appending it keeps the number
+        // order the board and backlog use — no refetch needed. That also avoids a
+        // stale-response race: an unguarded refetch resolving after a project switch would
+        // clobber the new project's list.
+        onTicketCreated={(ticket) => ticketRead.patch(project.id, (ts) => [...ts, ticket])}
+      />
       <div className="flex-1 p-8">
         <Outlet
           context={
@@ -334,13 +198,7 @@ export function ProjectShell() {
           }}
           onUpdated={onTicketUpdated}
           onDeleted={onTicketDeleted}
-          onTicketsCreated={(created) =>
-            setLoaded((prev) =>
-              prev && prev.projectId === project.id && prev.phase === 'loaded'
-                ? { ...prev, tickets: [...prev.tickets, ...created] }
-                : prev,
-            )
-          }
+          onTicketsCreated={(created) => ticketRead.patch(project.id, (ts) => [...ts, ...created])}
         />
       </div>
     </div>
