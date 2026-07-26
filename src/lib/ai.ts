@@ -82,6 +82,11 @@ async function parseDecomposeBody(resp: Response): Promise<DecomposeResult | nul
       scope_creep?: ScopeCreep[]
       estimate_total?: number
     }
+    // Removing this guard is NOT observable, and that is worth saying so nobody deletes
+    // it expecting a red test: a non-array `proposals` would then throw on `.map` and be
+    // caught below, producing the identical `request_failed`. Verified by mutation. It
+    // stays because reaching the right answer via a deliberate check beats reaching it via
+    // an exception — the catch is a backstop for the unforeseen, not the design.
     if (!Array.isArray(body?.proposals)) return null
     return {
       ok: true,
