@@ -550,8 +550,8 @@ describe.skipIf(!hasRlsCredentials)(
  *
  * It also owns this file's coverage of `tickets_sprint_fk` — both halves of it: the
  * `on delete set null` behaviour above, and (last test) that the composite fk rejects a
- * sprint belonging to a DIFFERENT project, which is the guarantee `TicketDetailDialog`'s
- * unfiltered sprint picker leans on.
+ * sprint belonging to a DIFFERENT project, which is the guarantee the unfiltered sprint
+ * picker in `src/routes/TicketDetailSidebar.tsx` leans on.
  */
 describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   let a: SupabaseClient<Database>
@@ -723,9 +723,11 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   }, 30_000)
 
   it('rejects a sprint in another project (the composite fk keeps it in-project)', async () => {
-    // WHY THIS EXISTS. `TicketDetailDialog`'s sprint picker is deliberately NOT
-    // status-filtered and NOT type-gated, and its comment justifies that by asserting the
-    // database cannot store a cross-project reference:
+    // WHY THIS EXISTS. The sprint picker in `src/routes/TicketDetailSidebar.tsx` (rendered
+    // through `src/routes/TicketReferenceSelect.tsx`) is deliberately NOT status-filtered
+    // and NOT type-gated, and its comment — which lives beside that picker in
+    // `TicketDetailSidebar.tsx` — justifies that by asserting the database cannot store a
+    // cross-project reference:
     //   tickets_sprint_fk foreign key (sprint_id, project_id)
     //     references sprints (id, project_id) on delete set null (sprint_id)
     // The pair — not the id alone — is what gets checked, so a sprint from another project
@@ -790,7 +792,7 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
  * one of those writes goes through the raw test client, as a fixture. They pin the
  * column, the composite fk and `on delete set null` — real database facts, but facts
  * about Postgres, not about our code. Nothing anywhere drives the function the sprint
- * picker actually calls: `TicketDetailDialog`'s `commit({ sprint_id })` is `updateTicket`,
+ * picker actually calls: `commit({ sprint_id })` in `src/lib/ticket-commit.ts` is `updateTicket`,
  * and `updateTicket` writes through the app's own module-scope `supabase` client with its
  * own `TicketUpdate` shape, `.single()` and result mapping. Any of those could break with
  * this file green. So this block drives `updateTicket` itself.
