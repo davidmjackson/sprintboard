@@ -1,7 +1,10 @@
 import { NavLink } from 'react-router-dom'
 
 import type { Project, Ticket } from '@/lib/domain'
-import type { TicketsPhase } from './ProjectShell'
+// Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
+// this component, so taking the type from there would close an import cycle — harmless
+// today because `import type` is erased, but not worth leaving for someone to trip over.
+import type { ReadPhase } from '@/lib/project-reads'
 import { cn } from '@/lib/utils'
 import { CreateTicketDialog } from './CreateTicketDialog'
 
@@ -16,7 +19,7 @@ function tabClass({ isActive }: { isActive: boolean }): string {
 
 type ProjectShellHeaderProps = {
   project: Project
-  ticketsPhase: TicketsPhase
+  ticketsPhase: ReadPhase
   /** Called with the created ticket so the shell can append it to its own list. */
   onTicketCreated: (ticket: Ticket) => void
 }

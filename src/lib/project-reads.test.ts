@@ -70,6 +70,30 @@ describe('useTaggedRead', () => {
     expect(result.current.items).toEqual([{ id: 'p2-row' }])
   })
 
+  it('ignores a late REJECTION from the project we navigated away from', async () => {
+    // The rejection twin of the test above, and it guards a nastier failure. Without the
+    // `active` check on the `.catch` path, project A's late rejection overwrites state with
+    // an A-tagged `failed`; `isCurrent` then rejects that as stale, so project B sits on
+    // `loading` FOREVER. No further effect fires, and the tabs only render Retry on
+    // `failed` — so there is no way out of it but a page reload.
+    const p1 = deferred<Row[]>()
+    const read = vi.fn((id: string) =>
+      id === 'p1' ? p1.promise : Promise.resolve([{ id: 'p2-row' }]),
+    )
+    const { result, rerender } = setup('p1', 0, read)
+
+    rerender({ p: 'p2', n: 0 })
+    await waitFor(() => expect(result.current.phase).toBe('loaded'))
+
+    await act(async () => {
+      p1.reject(new Error('database paused'))
+      await p1.promise.catch(() => {})
+    })
+
+    expect(result.current.phase).toBe('loaded')
+    expect(result.current.items).toEqual([{ id: 'p2-row' }])
+  })
+
   it('does not show the previous project rows while the new project is still loading', async () => {
     // The actual cross-project-flash guard, and it is `isCurrent`'s project check that
     // provides it — NOT the `active` cleanup flag. The test above cannot reach this code:
@@ -102,6 +126,9 @@ describe('useTaggedRead', () => {
     rerender({ p: 'p1', n: 1 })
     expect(result.current.phase).toBe('loading')
     expect(result.current.items).toEqual([])
+    // Assert the REFETCH, not just the phase flip. Dropping `nonce` from the effect deps
+    // still shows this spinner — and then never resolves it, because no new read is issued.
+    expect(call).toBe(2)
   })
 
   it('does not read at all without a project id', () => {
@@ -153,19 +180,13 @@ describe('useTaggedRead', () => {
     })
   })
 
-  it('does not set state after unmount', async () => {
-    const pending = deferred<Row[]>()
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { unmount } = setup('p1', 0, () => pending.promise)
-
-    unmount()
-    await act(async () => {
-      pending.resolve([{ id: 'late' }])
-      await pending.promise
-    })
-
-    // React warns on setState after unmount; the `active` flag is what prevents it.
-    expect(errors).not.toHaveBeenCalled()
-    errors.mockRestore()
-  })
+  // There is deliberately NO "does not set state after unmount" test here.
+  //
+  // The obvious one — unmount, resolve late, assert `console.error` was not called — cannot
+  // fail: React removed the setState-after-unmount warning in 18.3 and this repo is on 19.2,
+  // so it passes just as happily with the cleanup deleted entirely. Verified by mutation.
+  //
+  // The `active` cleanup is genuinely covered, by the two project-switch tests above: the
+  // cleanup function runs on a dependency change exactly as it does on unmount, and those
+  // tests DO go red when it is removed — on both the resolve and the reject path.
 })

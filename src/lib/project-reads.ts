@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * The three-state shape both of the project shell's reads share (S4.6).
@@ -42,15 +42,19 @@ function isCurrent<T>(
  * successful" defect S4.6 removed. Spreading `prev` preserves the tag rather than
  * rebuilding it.
  *
- * Note, so nobody deletes it expecting a red test: that phase check is deliberately
- * **defence in depth and no test can observe its removal**. `useTaggedRead`'s derivation
- * independently gates `items` on the phase, so a corrupted `failed`-with-items state stays
- * invisible through the public surface. Verified by mutation, not assumed. It stays because
- * it keeps the stored state honest to its own type; it is not dead weight, but it is also
- * not what protects the user — the derivation is.
+ * Note, so nobody deletes it expecting a red test: this phase check and the phase gate in
+ * `useTaggedRead`'s derivation are a **symmetric redundant pair**. Removing either one alone
+ * is invisible to the whole suite; removing BOTH is caught (by "patch is a no-op on a failed
+ * read"). Measured by mutation, in both directions — do not read this as "the derivation is
+ * the real guard and this one is decoration", because the identical argument licenses
+ * deleting the derivation gate instead, and neither deletion goes red on its own.
  *
- * The project check, by contrast, IS observable and load-bearing: it is what stops the
- * previous project's rows rendering under the new project's header.
+ * What actually keeps users safe is upstream of both: the effect never constructs a `failed`
+ * variant carrying `items`, so the corrupt state has no way to exist. These two are the
+ * belt and braces that keep it that way if someone changes the effect.
+ *
+ * The project check, by contrast, IS individually observable and load-bearing: it is what
+ * stops the previous project's rows rendering under the new project's header.
  */
 function patchLoaded<T>(
   prev: Tagged<T> | null,
@@ -60,6 +64,49 @@ function patchLoaded<T>(
   return prev && prev.projectId === projectId && prev.phase === 'loaded'
     ? { ...prev, items: fn(prev.items) }
     : prev
+}
+
+/**
+ * A ref that always holds the latest `value`, so a callback can be used inside an effect
+ * without becoming one of its dependencies. See `useTaggedRead` for why that matters here.
+ */
+function useLatest<T>(value: T) {
+  const ref = useRef(value)
+  useEffect(() => {
+    ref.current = value
+  })
+  return ref
+}
+
+type RunReadArgs<T> = {
+  read: (projectId: string) => Promise<T[]>
+  projectId: string
+  nonce: number
+  /** False once this effect run has been superseded by a switch, retry or unmount. */
+  isActive: () => boolean
+  setResult: (result: Tagged<T>) => void
+}
+
+/**
+ * Issue one read and record its outcome, unless this run has been superseded.
+ *
+ * Hoisted out of the hook body rather than written inline so `useTaggedRead` stays inside
+ * the 30-line threshold — the rule S9.1 established for hooks that live in `.ts`.
+ *
+ * The `isActive` check on the REJECTION path matters as much as on the success path, and is
+ * the easier one to drop while tidying. Without it, a rejection arriving after the user has
+ * switched projects overwrites state with a stale-tagged `failed`; `isCurrent` then discards
+ * that as stale, so the NEW project sits on `loading` forever. No further effect fires, and
+ * the tabs only render Retry on `failed` — so nothing short of a page reload recovers it.
+ */
+function runRead<T>({ read, projectId, nonce, isActive, setResult }: RunReadArgs<T>): void {
+  read(projectId)
+    .then((items) => {
+      if (isActive()) setResult({ projectId, nonce, phase: 'loaded', items })
+    })
+    .catch(() => {
+      if (isActive()) setResult({ projectId, nonce, phase: 'failed' })
+    })
 }
 
 /** What `useTaggedRead` hands back: the derived view, plus a guarded local mutator. */
@@ -80,8 +127,17 @@ export type TaggedRead<T> = {
  * function. Keeping one implementation means the S4.6 invariant above is enforced in a
  * single place instead of being re-argued at every call site.
  *
- * `read` must be a stable reference (a module-level function, not an inline arrow), or the
- * effect re-runs every render and refetches forever.
+ * `read` is held in a ref rather than listed as an effect dependency, and that is not a
+ * lint workaround — it removes a footgun this hook would otherwise introduce. Depending on
+ * `read` directly means an inline arrow at any call site (`(id) => listTickets(id)`) is a
+ * fresh reference every render, so the effect re-runs, sets state, re-renders, and refetches
+ * forever. Measured, not theorised: a probe with an inline `read` and no external rerenders
+ * reached ~1.2M invocations in five seconds — an unbounded burst of requests and a hung tab.
+ *
+ * Nothing automated would catch it. `react-hooks/exhaustive-deps` *requires* the dependency,
+ * so lint stays silent, and the parameter's type cannot express "stable reference". The
+ * pre-refactor code had no such hazard because the fetch was written inline in the effect;
+ * the ref keeps the dependency list identical to that original.
  */
 export function useTaggedRead<T>(
   activeProjectId: string | undefined,
@@ -90,20 +146,22 @@ export function useTaggedRead<T>(
 ): TaggedRead<T> {
   const [result, setResult] = useState<Tagged<T> | null>(null)
 
+  const readRef = useLatest(read)
+
   useEffect(() => {
     if (!activeProjectId) return
     let active = true
-    read(activeProjectId)
-      .then((items) => {
-        if (active) setResult({ projectId: activeProjectId, nonce, phase: 'loaded', items })
-      })
-      .catch(() => {
-        if (active) setResult({ projectId: activeProjectId, nonce, phase: 'failed' })
-      })
+    runRead({
+      read: readRef.current,
+      projectId: activeProjectId,
+      nonce,
+      isActive: () => active,
+      setResult,
+    })
     return () => {
       active = false
     }
-  }, [activeProjectId, nonce, read])
+  }, [activeProjectId, nonce])
 
   const current = isCurrent(result, activeProjectId, nonce) ? result : null
   return {
