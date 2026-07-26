@@ -25,9 +25,15 @@ function requireEnv(name: string): string {
 export async function deleteAuthUser(userId: string): Promise<void> {
   const url = requireEnv('VITE_SUPABASE_URL')
   const key = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
+  // `apikey` only, no `Authorization: Bearer`. The service-role key is the new
+  // opaque `sb_secret_…` format, not a JWT; sent as a bearer token GoTrue tries to
+  // JWT-verify it and intermittently rejects the request with "unrecognized JWT
+  // kid <nil> for algorithm ES256". Here that would strand a signed-up user and
+  // everything cascading from it. Mirrors `apikeyOnlyFetch` in
+  // src/test/supabase-clients.ts — see [[live-suite-auth-flake]].
   const res = await fetch(`${url}/auth/v1/admin/users/${userId}`, {
     method: 'DELETE',
-    headers: { apikey: key, Authorization: `Bearer ${key}` },
+    headers: { apikey: key },
   })
   // 404 means it is already gone — an idempotent teardown, not a failure.
   if (!res.ok && res.status !== 404) {
