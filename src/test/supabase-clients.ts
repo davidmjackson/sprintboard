@@ -94,7 +94,15 @@ export function assertServiceRoleOrExplain(): void {
  * silently downgrade every request to the anon role. See [[live-suite-auth-flake]].
  */
 export function apikeyOnlyFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers)
+  // Read the headers from `init` when it supplies them, and otherwise from a
+  // `Request` passed as `input`. Taking them from `init` alone looks equivalent —
+  // supabase-js always calls fetch as (url, init) today — but it is not: passing an
+  // `init.headers` at all makes it *replace* the Request's own headers, so a
+  // Request-form call would go out carrying no `apikey` either. That fails closed
+  // rather than open, but it would strip the credential instead of the redundant
+  // copy of it, and nothing in the (url, init) tests would notice.
+  const source = init?.headers ?? (input instanceof Request ? input.headers : undefined)
+  const headers = new Headers(source)
   headers.delete('authorization')
   return fetch(input, { ...init, headers })
 }

@@ -20,6 +20,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const FAKE_URL = 'https://project.supabase.co'
 const FAKE_ANON_KEY = 'sb_publishable_not_a_real_key'
 const FAKE_SECRET_KEY = 'sb_secret_not_a_real_key'
+const FAKE_ACCESS_TOKEN = 'not-a-real-access-token'
+const FAKE_USER_ID = '00000000-0000-0000-0000-0000000000aa'
 
 /**
  * Import the module against a known, fake credential set. It reads `process.env`
@@ -30,8 +32,21 @@ async function loadWithFakeCredentials(): Promise<typeof import('./supabase-clie
   vi.stubEnv('VITE_SUPABASE_URL', FAKE_URL)
   vi.stubEnv('VITE_SUPABASE_ANON_KEY', FAKE_ANON_KEY)
   vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', FAKE_SECRET_KEY)
+  vi.stubEnv('RLS_TEST_A_EMAIL', 'rls-a@example.com')
+  vi.stubEnv('RLS_TEST_A_PASSWORD', 'not-a-real-password')
   vi.resetModules()
   return import('./supabase-clients')
+}
+
+/** A minimal GoTrue password-grant response, enough for supabase-js to hold a session. */
+function tokenGrantBody(): string {
+  return JSON.stringify({
+    access_token: FAKE_ACCESS_TOKEN,
+    token_type: 'bearer',
+    expires_in: 3600,
+    refresh_token: 'not-a-real-refresh-token',
+    user: { id: FAKE_USER_ID, aud: 'authenticated', role: 'authenticated' },
+  })
 }
 
 /** Record the headers of every outbound request; answer plausibly, hit no network. */
@@ -41,8 +56,13 @@ function captureRequests(): Array<{ url: string; headers: Headers }> {
     const url = input instanceof Request ? input.url : String(input)
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : {}))
     calls.push({ url, headers })
-    // PostgREST returns a result set; GoTrue returns an object.
-    const body = url.includes('/auth/v1/') ? '{}' : '[]'
+    // PostgREST returns a result set; GoTrue returns an object — except the
+    // password grant, which must look like a real session or signIn() throws.
+    const body = url.includes('/auth/v1/token')
+      ? tokenGrantBody()
+      : url.includes('/auth/v1/')
+        ? '{}'
+        : '[]'
     return Promise.resolve(
       new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }),
     )
@@ -50,8 +70,9 @@ function captureRequests(): Array<{ url: string; headers: Headers }> {
   return calls
 }
 
-/** The headers of the one request expected — asserted rather than assumed. */
+/** The headers of the one request expected — the "only" is asserted, not assumed. */
 function onlyRequest(calls: Array<{ url: string; headers: Headers }>): Headers {
+  expect(calls).toHaveLength(1)
   const [call] = calls
   if (call === undefined) throw new Error('expected a request, but fetch was never called')
   return call.headers
@@ -71,24 +92,29 @@ afterEach(() => {
 })
 
 describe('apikeyOnlyFetch', () => {
-  it('deletes the Authorization header whatever its casing', async () => {
-    const { apikeyOnlyFetch } = await loadWithFakeCredentials()
-    const calls = captureRequests()
+  it.each([['Authorization'], ['authorization'], ['AuThOrIzAtIoN']])(
+    'deletes the %s header',
+    async (name) => {
+      const { apikeyOnlyFetch } = await loadWithFakeCredentials()
+      const calls = captureRequests()
 
-    await apikeyOnlyFetch('https://example.test/x', {
-      headers: { apikey: 'k', Authorization: 'Bearer k' },
-    })
+      await apikeyOnlyFetch('https://example.test/x', {
+        headers: { apikey: 'k', [name]: 'Bearer k' },
+      })
 
-    expect(onlyRequest(calls).has('authorization')).toBe(false)
-  })
+      expect(onlyRequest(calls).has('authorization')).toBe(false)
+    },
+  )
 
   it('leaves the apikey header and the rest of the request untouched', async () => {
     const { apikeyOnlyFetch } = await loadWithFakeCredentials()
     const calls = captureRequests()
+    const signal = AbortSignal.timeout(30_000)
 
     await apikeyOnlyFetch('https://example.test/x', {
       method: 'POST',
       body: '{"email":"a@example.com"}',
+      signal,
       headers: { apikey: 'k', Authorization: 'Bearer k', 'content-type': 'application/json' },
     })
 
@@ -100,6 +126,27 @@ describe('apikeyOnlyFetch', () => {
     if (forwarded === undefined) throw new Error('fetch was never called')
     expect(forwarded[1]?.method).toBe('POST')
     expect(forwarded[1]?.body).toBe('{"email":"a@example.com"}')
+    // postgrest-js passes an AbortSignal; losing it would silently disable
+    // cancellation and request timeouts with nothing else going red.
+    expect(forwarded[1]?.signal).toBe(signal)
+  })
+
+  it('keeps the apikey when called with a Request rather than (url, init)', async () => {
+    const { apikeyOnlyFetch } = await loadWithFakeCredentials()
+    const calls = captureRequests()
+
+    // supabase-js never calls fetch this way today, but the exported signature
+    // accepts it — and reading headers only from `init` would send the request
+    // with no credential at all rather than merely without Authorization.
+    await apikeyOnlyFetch(
+      new Request('https://example.test/x', {
+        headers: { apikey: 'k', Authorization: 'Bearer k' },
+      }),
+    )
+
+    const headers = onlyRequest(calls)
+    expect(headers.get('apikey')).toBe('k')
+    expect(headers.has('authorization')).toBe(false)
   })
 })
 
@@ -143,5 +190,43 @@ describe('the strip is scoped to the admin client', () => {
     await anonClient().from('profiles').select('display_name')
 
     expect(requestTo(calls, '/rest/v1/').get('authorization')).toBe(`Bearer ${FAKE_ANON_KEY}`)
+  })
+
+  it('leaves a signed-in client sending the user access token', async () => {
+    const { signIn } = await loadWithFakeCredentials()
+    const calls = captureRequests()
+
+    const client = await signIn('A')
+    await client.from('profiles').select('display_name')
+
+    // Not the anon key: the signed-in client must carry the *user's* token. If the
+    // admin wrapper were shared with signIn(), this request would go out as anon and
+    // RLS would hide the caller's own rows rather than raise — the live isolation
+    // suites would then pass for the wrong reason.
+    expect(requestTo(calls, '/rest/v1/').get('authorization')).toBe(`Bearer ${FAKE_ACCESS_TOKEN}`)
+  })
+})
+
+describe('the E2E teardown helper', () => {
+  /**
+   * `e2e/support/admin.ts` is Playwright-side and `vite.config.ts` excludes `e2e/**`
+   * from Vitest *collection* — but nothing stops a Vitest test *importing* the module,
+   * and it pulls in no Playwright types. That matters: without this test the E2E
+   * teardown's header could be "tidied" back to sending a bearer token and the whole
+   * required gate would stay green, with the breakage surfacing only in the
+   * non-required `e2e` check as stranded signup users.
+   */
+  it('deletes a user with apikey alone, never a bearer token', async () => {
+    vi.stubEnv('VITE_SUPABASE_URL', FAKE_URL)
+    vi.stubEnv('SUPABASE_SERVICE_ROLE_KEY', FAKE_SECRET_KEY)
+    vi.resetModules()
+    const { deleteAuthUser } = await import('../../e2e/support/admin')
+    const calls = captureRequests()
+
+    await deleteAuthUser('11111111-1111-1111-1111-111111111111')
+
+    const headers = onlyRequest(calls)
+    expect(headers.get('apikey')).toBe(FAKE_SECRET_KEY)
+    expect(headers.has('authorization')).toBe(false)
   })
 })
