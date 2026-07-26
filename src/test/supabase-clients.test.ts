@@ -92,19 +92,22 @@ afterEach(() => {
 })
 
 describe('apikeyOnlyFetch', () => {
-  it.each([['Authorization'], ['authorization'], ['AuThOrIzAtIoN']])(
-    'deletes the %s header',
-    async (name) => {
-      const { apikeyOnlyFetch } = await loadWithFakeCredentials()
-      const calls = captureRequests()
+  // One casing, deliberately. `new Headers({...})` lower-cases at construction and the
+  // wrapper's first act is to build one, so `Authorization` / `authorization` /
+  // `AuThOrIzAtIoN` are indistinguishable by the time the delete runs: three names for
+  // one assertion. The capitalised spelling is the one worth keeping — it is the only
+  // one that also catches an implementation which stops using `Headers` and deletes a
+  // case-sensitive key off a plain object.
+  it('deletes the Authorization header', async () => {
+    const { apikeyOnlyFetch } = await loadWithFakeCredentials()
+    const calls = captureRequests()
 
-      await apikeyOnlyFetch('https://example.test/x', {
-        headers: { apikey: 'k', [name]: 'Bearer k' },
-      })
+    await apikeyOnlyFetch('https://example.test/x', {
+      headers: { apikey: 'k', Authorization: 'Bearer k' },
+    })
 
-      expect(onlyRequest(calls).has('authorization')).toBe(false)
-    },
-  )
+    expect(onlyRequest(calls).has('authorization')).toBe(false)
+  })
 
   it('leaves the apikey header and the rest of the request untouched', async () => {
     const { apikeyOnlyFetch } = await loadWithFakeCredentials()
@@ -138,15 +141,70 @@ describe('apikeyOnlyFetch', () => {
     // supabase-js never calls fetch this way today, but the exported signature
     // accepts it — and reading headers only from `init` would send the request
     // with no credential at all rather than merely without Authorization.
+    const request = new Request('https://example.test/x', {
+      method: 'POST',
+      body: 'payload',
+      headers: { apikey: 'k', Authorization: 'Bearer k' },
+    })
+    await apikeyOnlyFetch(request)
+
+    const headers = onlyRequest(calls)
+    expect(headers.get('apikey')).toBe('k')
+    expect(headers.has('authorization')).toBe(false)
+
+    // Forward the Request ITSELF, not a URL rebuilt from it. Re-sending
+    // `new Request(input.url, { headers })` would keep the credential but silently
+    // discard the method, body and signal, and every header assertion above would
+    // still pass.
+    const [forwarded] = vi.mocked(globalThis.fetch).mock.calls
+    if (forwarded === undefined) throw new Error('fetch was never called')
+    expect(forwarded[0]).toBe(request)
+  })
+
+  it('lets init headers win over a Request that carries its own', async () => {
+    const { apikeyOnlyFetch } = await loadWithFakeCredentials()
+    const calls = captureRequests()
+
+    // Precedence matters and is easy to invert while "tidying". Real fetch lets
+    // `init.headers` REPLACE a Request's own, so reading the Request first would send a
+    // stale credential where the caller asked for a fresh one — wrong, and a silent
+    // divergence from the platform. Nothing else in this file pins the direction.
+    await apikeyOnlyFetch(
+      new Request('https://example.test/x', {
+        headers: { apikey: 'stale', Authorization: 'Bearer k' },
+      }),
+      { headers: { apikey: 'fresh' } },
+    )
+
+    const headers = onlyRequest(calls)
+    expect(headers.get('apikey')).toBe('fresh')
+    expect(headers.has('authorization')).toBe(false)
+  })
+
+  it('keeps the Request apikey when init carries no headers at all', async () => {
+    const { apikeyOnlyFetch } = await loadWithFakeCredentials()
+    const calls = captureRequests()
+    const signal = AbortSignal.timeout(30_000)
+
+    // `(Request, { signal })` — init present, no `headers` key — is postgrest-js's own
+    // shape, and the single most likely way this function gets called in future. Reading
+    // `init ? init.headers : …` instead of `init?.headers ?? …` looks identical and
+    // reintroduces the exact bug this commit fixes: undefined headers, replaced with an
+    // empty set, credential gone.
     await apikeyOnlyFetch(
       new Request('https://example.test/x', {
         headers: { apikey: 'k', Authorization: 'Bearer k' },
       }),
+      { signal },
     )
 
     const headers = onlyRequest(calls)
     expect(headers.get('apikey')).toBe('k')
     expect(headers.has('authorization')).toBe(false)
+
+    const [forwarded] = vi.mocked(globalThis.fetch).mock.calls
+    if (forwarded === undefined) throw new Error('fetch was never called')
+    expect(forwarded[1]?.signal).toBe(signal)
   })
 })
 

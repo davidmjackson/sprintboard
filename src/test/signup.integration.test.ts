@@ -62,8 +62,22 @@ describe.skipIf(!hasServiceRoleKey)('S2.1 signup creates a profile', () => {
   }
 
   afterAll(async () => {
+    // Check the error. This is the only admin call in the suite whose failure is
+    // otherwise invisible — `createUser` and `profileDisplayName` both throw — and it
+    // runs on the very transport SPRIN-46 changed, so a regression here would strand
+    // throwaway users indefinitely while `verify` stayed green. That is not
+    // hypothetical: six `s21-*` users survived the pre-fix `Authorization: Bearer`
+    // era unnoticed for exactly this reason.
+    //
+    // Delete everything BEFORE throwing: raising inside the loop would abandon the
+    // remaining ids and strand more users than it reports.
+    const failures: string[] = []
     for (const id of createdUserIds) {
-      await admin.auth.admin.deleteUser(id)
+      const { error } = await admin.auth.admin.deleteUser(id)
+      if (error) failures.push(`${id}: ${error.message}`)
+    }
+    if (failures.length > 0) {
+      throw new Error(`Failed to delete ${failures.length} test user(s):\n${failures.join('\n')}`)
     }
   }, 30_000)
 
