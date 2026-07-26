@@ -31,32 +31,50 @@ export type DecomposeResult =
     }
   | { ok: false; error: 'unauthenticated' | 'request_failed' }
 
-/**
- * Ask the local AI service to decompose an epic. Sends the epic's context/deliverables
- * (already loaded client-side) plus the current Supabase JWT — the service verifies the
- * token and never touches the database. Persistence is the caller's job, via createTicket.
- */
-export async function decomposeEpic(epic: {
-  summary: string
-  context: string
-  deliverables: string[]
-}): Promise<DecomposeResult> {
-  const { data } = await supabase.auth.getSession()
-  const token = data.session?.access_token
-  if (!token) return { ok: false, error: 'unauthenticated' }
+/** The epic fields the service needs. Already loaded client-side by the caller. */
+type EpicInput = { summary: string; context: string; deliverables: string[] }
 
-  let resp: Response
+/** The caller's Supabase JWT, or null when there is no session. */
+async function accessToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession()
+  return data.session?.access_token ?? null
+}
+
+/**
+ * POST the epic to the service. Null on any transport failure OR a non-2xx status —
+ * the caller cannot distinguish them and reports `request_failed` either way.
+ */
+async function postDecompose(token: string, epic: EpicInput): Promise<Response | null> {
   try {
-    resp = await fetch(`${getEnv().VITE_AI_API_URL}/decompose`, {
+    const resp = await fetch(`${getEnv().VITE_AI_API_URL}/decompose`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ epic }),
     })
+    return resp.ok ? resp : null
   } catch {
-    return { ok: false, error: 'request_failed' }
+    return null
   }
+}
 
-  if (!resp.ok) return { ok: false, error: 'request_failed' }
+/**
+ * Defensive defaults for one proposal: a forward-compatible service that omitted the
+ * trace fields (or a proposal's `covers`) still decomposes — the panel just shows no
+ * trace. The server sanitises (dedupes) `covers`, but a malformed or forward service
+ * could still send duplicates, which would produce duplicate React keys in the chip
+ * list, so dedupe here too.
+ */
+function normaliseProposal(p: DecomposeProposal): DecomposeProposal {
+  return {
+    ...p,
+    covers: Array.isArray(p?.covers) ? [...new Set(p.covers)] : [],
+    estimate: typeof p?.estimate === 'number' ? p.estimate : null,
+    estimate_reason: typeof p?.estimate_reason === 'string' ? p.estimate_reason : '',
+  }
+}
+
+/** Parse a successful response, or null when the body is unusable. */
+async function parseDecomposeBody(resp: Response): Promise<DecomposeResult | null> {
   try {
     const body = (await resp.json()) as {
       proposals?: DecomposeProposal[]
@@ -64,26 +82,34 @@ export async function decomposeEpic(epic: {
       scope_creep?: ScopeCreep[]
       estimate_total?: number
     }
-    if (!Array.isArray(body?.proposals)) return { ok: false, error: 'request_failed' }
-    // Defensive defaults: a forward-compatible service that omitted the trace fields (or
-    // a proposal's covers) still decomposes — the panel just shows no trace. The server
-    // sanitises (dedupes) covers, but a malformed/forward service could still send
-    // duplicates, which would produce duplicate React keys in the chip list — dedupe here
-    // too.
-    const proposals = body.proposals.map((p) => ({
-      ...p,
-      covers: Array.isArray(p?.covers) ? [...new Set(p.covers)] : [],
-      estimate: typeof p?.estimate === 'number' ? p.estimate : null,
-      estimate_reason: typeof p?.estimate_reason === 'string' ? p.estimate_reason : '',
-    }))
+    if (!Array.isArray(body?.proposals)) return null
     return {
       ok: true,
-      proposals,
+      proposals: body.proposals.map(normaliseProposal),
       coverage_gaps: Array.isArray(body?.coverage_gaps) ? body.coverage_gaps : [],
       scope_creep: Array.isArray(body?.scope_creep) ? body.scope_creep : [],
       estimate_total: typeof body?.estimate_total === 'number' ? body.estimate_total : 0,
     }
   } catch {
-    return { ok: false, error: 'request_failed' }
+    return null
   }
+}
+
+/**
+ * Ask the local AI service to decompose an epic. Sends the epic's context/deliverables
+ * (already loaded client-side) plus the current Supabase JWT — the service verifies the
+ * token and never touches the database. Persistence is the caller's job, via createTicket.
+ *
+ * Three phases, each of which can fail: get a token, post, parse. Only the first is
+ * distinguishable to the caller; everything downstream is `request_failed`, deliberately,
+ * because the UI has one recovery path for all of it.
+ */
+export async function decomposeEpic(epic: EpicInput): Promise<DecomposeResult> {
+  const token = await accessToken()
+  if (!token) return { ok: false, error: 'unauthenticated' }
+
+  const resp = await postDecompose(token, epic)
+  if (!resp) return { ok: false, error: 'request_failed' }
+
+  return (await parseDecomposeBody(resp)) ?? { ok: false, error: 'request_failed' }
 }

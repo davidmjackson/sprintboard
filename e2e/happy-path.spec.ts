@@ -175,13 +175,21 @@ test.describe('S8.1 end-to-end happy path', () => {
 /** Read the authenticated user's id from the persisted Supabase session. */
 async function readSupabaseUserId(page: Page): Promise<string | null> {
   return page.evaluate(() => {
+    // Declared INSIDE the callback on purpose: this runs in the browser, so it cannot
+    // reference anything from the module scope out here. Splitting it out is still worth
+    // doing — ESLint scores each function separately, and the two shapes supabase-js has
+    // used for the persisted session are the bulk of the branching.
+    const idFrom = (raw: string): string | null => {
+      const parsed = JSON.parse(raw)
+      return parsed?.user?.id ?? parsed?.currentSession?.user?.id ?? null
+    }
+
     for (const key of Object.keys(window.localStorage)) {
-      if (/^sb-.*-auth-token$/.test(key)) {
-        const raw = window.localStorage.getItem(key)
-        if (!raw) continue
-        const parsed = JSON.parse(raw)
-        return parsed?.user?.id ?? parsed?.currentSession?.user?.id ?? null
-      }
+      if (!/^sb-.*-auth-token$/.test(key)) continue
+      const raw = window.localStorage.getItem(key)
+      // A matching key with no id is conclusive, not a reason to keep looking — the
+      // original returned on the first match too.
+      if (raw) return idFrom(raw)
     }
     return null
   })
