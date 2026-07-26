@@ -92,8 +92,55 @@ describe('decomposeEpic', () => {
 
   it('returns request_failed on a non-ok response', async () => {
     getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
-    vi.mocked(fetch).mockResolvedValue({ ok: false, status: 500 } as Response)
+    // The body is deliberately WELL-FORMED and parseable. With a bare `{ ok: false }` mock
+    // that has no `json`, deleting the status check still yields request_failed — via a
+    // TypeError caught downstream — so the test would pass for the wrong reason and the
+    // check it exists to protect would be unpinned. Here, only the status check can
+    // produce this result.
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ proposals: [{ title: 'leaked', description: 'd', type: 'story' }] }),
+    } as unknown as Response)
     expect(await decomposeEpic(epic)).toEqual({ ok: false, error: 'request_failed' })
+  })
+
+  it('returns request_failed when the request never completes', async () => {
+    // The transport-failure path: the AI service is local, so "not running" is the
+    // ordinary case, not an exotic one. Nothing exercised this before.
+    getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
+    vi.mocked(fetch).mockRejectedValue(new TypeError('fetch failed'))
+    expect(await decomposeEpic(epic)).toEqual({ ok: false, error: 'request_failed' })
+  })
+
+  it('returns request_failed when a 200 body will not parse as JSON', async () => {
+    getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON')
+      },
+    } as unknown as Response)
+    expect(await decomposeEpic(epic)).toEqual({ ok: false, error: 'request_failed' })
+  })
+
+  it('dedupes covers so the trace chips cannot collide on React keys', async () => {
+    // R2.1 added the dedupe for exactly this reason. The server sanitises, but a
+    // malformed or forward-compatible service could still send duplicates, and duplicate
+    // keys in the chip list are a React warning plus a rendering bug — not cosmetic.
+    getSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } } as never)
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        proposals: [
+          { title: 'T', description: 'd', type: 'story', rationale: 'r', covers: [0, 1, 0, 1, 0] },
+        ],
+      }),
+    } as unknown as Response)
+
+    const result = await decomposeEpic(epic)
+    if (!result.ok) throw new Error('expected a successful decomposition')
+    expect(result.proposals[0]!.covers).toEqual([0, 1])
   })
 
   it('returns request_failed when the 200 body is malformed', async () => {
