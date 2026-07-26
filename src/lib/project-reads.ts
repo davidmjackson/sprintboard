@@ -161,7 +161,11 @@ export function useTaggedRead<T>(
     return () => {
       active = false
     }
-  }, [activeProjectId, nonce])
+    // `readRef` is listed only to satisfy `exhaustive-deps`, which cannot see through
+    // `useLatest` to know it returns a ref. `useRef` hands back the same object for the
+    // life of the component, so this is referentially stable and the effect still re-runs
+    // on exactly `activeProjectId` and `nonce` — the pre-refactor dependency list.
+  }, [activeProjectId, nonce, readRef])
 
   const current = isCurrent(result, activeProjectId, nonce) ? result : null
   return {

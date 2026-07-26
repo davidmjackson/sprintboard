@@ -121,10 +121,19 @@ quietly unmet on every future PR. `test:unit` is a local fast-loop convenience, 
 a gate. CI needs the `RLS_TEST_*` **and** `SUPABASE_SERVICE_ROLE_KEY` secrets/variables
 configured for the suites to exercise isolation and signup rather than skip them — a CI
 run that collects only the unit-test file count means exactly that, and must be treated
-as a failure. **Compare test *files*, not test totals:** the totals move with every story
-and go stale, the file split does not. `npm test` collects **45** files; `test:unit`
-collects **38**, because it excludes every `*.integration.test.ts` — so the RLS,
-keepalive, signup, login **and** project suites vanish.
+as a failure.
+
+**The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
+**seven more files** than `test:unit` — the seven `*.integration.test.ts` suites: RLS,
+keepalive, signup, login, project, and the cross-tenant write paths. That difference is
+what stays put. The absolute numbers do not: every story that adds a unit-test file moves
+both, and they have been wrong in this file twice in a single session
+(44/37 → 45/38 → 46/39). At `d9e1c83` it is **46 vs 39**; treat that as a timestamped
+observation, not a constant, and re-derive it with
+`npx vitest list --filesOnly | wc -l` rather than trusting this line.
+
+If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the
+live suites silently skipped and the run is a failure however green it looks.
 
 ## The live-suite auth rate-limit flake
 
@@ -238,6 +247,21 @@ form here: a 48-agent adversarial pass once caught a broken `check-bundle` contr
 four conventional reviews missed. **Read the KILLED findings, not just the survivors** —
 majority-vote has discarded a correct finding before. Skip the deep pass for low-risk
 diffs (docs, copy, pure refactors already covered by tests); it is not free.
+
+**Give every mutation-testing reviewer its own worktree** (`isolation: "worktree"`). A
+serious review breaks the code deliberately to prove a test can fail, so two reviewers in
+one working tree will observe each other's mutations and draw confident, wrong
+conclusions. This has already happened: two reviewers of SPRIN-46 ran in the same tree and
+one found a foreign edit mid-run — it recognised the edit as another agent's mutation and
+worked around it, but nothing guaranteed that. The cost of isolation is a few hundred ms
+of setup; the cost of not isolating is a review you cannot trust and cannot tell is
+untrustworthy.
+
+**Ask a reviewer to mutate, not to read.** Across three reviews in one session, every
+finding that changed the code came from breaking something and watching what did *not* go
+red — vacuous tests, unguarded rejection paths, a dependency footgun measured at ~1.2M
+invocations in five seconds. None was found by reading. A review that reports no findings
+without having planted a single mutation has established very little.
 
 ## Verification
 
