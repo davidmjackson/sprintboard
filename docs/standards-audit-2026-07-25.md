@@ -123,6 +123,12 @@ Coverage is **not** currently gated in `verify`, and this change does not add it
 4. **Only then**, per stack, fold the rules into `lint` and let `verify` gate
    them.
 
+> **Status, 2026-07-26 (`4334ace`): Pass B's complexity work is COMPLETE and
+> `npm run lint:standards` reports 0.** The arc was 7 → 4 (S9.1) → 3 (S9.2) → 0
+> (S9.3). Step 4 above is therefore **unblocked** — it was gated on reaching zero,
+> and nothing now stands between the rules and the gate except the duplication
+> question below. What remains of Pass B is prod-to-prod duplication only.
+
 ### Pass B, first slice: `TicketDetailDialog.tsx` split (2026-07-25)
 
 Landed on `refactor/split-ticket-detail-dialog`. `TicketDetailDialog.tsx` went from
@@ -154,3 +160,71 @@ now runs **426 tests across 37 files**. All figures measured at the branch head,
 `TicketDetailDialog.test.tsx` and `ProjectShell.test.tsx` were **not**
 modified — which is what makes the behaviour-preservation claim checkable rather
 than asserted.
+
+### Pass B, second slice: `ProjectShell.tsx` (2026-07-26, `d9e1c83`)
+
+Cyclomatic **25 → under threshold**; 348 → 206 raw lines. Repo-wide **4 findings → 3**.
+
+The complexity was **repetition, not tangle**, so this slice consolidated where S9.1
+split. Two causes: the guard
+`prev && prev.projectId === project.id && prev.phase === 'loaded'` appeared **six
+times** across the local-mutation reducers (three boolean operators each), and the
+tickets/sprints reads were near-identical twins differing only in their fetch
+function. Both now live in `src/lib/project-reads.ts` (`useTaggedRead`,
+`patchLoaded`); header markup moved to `src/routes/ProjectShellHeader.tsx`.
+
+The number was not the point. The S4.6 invariant — a failed read must never look
+successful — was restated at **eight** separate sites, each free to drift. It is now
+enforced once, on the path every read and every local mutation takes.
+
+`ProjectShell.test.tsx`, `BoardTab.test.tsx` and `SprintsTab.test.tsx` were **not**
+modified: 88 existing tests pass against rewritten internals.
+
+**What the adversarial review caught, all in this slice's own new code:**
+
+- Holding `read` as an effect dependency was a footgun guarded only by a JSDoc
+  sentence. Nothing automated could catch a violation — `exhaustive-deps` *requires*
+  the dependency and the type cannot express "stable reference". Measured at ~1.2M
+  fetch invocations in five seconds with an inline arrow. Fixed with a latest-ref,
+  which restores the pre-refactor dependency list exactly.
+- The `active` guard on the **rejection** path was untested; removing it survived the
+  whole suite. Its failure mode is a project pinned on `loading` forever with no
+  Retry affordance.
+- One test was vacuous: it asserted a React warning removed in 18.3, while this repo
+  runs 19.2, so it passed with the cleanup deleted entirely.
+
+### Pass B, third slice: `ai.ts` + the e2e spec (2026-07-26, `4334ace`)
+
+Repo-wide **3 findings → 0**.
+
+`decomposeEpic` (44 lines, complexity 14) split along its three sequential phases —
+`accessToken`, `postDecompose`, `normaliseProposal`, `parseDecomposeBody` — leaving
+the export as the sequence. Public signature unchanged. The `e2e` finding was inside
+a `page.evaluate` callback, which runs in the **browser** and cannot reference module
+scope, so its helper is declared inside the callback; ESLint scores each function
+separately, which is sufficient.
+
+`src/lib/ai.test.ts` was unmodified in the refactor commit. Mutation-testing against
+it then showed it caught only **4 of 9** planted defects — pre-existing thinness, not
+regression, but every survivor was on an **error path**, which for a client calling a
+*local* service is the ordinary case. Two of them were tests that already existed and
+**passed for the wrong reason**: the non-ok mock had no `json` method, so deleting the
+status check still produced `request_failed` via a caught `TypeError`. Eight of nine
+now die.
+
+**The reusable rule from that:** a test whose expected value can be reached by two
+different routes pins neither. Give the mock enough shape that only the guard under
+test can produce the outcome.
+
+### On guards that no test can observe
+
+Two of these slices surfaced a guard whose removal is invisible to the whole suite —
+`patchLoaded`'s phase check (redundant with the derivation's phase gate) and
+`decomposeEpic`'s `Array.isArray(body.proposals)` (redundant with the surrounding
+`try/catch`). Both were kept, and both now carry a comment saying **no test can prove
+them**, verified by mutation.
+
+That comment is the point. Without it the next reader either deletes a guard expecting
+a red test, or writes a test that cannot fail and believes it is covered. Recording
+"this is defence in depth and here is why nothing catches its removal" is more honest
+than either.
