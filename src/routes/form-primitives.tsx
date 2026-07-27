@@ -3,18 +3,29 @@ import { useFormState } from 'react-hook-form'
 import { Button } from '@/components/ui/button'
 
 /** Input-styled class for a native <select>. Native beats radix Select for a fixed enum:
- *  it needs no jsdom pointer mocks and tests cleanly with userEvent.selectOptions. Shared
- *  by the create-ticket form and the ticket detail sidebar. */
+ *  it needs no jsdom pointer mocks and tests cleanly with userEvent.selectOptions. */
 export const selectClass =
   'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm'
 
-/** The form-level (not field-level) error, painted as an alert. Reads the error itself so
- *  the five forms that show one no longer each repeat the read and the markup.
+/** Both primitives below subscribe via `useFormState()`, never `useFormContext().formState`
+ *  — matching this repo's own `useFormField` in `src/components/ui/form.tsx:42`.
+ *  `useFormState()` establishes each component's own subscription, so its re-render does
+ *  not depend on which fields the `useForm()` owner happens to have read, and a large form
+ *  does not re-render wholesale on an unrelated field change elsewhere. That is a real
+ *  benefit and the reason to keep it.
  *
- *  `useFormState()`, NOT `useFormContext().formState`: the latter hands back the parent's
- *  proxy, and reading `errors` off it from a child subscribes the parent by side effect.
- *  `useFormState` establishes this component's own subscription — the same thing
- *  `useFormField` in `src/components/ui/form.tsx` does. */
+ *  It is not, however, something a test in this repository can observe: mutating either
+ *  function to `useFormContext().formState` was tried and stayed green under every
+ *  arrangement tested — a `React.memo` wrapper, a `useForm()` owner proven by a
+ *  render-count spy never to re-render, a memoized sibling, and a lazy-mounted error
+ *  region. `FormProvider` memoizes its context value, so these are not vacuous barriers;
+ *  the two implementations are simply behaviourally indistinguishable to every test this
+ *  repo can write today. Keep `useFormState()` for the reason above, not because a test
+ *  would catch its removal — recorded here so the next reader neither deletes it expecting
+ *  a red test nor writes one that cannot fail. */
+
+/** The form-level (not field-level) error, painted as an alert. Reads the error itself so
+ *  the five forms that show one no longer each repeat the read and the markup. */
 export function FormRootError() {
   const { errors } = useFormState()
   const message = errors.root?.message
