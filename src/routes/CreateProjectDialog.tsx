@@ -82,6 +82,8 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
       submitLabel="Create project"
       form={form}
       onSubmit={onSubmit}
+      // Safe if the shell ever calls this twice on a double close: setting an already-false
+      // state is a no-op, same as the old handleOpenChange's identical assignment.
       onClosed={() => setKeyEdited(false)}
     >
       <FormField
