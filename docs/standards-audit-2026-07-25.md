@@ -264,9 +264,31 @@ three `Create*Dialog` components:
 five call sites. The five existing component test files —
 **`LoginPage.test.tsx`, `SignupPage.test.tsx`, `CreateProjectDialog.test.tsx`,
 `CreateSprintDialog.test.tsx`, `CreateTicketDialog.test.tsx`** — were **not**
-modified; `git diff --stat main --` against all five is empty. That is what makes
-the behaviour-preservation claim checkable rather than asserted, the same
-constraint the first three slices ran under.
+modified; `git diff --stat main --` against all five is empty. That constraint is
+real, but a peer reviewer measured what it actually constrains rather than taking
+"behaviour preservation is checkable" on faith: it ran 10 mutations of the
+extracted shared modules against only those five files (28 tests) and they killed
+**1 of 10** — `role="alert"` → `role="status"`. The other nine —
+`form.reset()` deleted, `disabled={isSubmitting}` deleted, `pendingLabel`
+ignored, `onClosed` dropped, email `autocomplete` → `off`, password `type` →
+`text`, both `passwordAutoComplete` call-site swaps, and the shell's `close()`
+callback rewritten to skip reset/`onClosed` — all survive the five frozen files
+and are killed only by tests added on this branch, written against the new
+implementation: exactly the evidence the frozen-file argument is meant not to
+lean on. What the five frozen files demonstrably establish is narrower than "the
+whole refactor's behaviour preservation is checkable": the behaviours those 28
+tests actually cover are preserved (measured 1-of-10), not behaviour
+preservation as a whole. The frozen-file constraint is still worth having for
+what it does catch — it is just not, by itself, the guarantee the acceptance
+criterion claimed.
+
+Three further mutations of the shared modules are cosmetic and unpinned by any
+test on this branch — recorded here rather than fixed, the same convention as
+the pre-existing gaps below: dropping `size="sm"` from the shared trigger button
+in `CreateDialog.tsx` survives; gutting the `selectClass` string survives (three
+consumers, no assertion anywhere on the class); and rendering `<FormRootError />`
+before `{children}` instead of after survives, which would put the form-level
+error above the fields in all three dialogs at once.
 
 **A design claim was tested and found false, and the correction is the finding.**
 The plan asserted that subscribing to form state via `useFormContext().formState`

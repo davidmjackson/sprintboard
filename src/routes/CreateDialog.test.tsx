@@ -77,14 +77,40 @@ describe('CreateDialog', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('closes when onSubmit invokes the close callback', async () => {
-    render(<Harness onSubmit={(_values, close) => close()} />)
+  it('closes when onSubmit invokes the close callback, the same way a manual close does', async () => {
+    const onClosed = vi.fn()
+    render(<Harness onSubmit={(_values, close) => close()} onClosed={onClosed} />)
     const user = await open()
 
     await user.type(screen.getByLabelText('Thing'), 'a widget')
     await user.click(screen.getByRole('button', { name: 'Create thing' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // A manual close resets the form and fires onClosed. The programmatic close
+    // callback must do both too — not just make the dialog disappear.
+    expect(onClosed).toHaveBeenCalledTimes(1)
+
+    await open()
+    expect(screen.getByLabelText('Thing')).toHaveValue('')
+  })
+
+  it('keeps the submit button pending and disabled while onSubmit is in flight', async () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const onSubmit = vi.fn(() => held)
+    render(<Harness onSubmit={onSubmit} />)
+    const user = await open()
+
+    await user.type(screen.getByLabelText('Thing'), 'a widget')
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+
+    const pending = await screen.findByRole('button', { name: 'Creating…' })
+    expect(pending).toBeDisabled()
+
+    release()
+    await screen.findByRole('button', { name: 'Create thing' })
   })
 
   it('resets the form when the dialog closes, so a reopen starts blank', async () => {
