@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import { useForm } from 'react-hook-form'
+
+import { Form } from '@/components/ui/form'
+import { AuthCredentialFields } from './AuthCredentialFields'
+
+function Harness({
+  passwordAutoComplete,
+}: {
+  passwordAutoComplete: 'current-password' | 'new-password'
+}) {
+  const form = useForm<{ email: string; password: string }>({
+    defaultValues: { email: '', password: '' },
+  })
+  return (
+    <Form {...form}>
+      <form noValidate>
+        <AuthCredentialFields passwordAutoComplete={passwordAutoComplete} />
+      </form>
+    </Form>
+  )
+}
+
+describe('AuthCredentialFields', () => {
+  it('renders a labelled email field of type email', () => {
+    render(<Harness passwordAutoComplete="current-password" />)
+    const email = screen.getByLabelText('Email')
+    expect(email).toHaveAttribute('type', 'email')
+    expect(email).toHaveAttribute('autocomplete', 'email')
+    expect(email).toHaveAttribute('placeholder', 'you@example.com')
+  })
+
+  it('renders a labelled password field of type password', () => {
+    render(<Harness passwordAutoComplete="current-password" />)
+    expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password')
+  })
+
+  // The one attribute that legitimately differs between the two pages, and the one a
+  // careless shared default would silently collapse. Both values are asserted, so a
+  // hard-coded value cannot pass.
+  it('gives the password field autocomplete=current-password when asked', () => {
+    render(<Harness passwordAutoComplete="current-password" />)
+    expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'current-password')
+  })
+
+  it('gives the password field autocomplete=new-password when asked', () => {
+    render(<Harness passwordAutoComplete="new-password" />)
+    expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'new-password')
+  })
+})

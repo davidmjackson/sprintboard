@@ -4,16 +4,9 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { supabase } from '@/lib/supabase'
 import { LoginSchema, type LoginValues } from '@/lib/auth-schemas'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
+import { Form } from '@/components/ui/form'
+import { AuthCredentialFields } from './AuthCredentialFields'
+import { FormRootError, SubmitButton } from './form-primitives'
 import { AuthLayout } from './AuthLayout'
 
 /**
@@ -38,8 +31,6 @@ export function LoginPage() {
     navigate('/', { replace: true })
   }
 
-  const rootError = form.formState.errors.root?.message
-
   return (
     <AuthLayout
       title="Log in"
@@ -55,48 +46,9 @@ export function LoginPage() {
     >
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
-          <FormField
-            control={form.control}
-            name="email"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Email</FormLabel>
-                <FormControl>
-                  <Input
-                    type="email"
-                    autoComplete="email"
-                    placeholder="you@example.com"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="password"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Password</FormLabel>
-                <FormControl>
-                  <Input type="password" autoComplete="current-password" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          {rootError ? (
-            <p role="alert" className="text-destructive text-sm">
-              {rootError}
-            </p>
-          ) : null}
-
-          <Button type="submit" className="w-full" disabled={form.formState.isSubmitting}>
-            {form.formState.isSubmitting ? 'Logging in…' : 'Log in'}
-          </Button>
+          <AuthCredentialFields passwordAutoComplete="current-password" />
+          <FormRootError />
+          <SubmitButton label="Log in" pendingLabel="Logging in…" className="w-full" />
         </form>
       </Form>
     </AuthLayout>

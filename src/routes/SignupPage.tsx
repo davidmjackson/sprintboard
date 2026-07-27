@@ -6,7 +6,6 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { SignupSchema, type SignupValues } from '@/lib/auth-schemas'
 import { isDuplicateSignup } from '@/lib/auth-signup'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   Form,
@@ -17,6 +16,8 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { AuthCredentialFields } from './AuthCredentialFields'
+import { FormRootError, SubmitButton } from './form-primitives'
 import { AuthLayout } from './AuthLayout'
 
 const DUPLICATE_MESSAGE = 'An account with this email already exists. Try logging in instead.'
@@ -79,8 +80,6 @@ export function SignupPage() {
     )
   }
 
-  const rootError = form.formState.errors.root?.message
-
   return (
     <AuthLayout
       title="Create your account"
@@ -96,38 +95,7 @@ export function SignupPage() {
     >
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
-          <FormField
-            control={form.control}
-            name="email"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Email</FormLabel>
-                <FormControl>
-                  <Input
-                    type="email"
-                    autoComplete="email"
-                    placeholder="you@example.com"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="password"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Password</FormLabel>
-                <FormControl>
-                  <Input type="password" autoComplete="new-password" {...field} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          <AuthCredentialFields passwordAutoComplete="new-password" />
 
           <FormField
             control={form.control}
@@ -144,15 +112,12 @@ export function SignupPage() {
             )}
           />
 
-          {rootError ? (
-            <p role="alert" className="text-destructive text-sm">
-              {rootError}
-            </p>
-          ) : null}
-
-          <Button type="submit" className="w-full" disabled={form.formState.isSubmitting}>
-            {form.formState.isSubmitting ? 'Creating account…' : 'Create account'}
-          </Button>
+          <FormRootError />
+          <SubmitButton
+            label="Create account"
+            pendingLabel="Creating account…"
+            className="w-full"
+          />
         </form>
       </Form>
     </AuthLayout>
