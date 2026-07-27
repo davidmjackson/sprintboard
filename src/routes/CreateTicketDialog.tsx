@@ -26,6 +26,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { selectClass } from './form-primitives'
 
 const CreateTicketSchema = z.object({
   summary: z
@@ -46,11 +47,6 @@ const CreateTicketSchema = z.object({
   acceptanceCriteria: z.string().trim().max(2000).optional(),
 })
 type CreateTicketValues = z.input<typeof CreateTicketSchema>
-
-// The type field is a native <select> styled like Input — a fixed four-option enum
-// where a native control is honest and easy to test, and needs no extra dependency.
-const selectClass =
-  'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm'
 
 /**
  * Create-ticket dialog. The key and number are assigned by the database trigger and

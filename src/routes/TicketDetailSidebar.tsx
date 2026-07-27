@@ -10,7 +10,8 @@ import {
   type TicketUpdate,
 } from '@/lib/domain'
 import type { SprintsPhase } from './ProjectShell'
-import { EditableText, FieldLabel, selectClass } from './EditableText'
+import { EditableText, FieldLabel } from './EditableText'
+import { selectClass } from './form-primitives'
 import { TicketReferenceSelect } from './TicketReferenceSelect'
 
 /** Sidebar: a quiet "Details" panel, the Jira right rail */
