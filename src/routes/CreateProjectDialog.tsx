@@ -7,19 +7,8 @@ import { useAuth } from '@/lib/auth-context'
 import { createProject } from '@/lib/projects'
 import { deriveProjectKey, PROJECT_KEY_PATTERN } from '@/lib/project-key'
 import type { Project } from '@/lib/domain'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import {
-  Form,
   FormControl,
   FormDescription,
   FormField,
@@ -27,6 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { CreateDialog } from './CreateDialog'
 
 const CreateProjectSchema = z.object({
   name: z
@@ -52,7 +42,6 @@ type CreateProjectValues = z.infer<typeof CreateProjectSchema>
  */
 export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Project) => void }) {
   const { user } = useAuth()
-  const [open, setOpen] = useState(false)
   const [keyEdited, setKeyEdited] = useState(false)
 
   const form = useForm<CreateProjectValues>({
@@ -60,15 +49,7 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
     defaultValues: { name: '', key: '' },
   })
 
-  function handleOpenChange(next: boolean) {
-    setOpen(next)
-    if (!next) {
-      form.reset({ name: '', key: '' })
-      setKeyEdited(false)
-    }
-  }
-
-  async function onSubmit(values: CreateProjectValues) {
+  async function onSubmit(values: CreateProjectValues, close: () => void) {
     if (!user) {
       form.setError('root', { message: 'You must be signed in to create a project.' })
       return
@@ -90,85 +71,67 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
     }
 
     onCreated?.(result.project)
-    handleOpenChange(false)
+    close()
   }
 
-  const rootError = form.formState.errors.root?.message
-
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm">New project</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create a project</DialogTitle>
-          <DialogDescription>Name it, and we’ll suggest a key you can edit.</DialogDescription>
-        </DialogHeader>
+    <CreateDialog
+      trigger="New project"
+      title="Create a project"
+      description="Name it, and we’ll suggest a key you can edit."
+      submitLabel="Create project"
+      form={form}
+      onSubmit={onSubmit}
+      // Safe if the shell ever calls this twice on a double close: setting an already-false
+      // state is a no-op, same as the old handleOpenChange's identical assignment.
+      onClosed={() => setKeyEdited(false)}
+    >
+      <FormField
+        control={form.control}
+        name="name"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Name</FormLabel>
+            <FormControl>
+              <Input
+                placeholder="Sprintboard"
+                {...field}
+                onChange={(e) => {
+                  field.onChange(e)
+                  if (!keyEdited) {
+                    form.setValue('key', deriveProjectKey(e.target.value), {
+                      shouldValidate: form.formState.isSubmitted,
+                    })
+                  }
+                }}
+              />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Name</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="Sprintboard"
-                      {...field}
-                      onChange={(e) => {
-                        field.onChange(e)
-                        if (!keyEdited) {
-                          form.setValue('key', deriveProjectKey(e.target.value), {
-                            shouldValidate: form.formState.isSubmitted,
-                          })
-                        }
-                      }}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="key"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Key</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="SPR"
-                      {...field}
-                      onChange={(e) => {
-                        setKeyEdited(true)
-                        field.onChange(e.target.value.toUpperCase())
-                      }}
-                    />
-                  </FormControl>
-                  <FormDescription>Prefixes ticket IDs, e.g. SPR-1.</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {rootError ? (
-              <p role="alert" className="text-destructive text-sm">
-                {rootError}
-              </p>
-            ) : null}
-
-            <DialogFooter>
-              <Button type="submit" disabled={form.formState.isSubmitting}>
-                {form.formState.isSubmitting ? 'Creating…' : 'Create project'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+      <FormField
+        control={form.control}
+        name="key"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Key</FormLabel>
+            <FormControl>
+              <Input
+                placeholder="SPR"
+                {...field}
+                onChange={(e) => {
+                  setKeyEdited(true)
+                  field.onChange(e.target.value.toUpperCase())
+                }}
+              />
+            </FormControl>
+            <FormDescription>Prefixes ticket IDs, e.g. SPR-1.</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+    </CreateDialog>
   )
 }

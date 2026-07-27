@@ -1,4 +1,5 @@
-import { FieldLabel, selectClass } from './EditableText'
+import { FieldLabel } from './EditableText'
+import { selectClass } from './form-primitives'
 
 /** One choosable row in a reference picker: the id that gets written to the ticket, and
  *  how that row reads in the list. */

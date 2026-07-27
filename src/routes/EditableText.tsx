@@ -5,9 +5,6 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 
-export const selectClass =
-  'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm'
-
 /** Small uppercase eyebrow label, shared by every sidebar field. */
 export function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
