@@ -10,8 +10,15 @@ import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/comp
  *
  * `passwordAutoComplete` is required and has no default on purpose. It is the one
  * attribute that genuinely differs between the two pages (`current-password` on login,
- * `new-password` on signup), so a shared default is exactly the mistake worth making
- * impossible: the union type means a missing or misspelt value fails to compile.
+ * `new-password` on signup). The union type buys real, compiler-checked protection:
+ * omitting the prop, passing `undefined`, or misspelling either literal all fail to
+ * compile. It buys nothing beyond that — nothing here stops a later edit from
+ * widening the type (e.g. to `string` with a default) or stops one call site from
+ * passing the *other* page's valid literal; both are type-correct and were confirmed
+ * to pass `npm run build`, `npm run lint` and every pre-existing auth test. Which page
+ * passes which value is pinned by `AuthCredentialFields.wiring.test.tsx`, which mounts
+ * the real `LoginPage` and `SignupPage` and asserts the rendered `autocomplete`
+ * attribute — not by this type.
  */
 export function AuthCredentialFields({
   passwordAutoComplete,

@@ -37,8 +37,12 @@ describe('AuthCredentialFields', () => {
   })
 
   // The one attribute that legitimately differs between the two pages, and the one a
-  // careless shared default would silently collapse. Both values are asserted, so a
-  // hard-coded value cannot pass.
+  // careless shared default would silently collapse. These two tests only prove
+  // pass-through: `Harness` always supplies `passwordAutoComplete` explicitly, so they
+  // cannot see which value each real page passes at its call site — a hard-coded value
+  // in the component would fail them, but a hard-coded value at a call site would not.
+  // That wiring is pinned separately, by `AuthCredentialFields.wiring.test.tsx`, which
+  // mounts the real `LoginPage` and `SignupPage`.
   it('gives the password field autocomplete=current-password when asked', () => {
     render(<Harness passwordAutoComplete="current-password" />)
     expect(screen.getByLabelText('Password')).toHaveAttribute('autocomplete', 'current-password')

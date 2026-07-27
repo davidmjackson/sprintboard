@@ -8,11 +8,17 @@ export const selectClass =
   'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm'
 
 /** Both primitives below subscribe via `useFormState()`, never `useFormContext().formState`
- *  — matching this repo's own `useFormField` in `src/components/ui/form.tsx:42`.
+ *  — the same family of subscription as this repo's own `useFormField` in
+ *  `src/components/ui/form.tsx:42`, though that hook scopes it to one field
+ *  (`useFormState({ name })`) while both primitives here are unscoped (`useFormState()`)
+ *  because each watches form-wide state (`errors.root`, `isSubmitting`), not one field.
  *  `useFormState()` establishes each component's own subscription, so its re-render does
  *  not depend on which fields the `useForm()` owner happens to have read, and a large form
  *  does not re-render wholesale on an unrelated field change elsewhere. That is a real
- *  benefit and the reason to keep it.
+ *  benefit and the reason to keep it. The unscoped call does mean `FormRootError` re-reads
+ *  `errors` on *any* field's error, not only `root` — a broader subscription than the
+ *  narrowest one possible, traded for not having to name every field it doesn't otherwise
+ *  care about.
  *
  *  It is not, however, something a test in this repository can observe: mutating either
  *  function to `useFormContext().formState` was tried and stayed green under every

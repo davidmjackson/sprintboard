@@ -318,6 +318,57 @@ own.
 methodology) runs **467 tests across 43 files** at this slice's head, 2026-07-27
 — a point-in-time count. `npm run lint:standards` remains **0 findings**.
 
+### Pass B, fourth slice — fix wave: three-reviewer mutation pass (2026-07-27)
+
+Three independent adversarial reviewers ran against `refactor/dedupe-form-scaffolding`
+(head `9ea0705`). All three, independently, disproved the same design claim: that a
+required, union-typed `passwordAutoComplete` prop makes the login/signup autocomplete
+mix-up "impossible." It stops omission, `undefined` and misspelling — all three fail
+`npm run build` — but nothing in the type says *which page* passes *which* valid
+literal. Swapping the two pages' values, or widening the prop to
+`passwordAutoComplete?: string` with a default and deleting it from both call sites,
+each passed `npm run build`, `npm run lint` and all 23 pre-existing auth tests; the
+widened-default variant left signup silently rendering `autocomplete="current-password"`.
+Fixed by `src/routes/AuthCredentialFields.wiring.test.tsx`, which mounts the real
+`LoginPage` and `SignupPage` (not the existing `Harness`, which always supplies the prop
+explicitly and so can only prove pass-through) and asserts the rendered `autocomplete`
+attribute. All three reviewers' mutations were re-run against it and confirmed RED, then
+restored. The false "both values are asserted, so a hard-coded value cannot pass"
+comment in `AuthCredentialFields.test.tsx`, and the JSDoc in `AuthCredentialFields.tsx`
+overstating what the union type buys, were both corrected to point at this new test
+rather than at each other's coverage claims. A minor accuracy finding on the same pass:
+`form-primitives.tsx`'s `useFormState()` comment cited `useFormField` in
+`src/components/ui/form.tsx:42` as precedent without noting that hook is *scoped*
+(`useFormState({ name })`) while both primitives here are unscoped — with the
+consequence that `FormRootError` re-renders on any field's error, not only `root`.
+Corrected; no implementation changed.
+
+**Pre-existing coverage gaps the pass surfaced, recorded here and deliberately not
+fixed.** The mutated code in each case is byte-identical to before this refactor and
+the test file covering it is one of the five byte-frozen behaviour-preservation files
+(`LoginPage.test.tsx`, `SignupPage.test.tsx`, `CreateProjectDialog.test.tsx`,
+`CreateSprintDialog.test.tsx`, `CreateTicketDialog.test.tsx`), so these gaps predate
+this story and are out of its scope:
+
+- A blank story-points field submits `0` rather than `undefined` — an unestimated
+  ticket recorded as a zero-point ticket, a different signal on a Scrum board.
+- `description` and `acceptanceCriteria` could be swapped in `CreateTicketDialog`'s
+  create call with no test noticing.
+- `displayName` losing its `.trim()` in `SignupPage` goes unnoticed.
+- `navigate('/', { replace: true })` losing `replace` goes unnoticed, in both
+  `LoginPage` and `SignupPage`.
+- `min={0}` on the story-points input is unpinned.
+- `shouldValidate: form.formState.isSubmitted` can be inverted unnoticed.
+- `CreateSprintDialog` never itself asserts that a successful create closes the
+  dialog — caught only transitively, via `ProjectShell.test.tsx`, unlike its two
+  create-dialog siblings which do assert it directly.
+- `noValidate` and the Fragment-vs-`<div>` layout choice are structurally
+  untestable in jsdom, which has no native HTML5 validation UI to observe.
+
+These are stated, not fixed: fixing them would mean touching one of the frozen test
+files or the behaviour those files pin, which this fix wave's scope explicitly
+excludes.
+
 ### On guards that no test can observe
 
 Two of these slices surfaced a guard whose removal is invisible to the whole suite —
