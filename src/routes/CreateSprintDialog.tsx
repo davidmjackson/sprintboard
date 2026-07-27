@@ -1,30 +1,13 @@
-import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 
 import { createSprint } from '@/lib/sprints'
 import { CreateSprintSchema, type CreateSprintValues } from '@/lib/sprint-schemas'
 import type { Sprint } from '@/lib/domain'
-import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form'
+import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
+import { CreateDialog } from './CreateDialog'
 
 /**
  * Create-sprint dialog. `status` is not on this form and is never sent — the column
@@ -46,19 +29,12 @@ export function CreateSprintDialog({
   existing: readonly Sprint[]
   onCreated?: (sprint: Sprint) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   const form = useForm<CreateSprintValues>({
     resolver: zodResolver(CreateSprintSchema),
     defaultValues: { name: '', goal: '', startDate: '', endDate: '' },
   })
 
-  function handleOpenChange(next: boolean) {
-    setOpen(next)
-    if (!next) form.reset()
-  }
-
-  async function onSubmit(values: CreateSprintValues) {
+  async function onSubmit(values: CreateSprintValues, close: () => void) {
     const parsed = CreateSprintSchema.parse(values)
     const result = await createSprint({
       projectId,
@@ -77,99 +53,75 @@ export function CreateSprintDialog({
     }
 
     onCreated?.(result.sprint)
-    handleOpenChange(false)
+    close()
   }
 
-  const rootError = form.formState.errors.root?.message
-
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm">New sprint</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Create a sprint</DialogTitle>
-          <DialogDescription>
-            It starts as a future sprint. Everything here is optional — leave the name blank and we
-            will number it for you.
-          </DialogDescription>
-        </DialogHeader>
+    <CreateDialog
+      trigger="New sprint"
+      title="Create a sprint"
+      description="It starts as a future sprint. Everything here is optional — leave the name blank and we will number it for you."
+      submitLabel="Create sprint"
+      form={form}
+      onSubmit={onSubmit}
+    >
+      <FormField
+        control={form.control}
+        name="name"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Name</FormLabel>
+            <FormControl>
+              <Input placeholder="Sprint 1" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Name</FormLabel>
-                  <FormControl>
-                    <Input placeholder="Sprint 1" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+      <FormField
+        control={form.control}
+        name="goal"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Goal</FormLabel>
+            <FormControl>
+              <Textarea rows={2} placeholder="Ship the board" {...field} />
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
 
-            <FormField
-              control={form.control}
-              name="goal"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Goal</FormLabel>
-                  <FormControl>
-                    <Textarea rows={2} placeholder="Ship the board" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+      <div className="grid grid-cols-2 gap-4">
+        <FormField
+          control={form.control}
+          name="startDate"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Start date</FormLabel>
+              <FormControl>
+                <Input type="date" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
 
-            <div className="grid grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="startDate"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Start date</FormLabel>
-                    <FormControl>
-                      <Input type="date" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="endDate"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>End date</FormLabel>
-                    <FormControl>
-                      <Input type="date" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            {rootError ? (
-              <p role="alert" className="text-destructive text-sm">
-                {rootError}
-              </p>
-            ) : null}
-
-            <DialogFooter>
-              <Button type="submit" disabled={form.formState.isSubmitting}>
-                {form.formState.isSubmitting ? 'Creating…' : 'Create sprint'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </Form>
-      </DialogContent>
-    </Dialog>
+        <FormField
+          control={form.control}
+          name="endDate"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>End date</FormLabel>
+              <FormControl>
+                <Input type="date" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      </div>
+    </CreateDialog>
   )
 }
