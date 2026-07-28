@@ -171,18 +171,18 @@ export function runDuplicationScan({
 }
 
 /**
- * `CHECK_DUPLICATION_SCOPE`, set only by this script's own tests, points the scan at
- * a fixture tree instead of production `src` — the only way a process-level test can
- * exercise `main()` as a real subprocess without either scanning production code or
- * building a fixture up to `LIMITS`' floor of 40 files / 3,000 lines. Setting it also
- * drops the ignore list (nothing production-specific to ignore in a fixture tree) and
- * relaxes the floor to 1 file / 1 line — the same relaxation the pure `evaluateReport`
- * tests already use for the same reason. `npm run verify` never sets this.
+ * `scopeOverride` — this script's own process-level tests pass `process.argv[2]` to
+ * point a real subprocess run at a fixture tree instead of production `src`. That is
+ * the ONLY thing an override may change: `ignore` is always `IGNORE_PATTERNS` and
+ * `limits` is always `LIMITS`, full stop — there is deliberately no parameter, env
+ * var, or code path that relaxes the floor or drops the ignore list for any
+ * invocation. A redirected scope must still fail closed on the real 40-file /
+ * 3,000-line floor, exactly like a broken ignore glob would; the tests prove this
+ * with a real fixture tree sized past that floor rather than by shrinking it.
+ * `npm run verify` calls this with no argument.
  */
-function resolveScanOptions() {
-  const scope = process.env.CHECK_DUPLICATION_SCOPE
-  if (!scope) return { scope: PRODUCTION_SCOPE, ignore: IGNORE_PATTERNS, limits: LIMITS }
-  return { scope, ignore: [], limits: { ...LIMITS, minSources: 1, minScannedLines: 1 } }
+export function resolveScanOptions(scopeOverride) {
+  return { scope: scopeOverride ?? PRODUCTION_SCOPE, ignore: IGNORE_PATTERNS, limits: LIMITS }
 }
 
 /**
@@ -192,7 +192,7 @@ function resolveScanOptions() {
  * ran before anything checked whether `total` exists.
  */
 function main() {
-  const { scope, ignore, limits } = resolveScanOptions()
+  const { scope, ignore, limits } = resolveScanOptions(process.argv[2])
   const report = runDuplicationScan({ scope, ignore })
   const violations = evaluateReport(report, limits)
 

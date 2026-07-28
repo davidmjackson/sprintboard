@@ -6,9 +6,11 @@ import { join, resolve } from 'node:path'
 import {
   IGNORE_PATTERNS,
   LIMITS,
+  PRODUCTION_SCOPE,
   assertScanSucceeded,
   evaluateReport,
   isEntryPoint,
+  resolveScanOptions,
   runDuplicationScan,
 } from './check-duplication.mjs'
 
@@ -45,6 +47,48 @@ const clone = `export function totalPoints(tickets: { points: number }[]) {
   return total
 }
 `
+
+/**
+ * A filler file, unique per index. Every identifier embeds `index`, which
+ * empirically stops jscpd from treating structurally-identical filler files as
+ * clones of each other — verified directly: two files differing only in an
+ * accumulator identifier name (`total1`/`item1` vs `total2`/`item2`) scored 0
+ * clones against the real binary. ~75 lines each.
+ */
+function fillerFile(index) {
+  const lines = [`export function filler${index}(seed: number) {`, `  let acc${index} = seed`]
+  for (let i = 0; i < 70; i++) {
+    lines.push(`  acc${index} = acc${index} + ${i}`)
+  }
+  lines.push(`  return acc${index}`, '}', '')
+  return lines.join('\n')
+}
+
+/**
+ * A tree of `count` unique filler files. N2: process-level tests must exercise
+ * `main()` against a scope that clears LIMITS' real 40-file / 3,000-line floor
+ * themselves, never by relaxing the floor. 42 files × ~75 lines is comfortably
+ * over both (measured directly: 42 files / 3,108 lines, 0 clones, 0%).
+ */
+function fillerTreeFiles(count = 42) {
+  const files = {}
+  for (let i = 0; i < count; i++) files[`filler${i}.ts`] = fillerFile(i)
+  return files
+}
+
+/**
+ * A ~215-line block, planted verbatim into two extra files alongside a filler
+ * tree, so the combined duplication clears 3% of that much larger tree — the
+ * same reasoning as the real `src/lib/ticket-actions.ts` proof in the task
+ * report, just synthetic. Measured directly: added to `fillerTreeFiles()`, this
+ * produces 44 files / 3,536 lines at 6.02% duplication.
+ */
+function bigCloneBlock() {
+  const lines = ['export function bigDuplicateLogic(seed: number) {', '  let total = seed']
+  for (let i = 0; i < 210; i++) lines.push(`  total = total + ${i}`)
+  lines.push('  return total', '}', '')
+  return lines.join('\n')
+}
 
 describe('evaluateReport', () => {
   it('passes a clean production scan', () => {
@@ -133,6 +177,27 @@ describe('assertScanSucceeded', () => {
 
   it('does not throw on a successful result', () => {
     expect(() => assertScanSucceeded({ status: 0 })).not.toThrow()
+  })
+})
+
+describe('resolveScanOptions', () => {
+  // N2/N1: pins the wiring itself. A future edit that swaps in weaker limits, or
+  // drops the ignore list, or relaxes the floor for any argument — including no
+  // argument at all — must fail this exact-equality check.
+  it('with no argument, returns exactly the real production scope, ignore list and limits', () => {
+    expect(resolveScanOptions()).toEqual({
+      scope: PRODUCTION_SCOPE,
+      ignore: IGNORE_PATTERNS,
+      limits: LIMITS,
+    })
+  })
+
+  it('overrides only the scope when given one — ignore and limits never change', () => {
+    expect(resolveScanOptions('/some/fixture/tree')).toEqual({
+      scope: '/some/fixture/tree',
+      ignore: IGNORE_PATTERNS,
+      limits: LIMITS,
+    })
   })
 })
 
@@ -268,20 +333,23 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
    * test`, `npm run test:unit`, and this file all run from it), so a cwd-relative
    * path is both correct and immune to that rewrite.
    *
-   * `CHECK_DUPLICATION_SCOPE` is the test-only escape hatch documented on
-   * `resolveScanOptions` in check-duplication.mjs: it points a real, spawned-as-a-
-   * process run of the script at a fixture tree instead of production `src`.
+   * The scope override travels as `argv[2]` (`resolveScanOptions`'s own
+   * parameter), never an env var: it is then visible in `package.json`/the spawn
+   * call rather than invisible in the environment, and — critically — it can
+   * never carry a relaxed `ignore`/`limits` alongside it, because
+   * `resolveScanOptions` does not accept them as arguments at all.
    */
   function runScriptAgainst(scope) {
     const scriptPath = resolve('scripts/check-duplication.mjs')
-    return spawnSync(process.execPath, [scriptPath], {
-      encoding: 'utf8',
-      env: { ...process.env, CHECK_DUPLICATION_SCOPE: scope },
-    })
+    return spawnSync(process.execPath, [scriptPath, scope], { encoding: 'utf8' })
   }
 
-  it('exits non-zero and prints both file paths of a real planted clone', () => {
-    const dir = fixtureDir({ 'a.ts': clone, 'b.ts': clone })
+  it('exits non-zero and prints both file paths of a real planted clone, over a tree that clears the real production floor', () => {
+    const dir = fixtureDir({
+      ...fillerTreeFiles(),
+      'dup-a.ts': bigCloneBlock(),
+      'dup-b.ts': bigCloneBlock(),
+    })
     try {
       const result = runScriptAgainst(dir)
       const output = result.stdout + result.stderr
@@ -289,19 +357,33 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
       expect(result.status).not.toBe(0)
       // Pins firstFile.name/.start + secondFile.name/.start rendering: a mutation to
       // .path/.startLine would print "undefined:undefined" and fail this match.
-      expect(output).toMatch(/a\.ts:\d+/)
-      expect(output).toMatch(/b\.ts:\d+/)
+      expect(output).toMatch(/dup-a\.ts:\d+/)
+      expect(output).toMatch(/dup-b\.ts:\d+/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('exits 0 and prints the summary line over a clean fixture tree', () => {
-    const dir = fixtureDir({ 'a.ts': clone, 'b.ts': 'export const answer = 42\n' })
+  it('exits 0 and prints the summary line over a clean tree that also clears the real production floor', () => {
+    const dir = fixtureDir(fillerTreeFiles())
     try {
       const result = runScriptAgainst(dir)
       expect(result.status).toBe(0)
       expect(result.stdout).toMatch(/^check-duplication: \d+ files \/ \d+ lines scanned/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // N2: proves there is no invocation — argv override included — that produces a
+  // green gate over a scan smaller than the real production floor. A redirected
+  // scope must fail closed on it, exactly like a broken ignore glob would.
+  it('exits non-zero on the real floor violation even when the scope is redirected to a tiny tree', () => {
+    const dir = fixtureDir({ 'a.ts': clone, 'b.ts': 'export const answer = 42\n' })
+    try {
+      const result = runScriptAgainst(dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stdout + result.stderr).toMatch(/below the floor/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

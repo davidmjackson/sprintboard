@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { findPrivilegedCredentials } from './check-bundle.mjs'
@@ -102,5 +102,43 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }
+  })
+
+  /**
+   * Positive/negative controls on the branch that actually stops a service-role
+   * key shipping. The no-dist/ test above pins that `main()` executes at all, but
+   * does not touch `findPrivilegedCredentials` or the `process.exit(1)` on the
+   * violations branch — a mutation of that `exit(1)` to `exit(0)` survives it.
+   * These build a fake dist/ (never the real one) and run the script as a real
+   * subprocess against it.
+   */
+  function runAgainstFakeDist(bundleContents) {
+    const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-fake-dist-'))
+    const distDir = join(cwd, 'dist')
+    mkdirSync(distDir)
+    writeFileSync(join(distDir, 'index-fake.js'), bundleContents)
+    const scriptPath = resolve('scripts/check-bundle.mjs')
+    try {
+      return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  }
+
+  it('exits non-zero and prints BUILD REJECTED when a planted sb_secret_ canary is in dist/', () => {
+    const result = runAgainstFakeDist(
+      'const key = "sb_secret_abcdefghijklmnopqrstuvwxyz0123456789";',
+    )
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/BUILD REJECTED/)
+    expect(result.stderr).toMatch(/sb_secret_/)
+  })
+
+  it('exits 0 when only a public sb_publishable_ key is in dist/', () => {
+    const result = runAgainstFakeDist(
+      'const key = "sb_publishable_abcdefghijklmnopqrstuvwxyz0123456789";',
+    )
+    expect(result.status).toBe(0)
+    expect(result.stdout).toMatch(/no privileged credentials found/)
   })
 })
