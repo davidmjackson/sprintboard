@@ -143,3 +143,27 @@ a different file type.
   file, a real `.gitignore` and `.ignore`, a real oversized file and a real
   symlink, and assert the gate refuses each one — not merely that a pure
   function returns the right string.
+
+## Addendum, 2026-07-28 — in-file jscpd ignore markers
+
+A fifth refusal, found by the SPRIN-50 deep review: jscpd honours
+`jscpd:ignore-start` / `jscpd:ignore-end` comment-pair markers **inside a
+scanned file's own source**, dropping the wrapped range from the scan before
+clone detection ever runs — confirmed directly against the pinned 5.0.14
+binary. A real ~12-line clone wrapped in the pair produced `0 files analysed,
+0 clones, 0.00%`, indistinguishable from an honest clean run, and the wrapped
+range does not even count toward `sources`/`lines`, so the file/line floors
+cannot see the omission either. `walkScope`/`scanScopeError` inspected only
+paths and sizes, never file contents, so nothing before this caught it — the
+same class of hole as the `.gitignore` gap above, but two comment lines
+inside a source file instead of one line in a dotfile, and easier to read as
+ordinary tooling in a PR diff.
+
+`findJscpdIgnoreMarker` refuses any file in scope containing one of
+`JSCPD_IGNORE_MARKERS`. `jscpd:ignore-file` (a single, unpaired marker) was
+also tested directly against the pinned binary and has **no effect** on it —
+refused anyway, defensively, for the same reason `EXTERNAL_CONFIG_FILES`
+refuses `.jscpdrc` / `.jscpdrc.json` / `.jscpd.js`: a future jscpd bump could
+add support for it without this file being touched. Pinned by
+`scripts/check-duplication.test.mjs`, including a behavioural proof that runs
+the real binary once with a clone wrapped in the markers and once without.

@@ -16,7 +16,15 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -361,6 +369,64 @@ const OVERSIZED_ADVICE =
   '    not look the same from here. Excluding it from the SCOPE is the way out.'
 
 /**
+ * jscpd honours `jscpd:ignore-start` / `jscpd:ignore-end` comment-pair markers
+ * INSIDE a scanned file's own source, dropping everything between them from the
+ * scan before clone detection ever runs — confirmed directly against the pinned
+ * 5.0.14 binary, not assumed. A real ~12-line clone planted in two files,
+ * wrapped in the pair, produced `0 files analyzed, 0 clones, 0.00%` — a summary
+ * indistinguishable from an honest clean run, and the wrapped range does not
+ * even count toward `sources`/`lines`, so the file/line floors cannot see the
+ * omission either. `walkScope`/`scanScopeError` inspect only paths and sizes,
+ * never file contents, so nothing before this caught it. Two comment lines
+ * around a real shipping duplicate is the same class of hole as the
+ * `.gitignore` gap ADR 0005 already closed, and reads as ordinary tooling
+ * (or even a well-intentioned "this is deliberate repetition" note) in a PR diff.
+ *
+ * `jscpd:ignore-file` (a single, unpaired marker) was ALSO tested directly
+ * against this pinned binary and has NO effect on it — a clone in a file
+ * carrying only that comment was still found and reported. It is refused
+ * anyway, defensively, for the same reason `EXTERNAL_CONFIG_FILES` refuses
+ * `.jscpdrc`/`.jscpdrc.json`/`.jscpd.js` even though none of them affect this
+ * pinned version: a future jscpd bump could add support for it without this
+ * file being touched.
+ */
+export const JSCPD_IGNORE_MARKERS = ['jscpd:ignore-start', 'jscpd:ignore-end', 'jscpd:ignore-file']
+
+/**
+ * One recursive walk of `scope`, returning the first file (as a full path) that
+ * contains any jscpd ignore marker in its own text, plus which marker, or
+ * `null`. Reads every regular file as utf8; a file that cannot be read as text
+ * (binary, permission error) is skipped rather than throwing — it is not a
+ * TypeScript/JS source jscpd would tokenise as a clone candidate either way.
+ */
+export function findJscpdIgnoreMarker(scope) {
+  const entries = readdirSync(scope, { withFileTypes: true, recursive: true })
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const path = join(entry.parentPath, entry.name)
+    let contents
+    try {
+      contents = readFileSync(path, 'utf8')
+    } catch {
+      continue
+    }
+    const marker = JSCPD_IGNORE_MARKERS.find((candidate) => contents.includes(candidate))
+    if (marker) return { path, marker }
+  }
+  return null
+}
+
+const IGNORE_MARKER_ADVICE =
+  '\n\n    jscpd honours this marker inside the file itself and drops everything it wraps\n' +
+  '    from the scan before clone detection runs — verified against this pinned binary:\n' +
+  '    a real planted clone wrapped in `jscpd:ignore-start` / `jscpd:ignore-end` produced\n' +
+  '    a summary indistinguishable from an honest clean run. Remove the marker, or if the\n' +
+  '    repetition is genuinely deliberate, express the exclusion as a whole-file entry in\n' +
+  '    IGNORE_PATTERNS in scripts/check-duplication.mjs, where it is pinned by a test and\n' +
+  '    visible in the ADR — not as a comment a jscpd run three directories down will\n' +
+  '    silently obey.'
+
+/**
  * Why the resolved scan scope is unusable, or `null`. A scope that IS itself a symlink
  * is fine and deliberately not refused — jscpd traverses a symlinked root normally,
  * verified — so only links found *inside* the tree are rejected.
@@ -380,6 +446,9 @@ export function scanScopeError(scope) {
   if (symlink) return `"${symlink}" inside the scan scope is a symbolic link.${SYMLINK_ADVICE}`
   if (oversized)
     return `"${oversized}" is larger than the ${SENSITIVITY.maxSize}-byte cap.${OVERSIZED_ADVICE}`
+
+  const markerHit = findJscpdIgnoreMarker(scope)
+  if (markerHit) return `found "${markerHit.marker}" in ${markerHit.path}.${IGNORE_MARKER_ADVICE}`
   return null
 }
 
@@ -474,16 +543,41 @@ function main() {
 }
 
 /**
+ * Resolves a path through the filesystem's real, symlink-free form when the
+ * path exists on disk; returns it unchanged otherwise. Never throws — a
+ * fabricated path used only in a unit test, or a real `argv[1]` that no
+ * longer exists on disk by the time this runs, both fall back to plain string
+ * comparison rather than crashing the entry-point check.
+ */
+function realOrSelf(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
+/**
  * Path-safe entry-point check. `import.meta.url` percent-encodes characters like a
  * space, `#` or `?`; `process.argv[1]` never does — so comparing
  * `import.meta.url === \`file://${process.argv[1]}\`` (the original guard) silently
  * returns false, and `main()` never runs, on any checkout path containing one of
  * those characters. `fileURLToPath` decodes the URL back to a real filesystem path
- * before comparing, and `resolve` normalises argv[1] the same way. Exported so the
- * fix can be pinned with plain strings, without needing a real path on disk.
+ * before comparing, and `resolve` normalises argv[1] the same way.
+ *
+ * `realOrSelf` on BOTH sides closes a second gap, measured directly: invoking this
+ * script through a symlink (`node ./bin/check-duplication -> scripts/check-duplication.mjs`,
+ * the shape `npm` itself uses for installed bin scripts) made `main()` silently
+ * never run — the process exited 0 with NO output at all, having scanned nothing —
+ * because `import.meta.url` resolves to the link's REAL target while `argv[1]` stays
+ * the symlink path, and the two no longer compare equal. Resolving both sides through
+ * `realpathSync` (when the path exists on disk; unchanged otherwise) took this guard
+ * from 8-of-9 to 9-of-9 invocation shapes caught in review. Exported so the fix can be
+ * pinned with plain strings, without needing a real path on disk.
  */
 export function isEntryPoint(moduleUrl, argv1) {
-  return argv1 !== undefined && fileURLToPath(moduleUrl) === resolve(argv1)
+  if (argv1 === undefined) return false
+  return realOrSelf(fileURLToPath(moduleUrl)) === realOrSelf(resolve(argv1))
 }
 
 if (isEntryPoint(import.meta.url, process.argv[1])) {

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import {
   IGNORE_FILE_NAME,
   IGNORE_PATTERNS,
+  JSCPD_IGNORE_MARKERS,
   LIMITS,
   PRODUCTION_SCOPE,
   SENSITIVITY,
@@ -16,6 +17,7 @@ import {
   evaluateReport,
   externalConfigReason,
   findExternalJscpdConfig,
+  findJscpdIgnoreMarker,
   isEntryPoint,
   resolveScanOptions,
   runDuplicationScan,
@@ -409,9 +411,67 @@ describe('walkScope', () => {
   })
 })
 
+describe('findJscpdIgnoreMarker (CRITICAL 2: in-file jscpd:ignore-* markers)', () => {
+  it('finds nothing in a plain tree', () => {
+    const dir = fixtureDir({ 'a.ts': clone })
+    try {
+      expect(findJscpdIgnoreMarker(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(JSCPD_IGNORE_MARKERS)(
+    'finds a file containing "%s", reported as a full path',
+    (marker) => {
+      const dir = fixtureDir({ 'a.ts': `// ${marker}\n${clone}` })
+      try {
+        const found = findJscpdIgnoreMarker(dir)
+        expect(found).toEqual({ path: join(dir, 'a.ts'), marker })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('finds a marker nested in a subdirectory, reported as a full path', () => {
+    const dir = fixtureDir({ 'a.ts': clone })
+    mkdirSync(join(dir, 'nested'))
+    writeFileSync(
+      join(dir, 'nested', 'b.ts'),
+      `// jscpd:ignore-start\n${clone}// jscpd:ignore-end\n`,
+    )
+    try {
+      expect(findJscpdIgnoreMarker(dir)).toEqual({
+        path: join(dir, 'nested', 'b.ts'),
+        marker: 'jscpd:ignore-start',
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('confirms the real repo production scope carries no marker the gate would trip on', () => {
+    expect(findJscpdIgnoreMarker(PRODUCTION_SCOPE)).toBeNull()
+  })
+})
+
 describe('scanScopeError', () => {
   it('accepts the real production scope', () => {
     expect(scanScopeError(PRODUCTION_SCOPE)).toBeNull()
+  })
+
+  // CRITICAL 2: jscpd honours jscpd:ignore-start/-end INSIDE a file's own source
+  // and drops the wrapped range before clone detection runs — proven directly
+  // against the pinned binary (see the task report). walkScope inspects only
+  // paths and sizes, never contents, so nothing before this test caught it.
+  it('refuses a scope containing a file with a jscpd:ignore-start marker', () => {
+    const dir = fixtureDir({ 'a.ts': `// jscpd:ignore-start\n${clone}// jscpd:ignore-end\n` })
+    try {
+      expect(scanScopeError(dir)).toMatch(/found "jscpd:ignore-start" in/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('refuses a scope that does not exist rather than measuring nothing', () => {
@@ -599,6 +659,49 @@ describe('isEntryPoint (the space/percent-encoding guard bug)', () => {
       ),
     ).toBe(false)
   })
+
+  // IMPORTANT 5: without realpathSync on both sides, invoking this script through
+  // a symlink — `node ./bin/check-duplication`, the exact shape npm uses for
+  // installed bin scripts — made main() silently never run: the process exited 0
+  // with NO output at all, having scanned nothing. Measured directly on the real
+  // script (see the task report). `import.meta.url` resolves to the symlink's
+  // REAL target; `argv[1]` is what the shell actually invoked, the symlink path.
+  it('is true when the module URL is the real target of a symlink argv[1] points at', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entry-point-symlink-'))
+    const target = join(dir, 'real.mjs')
+    writeFileSync(target, '')
+    const link = join(dir, 'link.mjs')
+    symlinkSync(target, link)
+    try {
+      expect(isEntryPoint(`file://${target}`, link)).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // IMPORTANT 5: process.argv[1] not existing on disk (e.g. the file was moved or
+  // deleted between process start and this check) must not throw out of
+  // realpathSync — it falls back to plain resolved-path comparison, exactly the
+  // pre-hardening behaviour.
+  it('falls back to plain path comparison when argv[1] does not exist on disk', () => {
+    expect(isEntryPoint('file:///no/such/real/path.mjs', '/no/such/real/path.mjs')).toBe(true)
+  })
+
+  it('really runs main() when the real script is invoked through a symlink', () => {
+    const linkDir = mkdtempSync(join(tmpdir(), 'check-duplication-symlink-'))
+    const link = join(linkDir, 'check-duplication-link.mjs')
+    symlinkSync(resolve('scripts/check-duplication.mjs'), link)
+    const scanDir = fixtureDir(fillerTreeFiles())
+    try {
+      const result = spawnSync(process.execPath, [link, scanDir], { encoding: 'utf8' })
+      // Before the fix: status 0, empty stdout AND empty stderr — main() never ran.
+      expect(result.status).toBe(0)
+      expect(result.stdout).toMatch(/^check-duplication: \d+ files \/ \d+ lines scanned/)
+    } finally {
+      rmSync(linkDir, { recursive: true, force: true })
+      rmSync(scanDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('IGNORE_PATTERNS', () => {
@@ -646,6 +749,33 @@ describe('IGNORE_PATTERNS', () => {
     expect(withoutTypesAndCssIgnore.statistics.total.sources).toBeGreaterThan(
       withIgnore.statistics.total.sources,
     )
+  })
+})
+
+describe('jscpd:ignore-start/-end really does defeat detection on the pinned binary', () => {
+  // Behavioural proof, not just "the marker string exists": runs the real
+  // jscpd binary once with a clone wrapped in the markers and once without,
+  // over an otherwise identical fixture. Verified directly for the task
+  // report: the wrapped version reported 0 files analysed, 0 clones, 0.00% —
+  // indistinguishable from an honest clean run, and the range does not even
+  // count toward `sources`/`lines`.
+  it('a marker-wrapped clone is invisible to jscpd; the same clone unwrapped is found', () => {
+    const wrapped = fixtureDir({
+      'a.ts': `// jscpd:ignore-start\n${clone}// jscpd:ignore-end\n`,
+      'b.ts': `// jscpd:ignore-start\n${clone}// jscpd:ignore-end\n`,
+    })
+    const unwrapped = fixtureDir({ 'a.ts': clone, 'b.ts': clone })
+    try {
+      const wrappedReport = runDuplicationScan({ scope: wrapped, ignore: [] })
+      expect(wrappedReport.statistics.total.clones).toBe(0)
+      expect(wrappedReport.statistics.total.sources).toBe(0)
+
+      const unwrappedReport = runDuplicationScan({ scope: unwrapped, ignore: [] })
+      expect(unwrappedReport.statistics.total.clones).toBeGreaterThan(0)
+    } finally {
+      rmSync(wrapped, { recursive: true, force: true })
+      rmSync(unwrapped, { recursive: true, force: true })
+    }
   })
 })
 
@@ -883,6 +1013,30 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
       const result = runScriptAgainst(dir)
       expect(result.status).not.toBe(0)
       expect(result.stderr).toMatch(/is a symbolic link/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // CRITICAL 2: two comment lines around a real shipping duplicate produce a
+  // summary byte-identical to a clean run (see the "really does defeat
+  // detection" describe block above for the direct proof against the pinned
+  // binary). This is the same fixture shape as the very first "exits non-zero"
+  // test above, but with the clone pair wrapped in jscpd:ignore-start/-end —
+  // without this refusal, the run below would exit 0 having "cleanly" scanned
+  // right past a real, planted, shipping duplicate.
+  it('refuses to run at all when a jscpd:ignore-start marker could hide a real duplicate', () => {
+    const dir = fixtureDir({
+      ...fillerTreeFiles(),
+      'dup-a.ts': `// jscpd:ignore-start\n${bigCloneBlock()}// jscpd:ignore-end\n`,
+      'dup-b.ts': `// jscpd:ignore-start\n${bigCloneBlock()}// jscpd:ignore-end\n`,
+    })
+    try {
+      const result = runScriptAgainst(dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/VERIFY REJECTED/)
+      expect(result.stderr).toMatch(/found "jscpd:ignore-start" in/)
+      expect(result.stdout).not.toMatch(/check-duplication: \d+ files/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
