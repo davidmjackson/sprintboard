@@ -62,6 +62,16 @@ function deeplyNestedFunction() {
 }
 
 /**
+ * A function of cyclomatic complexity 15, over T2's max of 10, and nothing else:
+ * 14 sequential `if`s cost one branch each, and every one returns, so neither
+ * `sonarjs/cognitive-complexity` (no nesting) nor T1 (well under 30 lines) fires.
+ */
+function overComplexFunction() {
+  const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join('\n')
+  return `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
+}
+
+/**
  * A file well over T5's 400-line cap. Each line is a distinct, exported
  * top-level `const` — distinct names avoid a redeclaration parse error, and
  * `export` keeps every one "used" so `no-unused-vars` stays silent.
@@ -83,11 +93,29 @@ describe('the code quality standard is enforced by npm run lint', () => {
   })
 
   it('flags a function over the cyclomatic complexity threshold (T2)', async () => {
-    const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join(
-      '\n',
-    )
-    const source = `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
-    const ruleIds = await errorRuleIdsFor(source, 'src/lib/threshold-probe.ts')
+    const ruleIds = await errorRuleIdsFor(overComplexFunction(), 'src/lib/threshold-probe.ts')
+    expect(ruleIds).toContain('complexity')
+  })
+
+  /**
+   * BLOCKER: every positive "flags ..." assertion in this file used a `.ts`
+   * filePath — including both shadcn-glob tests below, whose whole subject is a
+   * directory of `.tsx` components. Adding `'**\/*.tsx'` to eslint.config.js's
+   * global `ignores` array — or `'src/routes/**\/*.tsx'`, or
+   * `'src/components/**\/*.tsx'` — therefore exempted EVERY React component in
+   * the repo with the whole suite green. Verified end to end: a genuine
+   * complexity-15 violation planted at src/components/ThresholdProbe.tsx made
+   * `eslint .` report `error ... complexity` / exit 1 at baseline, and under the
+   * mutation `eslint .` exited 0 with all 19 tests still passing. The only `.tsx`
+   * test was ADR 0001's NEGATIVE assertion, which an ignored file satisfies
+   * vacuously — a negative can never notice that a file is not being linted.
+   */
+  it('flags an over-complex function at a real .tsx component path (T2 applies to components)', async () => {
+    const messages = await messagesFor(overComplexFunction(), 'src/routes/ThresholdProbe.tsx')
+    // An ignored path reports this warning and no rule messages at all, so the
+    // ruleId assertion below already goes red — this one makes it say why.
+    expect(messages.map((message) => message.message).join('\n')).not.toMatch(/File ignored/)
+    const ruleIds = messages.filter((m) => m.severity === 2).map((m) => m.ruleId)
     expect(ruleIds).toContain('complexity')
   })
 
@@ -126,11 +154,7 @@ describe('the code quality standard is enforced by npm run lint', () => {
   })
 
   it('does NOT flag an over-complex function in src/components/ui (vendored)', async () => {
-    const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join(
-      '\n',
-    )
-    const source = `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
-    const ruleIds = await ruleIdsFor(source, 'src/components/ui/threshold-probe.tsx')
+    const ruleIds = await ruleIdsFor(overComplexFunction(), 'src/components/ui/threshold-probe.tsx')
     expect(ruleIds).not.toContain('complexity')
   })
 
@@ -139,11 +163,7 @@ describe('the code quality standard is enforced by npm run lint', () => {
   // file (adding it to OVERRIDE 2's rules alongside max-lines-per-function etc.)
   // left every other test in this file green. Verified directly.
   it('keeps T2 on in test files, where ADR 0002 leaves it on', async () => {
-    const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join(
-      '\n',
-    )
-    const source = `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
-    const ruleIds = await errorRuleIdsFor(source, 'src/lib/example.test.ts')
+    const ruleIds = await errorRuleIdsFor(overComplexFunction(), 'src/lib/example.test.ts')
     expect(ruleIds).toContain('complexity')
   })
 })
@@ -154,21 +174,21 @@ describe('the shadcn/ui override glob is scoped exactly to src/components/ui/**'
   // suite green — falsifying ADR 0001, which draws the override at the vendored
   // directory only. These assert a THRESHOLD VIOLATION at a real production path
   // outside that directory is still reported, so a widened glob goes red.
+  //
+  // Both use `.tsx`, not `.ts`: the components these globs decide the fate of are
+  // React components, and a `.ts` probe cannot see a `.tsx`-shaped exemption
+  // (a global `ignores` entry, or an override with a `.tsx` `files` glob) — see
+  // the BLOCKER note on the .tsx test above.
   it('flags an over-complex function at a real src/routes path', async () => {
-    const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join(
-      '\n',
-    )
-    const source = `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
-    const ruleIds = await errorRuleIdsFor(source, 'src/routes/ThresholdProbe.ts')
+    const ruleIds = await errorRuleIdsFor(overComplexFunction(), 'src/routes/ThresholdProbe.tsx')
     expect(ruleIds).toContain('complexity')
   })
 
   it('flags an over-complex function at a real, non-ui src/components path', async () => {
-    const branches = Array.from({ length: 14 }, (_, i) => `  if (n === ${i}) return ${i}`).join(
-      '\n',
+    const ruleIds = await errorRuleIdsFor(
+      overComplexFunction(),
+      'src/components/board/ThresholdProbe.tsx',
     )
-    const source = `export function branchy(n: number) {\n${branches}\n  return -1\n}\n`
-    const ruleIds = await errorRuleIdsFor(source, 'src/components/board/ThresholdProbe.ts')
     expect(ruleIds).toContain('complexity')
   })
 })
@@ -266,5 +286,38 @@ describe('package.json wiring (IMPORTANT 3: nothing pinned that verify runs the 
   it('is invoked by verify as its own exact step', () => {
     const steps = pkg.scripts.verify.split('&&').map((step) => step.trim())
     expect(steps).toContain('npm run lint')
+  })
+
+  /**
+   * IMPORTANT 3: the per-step pins — this file's `npm run lint`,
+   * check-duplication.test.mjs's `npm run lint:duplication`, and
+   * check-bundle.test.mjs's `node scripts/check-bundle.mjs` inside `build` —
+   * cover 2 of verify's 5 steps between them. The other three were unpinned, and
+   * the worst of the substitutions is silent: swapping `npm test` for
+   * `npm run test:unit` left all 143 tests in this scoped suite green. CLAUDE.md
+   * calls that one non-negotiable — `test:unit` excludes the seven integration
+   * suites, so CI "would stay green while the 'RLS still holds' line went quietly
+   * unmet on every future PR". `format:check` and `build` are the same shape:
+   * dropping either leaves nothing red.
+   *
+   * An exact ordered list, not a set of `toContain`s: it refuses a substitution
+   * (`npm test` -> `npm run test:unit`), a deletion, a reorder (`build` after
+   * `test` would run the credential check after the suite that assumes it), and a
+   * silently inserted step. Adding a real step to `verify` means updating this
+   * list in the same commit — that is the point, not friction to work around.
+   */
+  it('verify runs exactly these five steps, in this order', () => {
+    const steps = pkg.scripts.verify.split('&&').map((step) => step.trim())
+    expect(steps).toEqual([
+      'npm run lint',
+      'npm run lint:duplication',
+      'npm run format:check',
+      'npm run build',
+      'npm test',
+    ])
+  })
+
+  it('scripts.test is the full vitest run, not the integration-excluding fast loop', () => {
+    expect(pkg.scripts.test).toBe('vitest run')
   })
 })

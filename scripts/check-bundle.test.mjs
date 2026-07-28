@@ -226,12 +226,32 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
    * Filler files with no credential content, used only to clear
    * MIN_SCANNED_FILES (IMPORTANT 9) so tests that plant one specific bundle
    * file are not accidentally caught by the file-count floor instead of the
-   * behaviour they mean to test.
+   * behaviour they mean to test. `.js`, so they count toward the floor — which
+   * counts the files the scan actually reads, not everything under dist/.
    */
   function fillerBundleFiles(count) {
     const files = {}
     for (let i = 0; i < count; i++) files[`filler-${i}.js`] = `export const filler${i} = ${i}\n`
     return files
+  }
+
+  /**
+   * Runs the real script, as a real subprocess, against a throwaway dist/ built
+   * from `{ name: contents }`. Never the repo's own dist/.
+   */
+  function runAgainstDist(files) {
+    const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-dist-'))
+    const distDir = join(cwd, 'dist')
+    mkdirSync(distDir)
+    for (const [name, contents] of Object.entries(files)) {
+      writeFileSync(join(distDir, name), contents)
+    }
+    const scriptPath = resolve('scripts/check-bundle.mjs')
+    try {
+      return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
   }
 
   /**
@@ -248,19 +268,7 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     bundleContents,
     extraFiles = fillerBundleFiles(MIN_SCANNED_FILES - 1),
   ) {
-    const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-fake-dist-'))
-    const distDir = join(cwd, 'dist')
-    mkdirSync(distDir)
-    writeFileSync(join(distDir, 'index-fake.js'), bundleContents)
-    for (const [name, contents] of Object.entries(extraFiles)) {
-      writeFileSync(join(distDir, name), contents)
-    }
-    const scriptPath = resolve('scripts/check-bundle.mjs')
-    try {
-      return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
-    } finally {
-      rmSync(cwd, { recursive: true, force: true })
-    }
+    return runAgainstDist({ 'index-fake.js': bundleContents, ...extraFiles })
   }
 
   it('exits non-zero and prints BUILD REJECTED when a planted sb_secret_ canary is in dist/', () => {
@@ -289,18 +297,7 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
    * above covers "does not exist at all") but is below the floor.
    */
   function runAgainstSparseDist(fileCount) {
-    const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-sparse-dist-'))
-    const distDir = join(cwd, 'dist')
-    mkdirSync(distDir)
-    for (const [name, contents] of Object.entries(fillerBundleFiles(fileCount))) {
-      writeFileSync(join(distDir, name), contents)
-    }
-    const scriptPath = resolve('scripts/check-bundle.mjs')
-    try {
-      return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
-    } finally {
-      rmSync(cwd, { recursive: true, force: true })
-    }
+    return runAgainstDist(fillerBundleFiles(fileCount))
   }
 
   it('exits non-zero on a completely empty dist/ directory (exists, zero files)', () => {
@@ -314,13 +311,78 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     const result = runAgainstSparseDist(MIN_SCANNED_FILES - 1)
     expect(result.status).not.toBe(0)
     expect(result.stderr).toMatch(/BUILD REJECTED/)
-    expect(result.stderr).toMatch(new RegExp(`only ${MIN_SCANNED_FILES - 1} file`))
+    expect(result.stderr).toMatch(new RegExp(`only ${MIN_SCANNED_FILES - 1} readable file`))
   })
 
-  it('exits 0 at exactly the floor (MIN_SCANNED_FILES itself is pinned against the literal 10)', () => {
-    expect(MIN_SCANNED_FILES).toBe(10)
+  it('exits 0 at exactly the floor (MIN_SCANNED_FILES itself is pinned against the literal 2)', () => {
+    expect(MIN_SCANNED_FILES).toBe(2)
     const result = runAgainstSparseDist(MIN_SCANNED_FILES)
     expect(result.status).toBe(0)
     expect(result.stdout).toMatch(/no privileged credentials found/)
+  })
+
+  /**
+   * BLOCKER: the floor's first cut gated everything `walk()` returned while the
+   * scan loop read only js/mjs/cjs/css/html/map. Of the 10 files a real build
+   * emits, only 3 match — so this exact dist/ (10 `.woff2` font subsets, each
+   * containing a literal `sb_secret_…` key) printed `check-bundle: 10 files
+   * scanned, no privileged credentials found.` and exited 0, having read zero
+   * bytes. Verified directly against the pre-fix script. The floor now counts
+   * reads, so the same dist/ is refused: not because the key was found — it is
+   * unreachable inside a binary asset either way — but because the check can no
+   * longer report a clean result on a build it did not look at.
+   */
+  it('refuses a dist/ that is over the old file-count floor but has nothing readable in it', () => {
+    const fonts = {}
+    for (let i = 0; i < 10; i++) {
+      fonts[`geist-subset-${i}.woff2`] = 'sb_secret_abcdefghijklmnopqrstuvwxyz0123456789'
+    }
+    const result = runAgainstDist(fonts)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/BUILD REJECTED/)
+    expect(result.stderr).toMatch(/only 0 readable file/)
+    expect(result.stdout).not.toMatch(/no privileged credentials found/)
+  })
+
+  /**
+   * The other half of the same defect: the success line claimed a number the
+   * scan never used. Two dist/ directories differing only in font subsets — the
+   * routine churn of a `@fontsource` bump, or of deleting an unused `public/`
+   * asset, which is what reddened the required check on a legitimate diff —
+   * must report the same count, and it must be the number of files read.
+   */
+  it('reports the number of files it actually read, and asset churn does not move it', () => {
+    const bundle = {
+      'index.html': '<!doctype html><script src="/assets/index.js"></script>',
+      'index.js': 'export const anon = "sb_publishable_abcdefghijklmnop"',
+    }
+    const bare = runAgainstDist(bundle)
+    expect(bare.status).toBe(0)
+    expect(bare.stdout).toMatch(/check-bundle: 2 files scanned/)
+
+    const assets = {}
+    for (let i = 0; i < 7; i++) assets[`asset-${i}.woff2`] = 'binary-ish'
+    assets['logo.svg'] = '<svg/>'
+    const withAssets = runAgainstDist({ ...bundle, ...assets })
+    expect(withAssets.status).toBe(0)
+    expect(withAssets.stdout).toMatch(/check-bundle: 2 files scanned/)
+  })
+
+  /**
+   * The floor must never become a reason to stop reading: a credential in a
+   * readable file is still rejected in a dist/ whose readable count sits right
+   * at the floor and whose unreadable assets outnumber it.
+   */
+  it('still rejects a planted key in a readable file surrounded by unreadable assets', () => {
+    const result = runAgainstDist({
+      'index.html': '<!doctype html>',
+      'index.js': 'const key = "sb_secret_abcdefghijklmnopqrstuvwxyz0123456789";',
+      'a.woff2': 'x',
+      'b.woff2': 'x',
+      'c.png': 'x',
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/BUILD REJECTED/)
+    expect(result.stderr).toMatch(/sb_secret_/)
   })
 })

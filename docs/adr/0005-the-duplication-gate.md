@@ -118,9 +118,14 @@ every one demonstrated against the pinned binary rather than assumed:
 by the standard's T1–T5 rules at all, and was held to them by hand rather than
 mechanically. That is a deliberate limitation, not an oversight: widening the
 block to reach `.mjs` would also newly flag `scripts/check-bundle.mjs`'s
-31-line `main`, forcing a metric-driven split of an untested security control
-— exactly the trade ADR 0001 already rejects for `.tsx` markup, applied here to
-a different file type.
+43-line `main` — measured by running `max-lines-per-function` at T1's own
+settings (`skipBlankLines`, `skipComments`) against the file, not by counting
+its span — forcing a metric-driven split of an untested security control,
+exactly the trade ADR 0001 already rejects for `.tsx` markup, applied here to a
+different file type. That count is a fact about today's `main`, not a constant:
+it was 31 when this ADR was written, 41 once `MIN_SCANNED_FILES` arrived and 43
+once that floor was corrected to count the files actually read. Re-measure it
+rather than trusting this line — the argument is what holds, not the number.
 
 ## Consequences
 

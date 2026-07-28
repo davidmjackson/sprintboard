@@ -17,17 +17,44 @@ import { fileURLToPath } from 'node:url'
 const DIST = 'dist'
 
 /**
+ * The only files this check can meaningfully read: text the bundler emits, into
+ * which Vite substitutes `VITE_*` values. Everything else under `dist/` —
+ * fonts, images, `public/` passthroughs — is opaque binary or copied verbatim.
+ */
+const SCANNABLE = /\.(js|mjs|cjs|css|html|map)$/
+
+/**
  * IMPORTANT 9: a `dist/` that exists but is empty — or nearly so — reports
  * "no privileged credentials found" having scanned nothing, the exact
  * "cannot tell clean from did-not-look" gap `check-duplication.mjs`'s floors
  * exist to close, on the more important control: this is what stops a
- * service-role key shipping to every visitor. A real `npm run build` of this
- * repo emits 10 files under `dist/`. `MIN_SCANNED_FILES` is a tripwire against
- * a broken build step or an emptied output directory, the same reasoning as
- * `LIMITS.minSources` in `scripts/check-duplication.mjs` — not a target to
- * track dist/ growth against.
+ * service-role key shipping to every visitor.
+ *
+ * BLOCKER: the floor counts the files actually READ, never everything `walk()`
+ * returns, and the success line reports that same number. The first cut of this
+ * floor got both wrong, and each half was demonstrated:
+ *
+ *   - It gated `files.length` at 10, and a real build emits exactly 10 — zero
+ *     headroom. Seven of those ten are incidental: five per-unicode-range
+ *     `.woff2` font subsets and two `public/` passthroughs. Deleting an unused
+ *     `public/icons.svg`, ordinary cleanup, produced `BUILD REJECTED — only 9
+ *     file(s) found under dist/` and reddened the required check on a
+ *     legitimate diff, with a security-flavoured message pointing nowhere.
+ *   - It floored a number the scan loop did not use. Of those 10 files only 3
+ *     match `SCANNABLE`, so a `dist/` of 10 `.woff2` files each containing a
+ *     literal `sb_secret_…` key printed `check-bundle: 10 files scanned, no
+ *     privileged credentials found.` and exited 0, having read zero bytes —
+ *     the very gap the floor was added to close.
+ *
+ * Counting reads fixes both at once: the number is stable (an HTML entry, a JS
+ * chunk and a CSS chunk — 3 today), so routine asset changes cannot trip it,
+ * and it cannot claim to have scanned a file it never opened. A floor of 2
+ * leaves headroom for the only plausible honest shrink (the CSS chunk
+ * disappearing) while still refusing the shapes that mean the build did not
+ * look. Like `LIMITS.minSources` in `scripts/check-duplication.mjs` it is a
+ * tripwire, not a target to track dist/ growth against.
  */
-export const MIN_SCANNED_FILES = 10
+export const MIN_SCANNED_FILES = 2
 
 /**
  * Fixed-shape patterns: things that are the same bytes wherever they appear,
@@ -106,20 +133,23 @@ function main() {
     process.exit(1)
   }
 
-  if (files.length < MIN_SCANNED_FILES) {
+  const scannable = files.filter((file) => SCANNABLE.test(file))
+
+  if (scannable.length < MIN_SCANNED_FILES) {
     console.error(
-      `\n  BUILD REJECTED — only ${files.length} file(s) found under ${DIST}/, below the floor ` +
-        `of ${MIN_SCANNED_FILES}.\n\n` +
-        '    A near-empty or empty dist/ reports "no privileged credentials found" having\n' +
-        '    scanned almost nothing — that is not a clean result, it is a build that did not\n' +
-        '    look. Run the real build, or investigate why it emitted so little.\n',
+      `\n  BUILD REJECTED — only ${scannable.length} readable file(s) under ${DIST}/, below the ` +
+        `floor of ${MIN_SCANNED_FILES}.\n\n` +
+        '    Bundled js/css/html/map files are the only ones this check reads; fonts and\n' +
+        '    other assets are counted by neither the floor nor the summary. A dist/ with\n' +
+        '    fewer than the floor reports "no privileged credentials found" having read\n' +
+        '    almost nothing — that is not a clean result, it is a build that did not look.\n' +
+        '    Run the real build, or investigate why it emitted so little.\n',
     )
     process.exit(1)
   }
 
   const violations = []
-  for (const file of files) {
-    if (!/\.(js|mjs|cjs|css|html|map)$/.test(file)) continue
+  for (const file of scannable) {
     const contents = readFileSync(file, 'utf8')
     for (const violation of findPrivilegedCredentials(contents)) {
       violations.push({ file, ...violation })
@@ -140,7 +170,7 @@ function main() {
     process.exit(1)
   }
 
-  console.log(`check-bundle: ${files.length} files scanned, no privileged credentials found.`)
+  console.log(`check-bundle: ${scannable.length} files scanned, no privileged credentials found.`)
 }
 
 /**
