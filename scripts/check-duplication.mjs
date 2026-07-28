@@ -48,15 +48,19 @@ export const IGNORE_PATTERNS = [
  * modes produced identical results on this tree when `mild` was pinned, so the
  * choice buys future determinism, not a change in today's verdict.
  *
- * `maxSize` is jscpd's silent file-skipping cap (its default is also 1mb). It is
- * stated here for the same reason as the rest — but note what it does NOT buy:
- * a production file larger than the cap is still dropped from the scan without a
- * word, and the file/line floors below have far too much headroom to notice one
- * missing file. Nothing in this repo comes close today (the largest file under
- * `src` is ~40kb), and a >1mb source file would be a glaring diff; if one ever
- * lands, raise this and say so in the ADR rather than letting it go unmeasured.
+ * `maxSize` is jscpd's silent file-skipping cap, in BYTES — jscpd accepts a raw
+ * byte count as readily as `'1mb'`, and one numeric constant serves both the CLI
+ * flag and `scanScopeError`'s size check, so the flag and the guard cannot drift
+ * apart into disagreeing about the same fact.
+ *
+ * The cap is the one setting whose breach the file/line floors cannot see AT ALL.
+ * Measured: two verbatim 2.4MB duplicates dropped into `src/lib/` produced
+ * `64 files / 5822 lines scanned, 0 clones, 0% duplicated.` — byte-identical to the
+ * honest baseline, exit 0. Not under-sensitive; structurally blind, because an
+ * over-cap file never enters the denominator to begin with. `scanScopeError`
+ * therefore refuses outright rather than trusting the floors to notice.
  */
-export const SENSITIVITY = { minLines: 5, minTokens: 50, mode: 'mild', maxSize: '1mb' }
+export const SENSITIVITY = { minLines: 5, minTokens: 50, mode: 'mild', maxSize: 1048576 }
 
 /**
  * `maxPercentage` is the standard's bar (core/THRESHOLDS.md: under 3%). A
@@ -315,12 +319,16 @@ export function ancestorDirectories(scope) {
  * does not follow links, so a symlink loop terminates rather than hanging — verified
  * directly against a self-referential tree.
  */
-export function walkScope(scope) {
+export function walkScope(scope, maxSize = SENSITIVITY.maxSize) {
   const entries = readdirSync(scope, { withFileTypes: true, recursive: true })
   const at = (entry) => (entry ? join(entry.parentPath, entry.name) : null)
+  // `isFile()` comes from the dirent's own type, so a symlink is never stat'ed here
+  // and a broken one cannot throw before `scanScopeError` gets to refuse it.
+  const files = entries.filter((entry) => entry.isFile())
   return {
     symlink: at(entries.find((entry) => entry.isSymbolicLink())),
-    ignoreFile: at(entries.find((entry) => entry.isFile() && entry.name === IGNORE_FILE_NAME)),
+    ignoreFile: at(files.find((entry) => entry.name === IGNORE_FILE_NAME)),
+    oversized: at(files.find((entry) => statSync(at(entry)).size > maxSize)),
   }
 }
 
@@ -342,6 +350,16 @@ const SYMLINK_ADVICE =
   '    code into the denominator and can dilute a real violation under the 3% bar.\n' +
   '    Replace it with the real file, or move it out of the scanned tree.'
 
+const OVERSIZED_ADVICE =
+  '\n\n    jscpd skips a file over `--max-size` in silence, and unlike a bad ignore glob\n' +
+  '    the floors cannot see it: an over-cap file never enters the denominator, so the\n' +
+  '    summary line is byte-identical to an honest run. Measured — two verbatim 2.4MB\n' +
+  '    duplicates in src/lib gave `64 files / 5822 lines, 0 clones, 0%`, exit 0.\n' +
+  '    Split the file, or raise SENSITIVITY.maxSize and record why in the ADR.\n' +
+  '    Note this check does not consult IGNORE_PATTERNS: a deliberately-excluded file\n' +
+  '    over the cap is refused too, because "excluded" and "too big to measure" should\n' +
+  '    not look the same from here. Excluding it from the SCOPE is the way out.'
+
 /**
  * Why the resolved scan scope is unusable, or `null`. A scope that IS itself a symlink
  * is fine and deliberately not refused — jscpd traverses a symlinked root normally,
@@ -351,7 +369,7 @@ export function scanScopeError(scope) {
   if (!existsSync(scope) || !statSync(scope).isDirectory()) {
     return `the scan scope "${scope}" is not an existing directory, so there is nothing to measure.`
   }
-  const { symlink, ignoreFile } = walkScope(scope)
+  const { symlink, ignoreFile, oversized } = walkScope(scope)
   const above = ancestorDirectories(scope)
     .map((dir) => join(dir, IGNORE_FILE_NAME))
     .find((path) => existsSync(path))
@@ -360,6 +378,8 @@ export function scanScopeError(scope) {
   if (foundIgnoreFile)
     return `found ${foundIgnoreFile}, an ignore file jscpd honours.${IGNORE_FILE_ADVICE}`
   if (symlink) return `"${symlink}" inside the scan scope is a symbolic link.${SYMLINK_ADVICE}`
+  if (oversized)
+    return `"${oversized}" is larger than the ${SENSITIVITY.maxSize}-byte cap.${OVERSIZED_ADVICE}`
   return null
 }
 
@@ -389,13 +409,22 @@ function refuseIf(reason) {
  * it, and `main()` validates the raw argument (`cliArgsError`, then `scanScopeError`)
  * before it ever reaches jscpd's argument vector.
  *
- * What it does NOT guarantee, so nobody stops looking here: a valid directory
- * override still redirects the gate away from production code, and the only thing
- * stopping `package.json` from shipping one is a test pinning `lint:duplication` to
- * exactly `node scripts/check-duplication.mjs`. Nor can any check inside this file
- * defend against `NODE_OPTIONS`, a tampered `node_modules`, or an edit to the file
- * itself — anyone able to set those can replace the gate outright.
- * `npm run verify` calls this with no argument.
+ * What it does NOT guarantee, so nobody stops looking here. A valid directory
+ * override still redirects the gate away from production code, and nothing in this
+ * file prevents that — it is `package.json` that has to be right. Two tests carry
+ * that weight, and an earlier version of this comment claimed one of them did more
+ * than it did: pinning `scripts['lint:duplication']` alone was defeated twice while
+ * every test stayed green, once by wiring `npm run lint:duplication -- docs` into
+ * `verify` (the script string is untouched) and once by adding a second script,
+ * `lint:duplication:fast`, whose name a substring match on `verify` also accepted.
+ * The pins are therefore the exact script string AND `verify` split on `&&` into
+ * exact tokens, one of which must be exactly `npm run lint:duplication`. That pair
+ * holds against both defeats; it is still a review-time assertion rather than a
+ * runtime guard, and it says nothing about how CI invokes anything.
+ *
+ * Nor can any check inside this file defend against `NODE_OPTIONS`, a tampered
+ * `node_modules`, or an edit to the file itself — anyone able to set those can
+ * replace the gate outright. `npm run verify` calls this with no argument.
  */
 export function resolveScanOptions(scopeOverride) {
   return { scope: scopeOverride ?? PRODUCTION_SCOPE, ignore: IGNORE_PATTERNS, limits: LIMITS }

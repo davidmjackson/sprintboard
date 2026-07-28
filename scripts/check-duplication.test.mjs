@@ -99,6 +99,24 @@ function bigCloneBlock() {
   return lines.join('\n')
 }
 
+/**
+ * A syntactically real TypeScript file just over jscpd's 1,048,576-byte cap. jscpd
+ * drops an over-cap file from the scan in silence, and the file/line floors cannot
+ * see the omission at all — the denominator never moves. Measured on the real tree:
+ * two verbatim 2.4MB duplicates in `src/lib/` reported `64 files / 5822 lines
+ * scanned, 0 clones, 0% duplicated.`, exit 0, byte-identical to the honest baseline.
+ */
+function overCapFile() {
+  const lines = ['export function overCap(seed: number) {', '  let total = seed']
+  for (let size = 0; size < 1_100_000;) {
+    const line = `  total = total + ${lines.length} // padding to carry this file over the cap`
+    lines.push(line)
+    size += line.length + 1
+  }
+  lines.push('  return total', '}', '')
+  return lines.join('\n')
+}
+
 describe('evaluateReport', () => {
   it('passes a clean production scan', () => {
     expect(evaluateReport(reportWith(healthy))).toEqual([])
@@ -222,7 +240,19 @@ describe('the pinned constants (against literal values, not against themselves)'
   })
 
   it('SENSITIVITY matches the pinned jscpd 5.0.14 defaults exactly', () => {
-    expect(SENSITIVITY).toEqual({ minLines: 5, minTokens: 50, mode: 'mild', maxSize: '1mb' })
+    expect(SENSITIVITY).toEqual({ minLines: 5, minTokens: 50, mode: 'mild', maxSize: 1048576 })
+  })
+
+  // Both of these were previously pinned only incidentally — PRODUCTION_SCOPE by a
+  // single test that happens to fail over `docs`, IGNORE_FILE_NAME by one assertion's
+  // inline literal. A constant that matters deserves its own named pin, so a mutation
+  // reports what changed rather than surfacing as an unrelated test's odd failure.
+  it('PRODUCTION_SCOPE is src', () => {
+    expect(PRODUCTION_SCOPE).toBe('src')
+  })
+
+  it('IGNORE_FILE_NAME is .ignore', () => {
+    expect(IGNORE_FILE_NAME).toBe('.ignore')
   })
 })
 
@@ -238,8 +268,24 @@ describe('package.json wiring (the delivery route a reviewer named for the argv 
     expect(pkg.scripts['lint:duplication']).toBe('node scripts/check-duplication.mjs')
   })
 
-  it('is part of verify, the required CI check', () => {
-    expect(pkg.scripts.verify).toMatch(/npm run lint:duplication/)
+  /**
+   * Exact tokens, not a substring — a substring match on `verify` was defeated twice
+   * with all 89 tests green, and in both cases the gate then passed `docs` (126 files
+   * / 62,280 lines / 2.24%, exit 0) while `src` carried a real 3.4968% violation:
+   *
+   *   1. `... && npm run lint:duplication -- docs && ...` — `scripts['lint:duplication']`
+   *      is byte-unchanged, and /npm run lint:duplication/ still matches.
+   *   2. a second script `"lint:duplication:fast": "node scripts/check-duplication.mjs
+   *      docs"` wired into `verify` — /npm run lint:duplication/ matches the longer
+   *      NAME, so both pins passed while the honest script was never invoked.
+   *
+   * Splitting on `&&` and requiring an exact element kills both: `npm run
+   * lint:duplication -- docs` and `npm run lint:duplication:fast` are each a different
+   * token from `npm run lint:duplication`.
+   */
+  it('is invoked by verify as its own exact step, with no arguments appended', () => {
+    const steps = pkg.scripts.verify.split('&&').map((step) => step.trim())
+    expect(steps).toContain('npm run lint:duplication')
   })
 
   it('has no top-level "jscpd" config key of its own', () => {
@@ -264,11 +310,16 @@ describe('buildJscpdArgs', () => {
     expect(args).toContain('--no-gitignore')
   })
 
-  it('states --max-size rather than inheriting whatever the installed jscpd defaults to', () => {
-    expect(args.slice(args.indexOf('--max-size'), args.indexOf('--max-size') + 2)).toEqual([
-      '--max-size',
-      '1mb',
-    ])
+  // Step 4 audit: SENSITIVITY's VALUES were pinned, but nothing pinned that
+  // buildJscpdArgs actually forwards them. Hard-coding `'10'` in place of
+  // `String(sensitivity.minTokens)` survived the whole suite before this test.
+  it.each([
+    ['--min-lines', '5'],
+    ['--min-tokens', '50'],
+    ['--mode', 'mild'],
+    ['--max-size', '1048576'],
+  ])('forwards %s from SENSITIVITY rather than inheriting or hard-coding it', (flag, value) => {
+    expect(args.slice(args.indexOf(flag), args.indexOf(flag) + 2)).toEqual([flag, value])
   })
 
   it('puts the scope first, as a positional path, and forwards the ignore list', () => {
@@ -327,7 +378,17 @@ describe('walkScope', () => {
   it('finds nothing in a plain tree', () => {
     const dir = fixtureDir({ 'a.ts': clone })
     try {
-      expect(walkScope(dir)).toEqual({ symlink: null, ignoreFile: null })
+      expect(walkScope(dir)).toEqual({ symlink: null, ignoreFile: null, oversized: null })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('finds a file over the size cap, using an injected cap so the fixture stays small', () => {
+    const dir = fixtureDir({ 'small.ts': clone, 'big.ts': clone })
+    try {
+      expect(walkScope(dir, 10).oversized).toMatch(/\.ts$/)
+      expect(walkScope(dir, 1048576).oversized).toBeNull()
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -386,6 +447,15 @@ describe('scanScopeError', () => {
       expect(scanScopeError(dir)).toMatch(/an ignore file jscpd honours/)
     } finally {
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a file larger than the pinned --max-size cap', () => {
+    const dir = fixtureDir({ 'huge.ts': overCapFile() })
+    try {
+      expect(scanScopeError(dir)).toMatch(/larger than the 1048576-byte cap/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -778,6 +848,29 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
       expect(result.status).not.toBe(0)
       expect(result.stderr).toMatch(/VERIFY REJECTED/)
       expect(result.stderr).toMatch(/an ignore file jscpd honours/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The floors are structurally blind to this one, so the fixture is built to look
+   * perfectly healthy without the guard: 42 filler files clear the 40-file / 3,000-line
+   * floor, and the duplicate pair is over the cap, so jscpd never sees it. Remove the
+   * `oversized` check and this run reports `42 files / 3108 lines, 0 clones, 0%` and
+   * exits 0 — a green gate over a real, verbatim, million-line-plus duplication.
+   */
+  it('refuses to run when an over-cap file would be skipped from an otherwise healthy scan', () => {
+    const dir = fixtureDir({
+      ...fillerTreeFiles(),
+      'huge-a.ts': overCapFile(),
+      'huge-b.ts': overCapFile(),
+    })
+    try {
+      const result = runScriptAgainst(dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/larger than the 1048576-byte cap/)
+      expect(result.stdout).not.toMatch(/check-duplication: \d+ files/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
