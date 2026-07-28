@@ -67,6 +67,12 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 - Supabase: Auth, Postgres, RLS. Anon key client-side only.
 - Tooling: ESLint, Prettier, Vitest, Playwright.
 
+**The code-quality standard is part of the gate, not a report.** `npm run lint`
+enforces T1-T5 (thresholds in `eslint.config.js`, overrides in `docs/adr/`), and
+`npm run lint:duplication` holds production code under 3% duplication with a
+floor that fails an empty scan. Both are inside `npm run verify`. There is no
+`lint:standards` script any more.
+
 ## Workflow
 - GitHub Flow. One feature branch and one small PR per story. Squash merge.
 - Acceptance tests are written from the story's ACs before implementation.
@@ -128,7 +134,7 @@ as a failure.
 keepalive, signup, login, project, and the cross-tenant write paths. That difference is
 what stays put. The absolute numbers do not: every story that adds a unit-test file moves
 both, and they have been wrong in this file twice in a single session
-(44/37 → 45/38 → 46/39). At `d9e1c83` it is **46 vs 39**; treat that as a timestamped
+(44/37 → 45/38 → 46/39). At `542f786` it is **54 vs 47**; treat that as a timestamped
 observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` rather than trusting this line.
 

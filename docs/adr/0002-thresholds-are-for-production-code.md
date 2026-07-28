@@ -29,3 +29,14 @@ code and is currently met.
   line count makes them harder to navigate, not easier.
 - The report now speaks about production code only, so a non-zero count means
   something to act on.
+
+## Addendum, 2026-07-28
+
+SPRIN-50 extended this decision's principle from the size thresholds to
+duplication. `scripts/check-duplication.mjs` scans production code only, on the
+same reasoning: a naive scan of `src` reports 5.30% duplication (870 of 16,429
+lines), almost all of it arrange blocks in the integration suites. Gating that
+would force suites to be restructured to satisfy a duplication metric, exactly
+as gating T1/T5 would have forced them to be split to satisfy a line count. The
+decision above is unchanged; this records that its scope now covers a third
+threshold. See docs/adr/0005-the-duplication-gate.md.

@@ -38,3 +38,19 @@ with a re-export and delete this ADR.
   accepted for a non-gating report, and the reason this ADR is written to be
   deleted rather than kept.
 - The config stays reproducible on a clean CI runner with no extra checkout.
+
+## Addendum, 2026-07-28
+
+The file this ADR is named for no longer exists. SPRIN-50 merged
+`eslint.standards.config.js` into `eslint.config.js` and retired the
+`lint:standards` script, so the restated thresholds now live in the single lint
+config and gate every merge through `npm run verify`.
+
+The decision — restate the numbers rather than import them — is unchanged, and
+so is its trigger for deletion: `@codequalitystandards/eslint-config` is still
+unpublished. What has changed is the weight of the recorded consequence. "The
+numbers can drift from the standard silently" was accepted *because* the report
+did not gate; it now gates, so a silent drift moves the merge bar rather than a
+report nobody has to read. The mitigation is not a new mechanism but a smaller
+surface: the numbers sit in one file, under a header naming
+core/THRESHOLDS.md as their source.
