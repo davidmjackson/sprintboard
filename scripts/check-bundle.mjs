@@ -11,7 +11,8 @@
  * Greps the built output, not the source: what ships is the only thing that counts.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const DIST = 'dist'
 
@@ -119,7 +120,11 @@ function main() {
 }
 
 // Guard so importing this module (e.g. from the test file) does not also run
-// the CLI walk over dist/.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// the CLI walk over dist/. Compares resolved filesystem paths, not a percent-encoded
+// URL against a raw path — the naive `import.meta.url === \`file://${process.argv[1]}\``
+// silently fails (and never runs main()) on any checkout path containing a space,
+// `#`, `?` or non-ASCII character, because import.meta.url percent-encodes those and
+// process.argv[1] never does.
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   main()
 }

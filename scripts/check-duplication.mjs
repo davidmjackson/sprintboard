@@ -18,7 +18,8 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Production code only. See docs/adr/0005-the-duplication-gate.md. */
 export const PRODUCTION_SCOPE = 'src'
@@ -62,12 +63,27 @@ export const SENSITIVITY = { minLines: 5, minTokens: 50, mode: 'mild' }
 export const LIMITS = { maxPercentage: 3, minSources: 40, minScannedLines: 3000 }
 
 /**
+ * `Number.isFinite`, not `typeof === 'number'`: `typeof NaN` is also `'number'`, so
+ * the type check alone would let a NaN `percentage`, `sources` or `lines` through.
+ * A NaN comparison (`NaN > 3`, `NaN < 40`) is always false, so every guard below
+ * would silently pass — reported as clean rather than malformed.
+ */
+function hasUsableStats(total) {
+  return (
+    Boolean(total) &&
+    Number.isFinite(total.percentage) &&
+    Number.isFinite(total.sources) &&
+    Number.isFinite(total.lines)
+  )
+}
+
+/**
  * Pure: takes a jscpd report, returns what is wrong with it.
  * Exported so the thresholds can be tested without running a scan.
  */
 export function evaluateReport(report, limits = LIMITS) {
   const total = report?.statistics?.total
-  if (!total || typeof total.percentage !== 'number') {
+  if (!hasUsableStats(total)) {
     return [{ what: 'jscpd returned no statistics block — the report is malformed or truncated' }]
   }
 
@@ -93,6 +109,44 @@ export function evaluateReport(report, limits = LIMITS) {
   return violations
 }
 
+/** Pure: the CLI args jscpd needs for one scan. Extracted so `runDuplicationScan` stays
+ * under the standard's 30-line function threshold. (`.mjs` is outside
+ * `eslint.config.js`'s `**\/*.{ts,tsx}` scope, so nothing but this comment enforces
+ * that here — new code holds to the bar whether or not the linter can see it.)
+ */
+function buildJscpdArgs({ shim, scope, sensitivity, ignore, reportDir }) {
+  const args = [
+    shim,
+    scope,
+    '--min-lines',
+    String(sensitivity.minLines),
+    '--min-tokens',
+    String(sensitivity.minTokens),
+    '--mode',
+    sensitivity.mode,
+    '--reporters',
+    'json',
+    '--output',
+    reportDir,
+  ]
+  if (ignore.length > 0) args.push('--ignore', ignore.join(','))
+  return args
+}
+
+/**
+ * Throws if jscpd could not be spawned at all, or ran and exited non-zero.
+ * Extracted as its own function so these failure paths are unit-testable with a
+ * fabricated `spawnSync` result — forcing the *real* jscpd binary to fail this way
+ * (a missing binary, a rejected argument) is fragile and version-dependent; a
+ * fabricated result is neither.
+ */
+export function assertScanSucceeded(result) {
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(`jscpd exited ${result.status}\n${result.stderr ?? ''}`)
+  }
+}
+
 /**
  * jscpd 5.x ships as a platform binary with no JavaScript API, so the only way
  * to drive it is the CLI. `run-jscpd.js` is its Node shim; resolving it through
@@ -107,38 +161,40 @@ export function runDuplicationScan({
   const reportDir = mkdtempSync(join(tmpdir(), 'jscpd-report-'))
 
   try {
-    const args = [
-      shim,
-      scope,
-      '--min-lines',
-      String(sensitivity.minLines),
-      '--min-tokens',
-      String(sensitivity.minTokens),
-      '--mode',
-      sensitivity.mode,
-      '--reporters',
-      'json',
-      '--output',
-      reportDir,
-    ]
-    if (ignore.length > 0) args.push('--ignore', ignore.join(','))
-
+    const args = buildJscpdArgs({ shim, scope, sensitivity, ignore, reportDir })
     const result = spawnSync(process.execPath, args, { encoding: 'utf8' })
-    if (result.error) throw result.error
-    if (result.status !== 0) {
-      throw new Error(`jscpd exited ${result.status}\n${result.stderr ?? ''}`)
-    }
-
+    assertScanSucceeded(result)
     return JSON.parse(readFileSync(join(reportDir, 'jscpd-report.json'), 'utf8'))
   } finally {
     rmSync(reportDir, { recursive: true, force: true })
   }
 }
 
+/**
+ * `CHECK_DUPLICATION_SCOPE`, set only by this script's own tests, points the scan at
+ * a fixture tree instead of production `src` — the only way a process-level test can
+ * exercise `main()` as a real subprocess without either scanning production code or
+ * building a fixture up to `LIMITS`' floor of 40 files / 3,000 lines. Setting it also
+ * drops the ignore list (nothing production-specific to ignore in a fixture tree) and
+ * relaxes the floor to 1 file / 1 line — the same relaxation the pure `evaluateReport`
+ * tests already use for the same reason. `npm run verify` never sets this.
+ */
+function resolveScanOptions() {
+  const scope = process.env.CHECK_DUPLICATION_SCOPE
+  if (!scope) return { scope: PRODUCTION_SCOPE, ignore: IGNORE_PATTERNS, limits: LIMITS }
+  return { scope, ignore: [], limits: { ...LIMITS, minSources: 1, minScannedLines: 1 } }
+}
+
+/**
+ * `report.statistics.total` is destructured only on the clean path below, not at the
+ * top of this function: a malformed report should throw the crafted "REJECTED"
+ * message from the violations branch, not a bare `TypeError` from a destructure that
+ * ran before anything checked whether `total` exists.
+ */
 function main() {
-  const report = runDuplicationScan()
-  const violations = evaluateReport(report)
-  const { sources, lines, percentage, clones } = report.statistics.total
+  const { scope, ignore, limits } = resolveScanOptions()
+  const report = runDuplicationScan({ scope, ignore })
+  const violations = evaluateReport(report, limits)
 
   if (violations.length > 0) {
     console.error('\n  VERIFY REJECTED — the duplication gate did not pass.\n')
@@ -153,14 +209,29 @@ function main() {
     }
     console.error('')
     process.exit(1)
+    return
   }
 
+  const { sources, lines, percentage, clones } = report.statistics.total
   console.log(
     `check-duplication: ${sources} files / ${lines} lines scanned, ` +
       `${clones} clones, ${percentage}% duplicated.`,
   )
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+/**
+ * Path-safe entry-point check. `import.meta.url` percent-encodes characters like a
+ * space, `#` or `?`; `process.argv[1]` never does — so comparing
+ * `import.meta.url === \`file://${process.argv[1]}\`` (the original guard) silently
+ * returns false, and `main()` never runs, on any checkout path containing one of
+ * those characters. `fileURLToPath` decodes the URL back to a real filesystem path
+ * before comparing, and `resolve` normalises argv[1] the same way. Exported so the
+ * fix can be pinned with plain strings, without needing a real path on disk.
+ */
+export function isEntryPoint(moduleUrl, argv1) {
+  return argv1 !== undefined && fileURLToPath(moduleUrl) === resolve(argv1)
+}
+
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   main()
 }

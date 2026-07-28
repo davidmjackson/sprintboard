@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { findPrivilegedCredentials } from './check-bundle.mjs'
 
 /** Realistic Supabase-shaped JWT header, base64url-encoded, shared by every token below. */
@@ -80,5 +84,23 @@ describe('findPrivilegedCredentials', () => {
 
     expect(() => findPrivilegedCredentials(`const x = "${notActuallyBase64Json}";`)).not.toThrow()
     expect(findPrivilegedCredentials(`const x = "${notActuallyBase64Json}";`)).toEqual([])
+  })
+})
+
+describe('main() as a real subprocess (pins that the entry-point guard actually runs it)', () => {
+  // path.resolve, not new URL('./check-bundle.mjs', import.meta.url): Vite specially
+  // rewrites that exact pattern into an asset-URL reference served by its dev server,
+  // rather than leaving it as plain runtime URL resolution — verified directly. cwd
+  // is the repo root for every test run here, so this is both correct and immune to it.
+  it('exits 1 with a clear message when no dist/ directory exists', () => {
+    const scriptPath = resolve('scripts/check-bundle.mjs')
+    const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-no-dist-'))
+    try {
+      const result = spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
+      expect(result.status).toBe(1)
+      expect(result.stderr).toMatch(/no dist\/ directory/)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+    }
   })
 })
