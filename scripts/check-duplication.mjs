@@ -16,7 +16,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -171,6 +171,70 @@ export function runDuplicationScan({
 }
 
 /**
+ * jscpd 5.0.14 auto-discovers configuration from the scanning process's cwd and lets
+ * it silently override every option this script does not pass as an explicit CLI
+ * flag. This is not hypothetical: confirmed directly against the pinned binary — a
+ * planted `.jscpd.json` containing only `{"maxSize": "6kb"}` excluded the twelve
+ * largest production files (the whole data layer and routes) from the scan, leaving
+ * a healthy-looking `52 files / 3591 lines, 0 clones, 0%` that clears both tripwires
+ * while a real, planted duplicate went unreported. A `"jscpd"` key in `package.json`
+ * does the same and reads as ordinary tool config in a PR diff.
+ *
+ * `.jscpd.json` and `package.json`'s `"jscpd"` key are the two real, live discovery
+ * paths — confirmed both by the binary's own embedded strings ("Using config from
+ * .jscpd.json" / "Using config from package.json") and by testing each file below
+ * directly against it. `.jscpdrc`, `.jscpdrc.json` and `.jscpd.js` were ALSO tested
+ * directly and have NO effect on this exact pinned version — but their presence is
+ * refused too, defensively, since a future jscpd bump could reintroduce support for
+ * a legacy name without this file being touched.
+ *
+ * The fix here is deliberately not "enumerate and pass every jscpd CLI flag": the
+ * `SENSITIVITY` comment already claims detection settings are "stated rather than
+ * inherited"; refusing to run at all in the presence of external config is what
+ * actually makes that claim true, rather than chasing individual options forever.
+ */
+const EXTERNAL_CONFIG_FILES = ['.jscpd.json', '.jscpdrc', '.jscpdrc.json', '.jscpd.js']
+
+/**
+ * Pure: returns the offending file/key name, or `null` if none exists. Exported so
+ * it is testable with a real temp directory rather than only through a subprocess.
+ */
+export function findExternalJscpdConfig(cwd = process.cwd()) {
+  const configFile = EXTERNAL_CONFIG_FILES.find((name) => existsSync(join(cwd, name)))
+  if (configFile) return configFile
+
+  try {
+    const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8'))
+    if (pkg.jscpd !== undefined) return 'package.json (a "jscpd" key)'
+  } catch {
+    // No package.json here, or it isn't valid JSON — not this check's problem.
+  }
+
+  return null
+}
+
+/**
+ * Prints the crafted rejection and exits when an external config exists, returning
+ * whether it did — `main()` checks the return value and returns immediately rather
+ * than relying on `process.exit()`'s timing to stop the rest of the function.
+ */
+function rejectExternalConfigIfPresent() {
+  const configFile = findExternalJscpdConfig()
+  if (!configFile) return false
+
+  console.error(
+    `\n  VERIFY REJECTED — found ${configFile}, an external jscpd configuration file.\n\n` +
+      '  jscpd auto-discovers config from the process cwd and lets it silently override\n' +
+      '  every option this script does not pass explicitly — that defeats the whole\n' +
+      '  point of this gate. The settings live in scripts/check-duplication.mjs\n' +
+      '  (SENSITIVITY, IGNORE_PATTERNS, LIMITS) and nowhere else: remove this file, or\n' +
+      '  fold whatever it was trying to do into that script instead.\n',
+  )
+  process.exit(1)
+  return true
+}
+
+/**
  * `scopeOverride` — this script's own process-level tests pass `process.argv[2]` to
  * point a real subprocess run at a fixture tree instead of production `src`. That is
  * the ONLY thing an override may change: `ignore` is always `IGNORE_PATTERNS` and
@@ -192,6 +256,8 @@ export function resolveScanOptions(scopeOverride) {
  * ran before anything checked whether `total` exists.
  */
 function main() {
+  if (rejectExternalConfigIfPresent()) return
+
   const { scope, ignore, limits } = resolveScanOptions(process.argv[2])
   const report = runDuplicationScan({ scope, ignore })
   const violations = evaluateReport(report, limits)

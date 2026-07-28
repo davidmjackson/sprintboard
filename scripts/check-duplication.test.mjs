@@ -7,8 +7,10 @@ import {
   IGNORE_PATTERNS,
   LIMITS,
   PRODUCTION_SCOPE,
+  SENSITIVITY,
   assertScanSucceeded,
   evaluateReport,
+  findExternalJscpdConfig,
   isEntryPoint,
   resolveScanOptions,
   runDuplicationScan,
@@ -201,6 +203,101 @@ describe('resolveScanOptions', () => {
   })
 })
 
+describe('the pinned constants (against literal values, not against themselves)', () => {
+  // The resolveScanOptions toEqual tests above compare against the imported
+  // LIMITS/IGNORE_PATTERNS constants — self-referential, so a mutation to a
+  // constant's VALUE moves both sides of that assertion and it stays green. These
+  // compare against hand-written literals instead, so a value mutation has
+  // somewhere to actually go red. (IGNORE_PATTERNS already has its own literal pin
+  // above, in the "is exactly the pinned list" test.)
+  it('LIMITS matches core/THRESHOLDS.md exactly: 3% / 40 files / 3,000 lines', () => {
+    expect(LIMITS).toEqual({ maxPercentage: 3, minSources: 40, minScannedLines: 3000 })
+  })
+
+  it('SENSITIVITY matches the pinned jscpd 5.0.14 defaults exactly', () => {
+    expect(SENSITIVITY).toEqual({ minLines: 5, minTokens: 50, mode: 'mild' })
+  })
+})
+
+describe('findExternalJscpdConfig', () => {
+  function tempDir() {
+    return mkdtempSync(join(tmpdir(), 'jscpd-config-probe-'))
+  }
+
+  it('returns null when no external config exists', () => {
+    const dir = tempDir()
+    try {
+      expect(findExternalJscpdConfig(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('detects a .jscpd.json file', () => {
+    const dir = tempDir()
+    writeFileSync(join(dir, '.jscpd.json'), '{"maxSize": "6kb"}')
+    try {
+      expect(findExternalJscpdConfig(dir)).toBe('.jscpd.json')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['.jscpdrc', '.jscpdrc.json', '.jscpd.js'])(
+    'detects a %s file even though it has no effect on this pinned jscpd version',
+    (name) => {
+      const dir = tempDir()
+      writeFileSync(join(dir, name), '{}')
+      try {
+        expect(findExternalJscpdConfig(dir)).toBe(name)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('detects a "jscpd" key in package.json', () => {
+    const dir = tempDir()
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ jscpd: { maxSize: '6kb' } }))
+    try {
+      expect(findExternalJscpdConfig(dir)).toMatch(/package\.json/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // This exact shape is our own real package.json: "jscpd" appears only nested
+  // under devDependencies (the version pin), never as a top-level config key.
+  it('does not false-positive on "jscpd" nested under devDependencies', () => {
+    const dir = tempDir()
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'x', devDependencies: { jscpd: '5.0.14' } }),
+    )
+    try {
+      expect(findExternalJscpdConfig(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not throw when package.json is missing or malformed', () => {
+    const dir = tempDir()
+    try {
+      expect(() => findExternalJscpdConfig(dir)).not.toThrow()
+      writeFileSync(join(dir, 'package.json'), '{ not valid json')
+      expect(() => findExternalJscpdConfig(dir)).not.toThrow()
+      expect(findExternalJscpdConfig(dir)).toBeNull()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('confirms the real repo root has no external config the gate would trip on', () => {
+    expect(findExternalJscpdConfig(resolve('.'))).toBeNull()
+  })
+})
+
 describe('isEntryPoint (the space/percent-encoding guard bug)', () => {
   it('is false when argv[1] is undefined — imported as a module, not run as a script', () => {
     expect(isEntryPoint('file:///anything/check-duplication.mjs', undefined)).toBe(false)
@@ -385,6 +482,74 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
       expect(result.status).not.toBe(0)
       expect(result.stdout + result.stderr).toMatch(/below the floor/)
     } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Deferred item: main()'s no-argument path (process.argv[2] ?? PRODUCTION_SCOPE)
+  // had no process-level coverage — every test above passes an explicit scope.
+  // Mutating that default (e.g. to 'src/lib', which real-scans at 22 files / 2,081
+  // lines — under the floor) would survive every other test here. This runs the
+  // real script, with NO argv override, against the real production tree.
+  it('exits 0 against the real production tree when given no scope argument at all', () => {
+    const scriptPath = resolve('scripts/check-duplication.mjs')
+    const result = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8' })
+
+    expect(result.status).toBe(0)
+    const match = result.stdout.match(/^check-duplication: (\d+) files/)
+    expect(match).not.toBeNull()
+    expect(Number(match[1])).toBeGreaterThanOrEqual(LIMITS.minSources)
+  })
+
+  /**
+   * CRITICAL: jscpd auto-discovers `.jscpd.json` / a `"jscpd"` key in package.json
+   * from the SCANNING PROCESS's cwd — not from `scope` — and lets either silently
+   * override every option this script passes explicitly. These run the real
+   * script with `cwd` pointed at a throwaway temp directory (never the real repo
+   * root), so the planted config can never leak into `git status`.
+   */
+  function runScriptWithCwd(cwd, scope) {
+    const scriptPath = resolve('scripts/check-duplication.mjs')
+    return spawnSync(process.execPath, [scriptPath, scope], { cwd, encoding: 'utf8' })
+  }
+
+  it('exits non-zero when a .jscpd.json exists in the process cwd', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'check-duplication-external-config-'))
+    const dir = fixtureDir(fillerTreeFiles())
+    writeFileSync(join(cwd, '.jscpd.json'), '{"maxSize": "6kb"}')
+    try {
+      const result = runScriptWithCwd(cwd, dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/\.jscpd\.json/)
+      expect(result.stderr).toMatch(/VERIFY REJECTED/)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('exits non-zero when package.json in the process cwd has a "jscpd" key', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'check-duplication-external-config-'))
+    const dir = fixtureDir(fillerTreeFiles())
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ jscpd: { maxSize: '6kb' } }))
+    try {
+      const result = runScriptWithCwd(cwd, dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/package\.json/)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('exits 0 over the same fixture tree when the process cwd has no external config', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'check-duplication-no-external-config-'))
+    const dir = fixtureDir(fillerTreeFiles())
+    try {
+      const result = runScriptWithCwd(cwd, dir)
+      expect(result.status).toBe(0)
+    } finally {
+      rmSync(cwd, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
     }
   })
