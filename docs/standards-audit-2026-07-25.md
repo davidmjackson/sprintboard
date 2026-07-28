@@ -131,6 +131,16 @@ Coverage is **not** currently gated in `verify`, and this change does not add it
 > and `index.css`. **The only remaining E9 work is Step 4: fold the rules into
 > `lint`/`verify` so the standard gates instead of advises.**
 
+> **Status, 2026-07-28 (SPRIN-50): Step 4 is DONE — E9 is complete.**
+> `eslint.standards.config.js` was merged into `eslint.config.js` and the
+> `lint:standards` script retired, so `npm run lint` — and therefore the required
+> `verify` check — enforces T1-T5. `npm run lint:duplication` was added to
+> `verify`, gating production duplication at 3% with an empty-scan floor. Both
+> checks are positive-controlled by tests that fail if the gate stops firing:
+> `eslint.config.test.mjs` and `scripts/check-duplication.test.mjs`. The
+> commands named earlier in this document are historical: `lint:standards` no
+> longer exists, and its work is now done by `npm run lint`.
+
 ### Pass B, first slice: `TicketDetailDialog.tsx` split (2026-07-25)
 
 Landed on `refactor/split-ticket-detail-dialog`. `TicketDetailDialog.tsx` went from
