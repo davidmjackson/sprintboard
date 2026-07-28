@@ -16,7 +16,8 @@
     "keepalive": "vitest run src/test/keepalive.integration.test.ts",
     "e2e": "playwright test",
     "lint": "eslint .",
-    "verify": "npm run lint && npm run format:check && npm run build && npm test"
+    "lint:duplication": "node scripts/check-duplication.mjs",
+    "verify": "npm run lint && npm run lint:duplication && npm run format:check && npm run build && npm test"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",
