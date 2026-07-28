@@ -1,19 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import {
+  IGNORE_FILE_NAME,
   IGNORE_PATTERNS,
   LIMITS,
   PRODUCTION_SCOPE,
   SENSITIVITY,
+  ancestorDirectories,
   assertScanSucceeded,
+  buildJscpdArgs,
+  cliArgsError,
   evaluateReport,
+  externalConfigReason,
   findExternalJscpdConfig,
   isEntryPoint,
   resolveScanOptions,
   runDuplicationScan,
+  scanScopeError,
+  walkScope,
 } from './check-duplication.mjs'
 
 /** A report shaped exactly like jscpd's, with the numbers under test. */
@@ -215,7 +222,197 @@ describe('the pinned constants (against literal values, not against themselves)'
   })
 
   it('SENSITIVITY matches the pinned jscpd 5.0.14 defaults exactly', () => {
-    expect(SENSITIVITY).toEqual({ minLines: 5, minTokens: 50, mode: 'mild' })
+    expect(SENSITIVITY).toEqual({ minLines: 5, minTokens: 50, mode: 'mild', maxSize: '1mb' })
+  })
+})
+
+describe('package.json wiring (the delivery route a reviewer named for the argv injection)', () => {
+  // `"lint:duplication": "node scripts/check-duplication.mjs --config=.config/dup.json"`
+  // reads as ordinary tool wiring in a PR diff and needs no change to this script.
+  // cliArgsError now refuses a flag at runtime; this refuses one at review time, and
+  // also refuses a *valid directory* argument, which cliArgsError deliberately allows
+  // (the tests need it) but which would silently point the gate away from `src`.
+  const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
+
+  it('runs the gate with no arguments at all', () => {
+    expect(pkg.scripts['lint:duplication']).toBe('node scripts/check-duplication.mjs')
+  })
+
+  it('is part of verify, the required CI check', () => {
+    expect(pkg.scripts.verify).toMatch(/npm run lint:duplication/)
+  })
+
+  it('has no top-level "jscpd" config key of its own', () => {
+    expect(pkg.jscpd).toBeUndefined()
+  })
+})
+
+describe('buildJscpdArgs', () => {
+  const args = buildJscpdArgs({
+    shim: '/shim.js',
+    scope: 'src',
+    sensitivity: SENSITIVITY,
+    ignore: IGNORE_PATTERNS,
+    reportDir: '/out',
+  })
+
+  // N1: without this flag every .gitignore/.ignore/global-excludes file silently
+  // removes tracked, shipping files from the scan and the summary line stays
+  // byte-identical to an honest run. The behavioural proof is the process-level
+  // "hidden by .gitignore" test below; this pins the flag itself.
+  it('passes --no-gitignore so the scan scope is IGNORE_PATTERNS and nothing else', () => {
+    expect(args).toContain('--no-gitignore')
+  })
+
+  it('states --max-size rather than inheriting whatever the installed jscpd defaults to', () => {
+    expect(args.slice(args.indexOf('--max-size'), args.indexOf('--max-size') + 2)).toEqual([
+      '--max-size',
+      '1mb',
+    ])
+  })
+
+  it('puts the scope first, as a positional path, and forwards the ignore list', () => {
+    expect(args[0]).toBe('/shim.js')
+    expect(args[1]).toBe('src')
+    expect(args).toContain(IGNORE_PATTERNS.join(','))
+  })
+})
+
+describe('cliArgsError (N2: argv[2] reached jscpd as a raw CLI token)', () => {
+  it('accepts no arguments at all', () => {
+    expect(cliArgsError([])).toBeNull()
+  })
+
+  it('accepts a single plain path', () => {
+    expect(cliArgsError(['src'])).toBeNull()
+  })
+
+  // Each of these was demonstrated to produce a green gate over a redefined scan:
+  // --max-size=6kb dropped the largest production files; --config= re-opened the
+  // external-config channel from OUTSIDE cwd, where findExternalJscpdConfig cannot
+  // see it. A flag also empties the positional path list, so jscpd walks all of cwd.
+  it.each(['--max-size=6kb', '--config=/tmp/evil.json', '--ignore=**/*.ts', '-z', '--'])(
+    'refuses %s, because a leading "-" makes it a jscpd flag',
+    (arg) => {
+      expect(cliArgsError([arg])).toMatch(/starts with "-"/)
+    },
+  )
+
+  it('refuses a second argument, which would also travel to jscpd', () => {
+    expect(cliArgsError(['src', '--max-size=6kb'])).toMatch(/at most one argument/)
+  })
+})
+
+describe('externalConfigReason', () => {
+  it('is null when nothing was found, so refuseIf does nothing', () => {
+    expect(externalConfigReason(null)).toBeNull()
+  })
+
+  it('names the offending file in the rejection', () => {
+    expect(externalConfigReason('.jscpd.json')).toMatch(/found \.jscpd\.json/)
+  })
+})
+
+describe('ancestorDirectories', () => {
+  it('walks from the given directory up to the filesystem root, innermost first', () => {
+    expect(ancestorDirectories('/a/b/c')).toEqual(['/a/b', '/a', '/'])
+  })
+
+  it('terminates at the root rather than looping', () => {
+    expect(ancestorDirectories('/')).toEqual([])
+  })
+})
+
+describe('walkScope', () => {
+  it('finds nothing in a plain tree', () => {
+    const dir = fixtureDir({ 'a.ts': clone })
+    try {
+      expect(walkScope(dir)).toEqual({ symlink: null, ignoreFile: null })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('finds a nested symlink and a nested .ignore, reported as full paths', () => {
+    const dir = fixtureDir({ 'a.ts': clone })
+    mkdirSync(join(dir, 'nested'))
+    writeFileSync(join(dir, 'nested', IGNORE_FILE_NAME), 'a.ts\n')
+    symlinkSync(join(dir, 'a.ts'), join(dir, 'nested', 'link.ts'))
+    try {
+      const found = walkScope(dir)
+      expect(found.ignoreFile).toBe(join(dir, 'nested', '.ignore'))
+      expect(found.symlink).toBe(join(dir, 'nested', 'link.ts'))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('scanScopeError', () => {
+  it('accepts the real production scope', () => {
+    expect(scanScopeError(PRODUCTION_SCOPE)).toBeNull()
+  })
+
+  it('refuses a scope that does not exist rather than measuring nothing', () => {
+    expect(scanScopeError(join(tmpdir(), 'no-such-tree-12345'))).toMatch(
+      /not an existing directory/,
+    )
+  })
+
+  it('refuses a scope that is a file, not a directory', () => {
+    expect(scanScopeError(resolve('package.json'))).toMatch(/not an existing directory/)
+  })
+
+  // `--no-gitignore` does NOT switch .ignore files off — measured against the pinned
+  // binary, and jscpd 5.0.14 has no --no-ignore. Refusing is the only honest response.
+  it('refuses an .ignore file inside the scope', () => {
+    const dir = fixtureDir({ 'a.ts': clone, [IGNORE_FILE_NAME]: 'a.ts\n' })
+    try {
+      expect(scanScopeError(dir)).toMatch(/an ignore file jscpd honours/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // jscpd reads .ignore from every directory ABOVE the scanned tree too — verified
+  // directly, including from the parent of the process cwd.
+  it('refuses an .ignore file in a directory above the scope', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jscpd-ancestor-'))
+    const dir = join(root, 'tree')
+    mkdirSync(dir)
+    writeFileSync(join(root, IGNORE_FILE_NAME), 'a.ts\n')
+    writeFileSync(join(dir, 'a.ts'), clone)
+    try {
+      expect(scanScopeError(dir)).toMatch(/an ignore file jscpd honours/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a symlink inside the scope, which jscpd would skip in silence', () => {
+    const dir = fixtureDir({ 'a.ts': clone })
+    symlinkSync(join(dir, 'a.ts'), join(dir, 'b.ts'))
+    try {
+      expect(scanScopeError(dir)).toMatch(/is a symbolic link/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // A symlinked ROOT is traversed normally by jscpd (verified), so refusing one would
+  // be a false positive — `src` itself being a link is fine.
+  it('accepts a scope that is itself a symlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jscpd-linkroot-'))
+    const real = join(root, 'real')
+    const link = join(root, 'link')
+    mkdirSync(real)
+    writeFileSync(join(real, 'a.ts'), clone)
+    symlinkSync(real, link)
+    try {
+      expect(scanScopeError(link)).toBeNull()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
@@ -536,10 +733,95 @@ describe('main() as a real subprocess (pins the exit-code contract verify actual
       const result = runScriptWithCwd(cwd, dir)
       expect(result.status).not.toBe(0)
       expect(result.stderr).toMatch(/package\.json/)
+      expect(result.stderr).toMatch(/VERIFY REJECTED/)
     } finally {
       rmSync(cwd, { recursive: true, force: true })
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  /**
+   * N1, behaviourally — the test that actually dies if `--no-gitignore` is dropped.
+   *
+   * jscpd only honours `.gitignore` when a `.git` directory exists above the scanned
+   * tree (`require_git`; measured — the same fixture scored 2 sources with no `.git`
+   * present and 1 with one), so the fixture puts an empty `.git` beside the tree
+   * rather than inside it, where its contents would land in the scan.
+   *
+   * Without the flag the hidden file is dropped and the run still clears the floor
+   * (43 files / ~3,300 lines) and reports 0 clones, 0%, exit 0 — a green gate over a
+   * scan that never saw a tracked, shipping 215-line duplicate.
+   */
+  it('still measures a file that a .gitignore hides from jscpd', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jscpd-gitignore-'))
+    const dir = join(root, 'tree')
+    mkdirSync(join(root, '.git'))
+    mkdirSync(dir)
+    const files = { ...fillerTreeFiles(), 'dup-a.ts': bigCloneBlock(), 'dup-b.ts': bigCloneBlock() }
+    for (const [name, contents] of Object.entries(files)) writeFileSync(join(dir, name), contents)
+    writeFileSync(join(dir, '.gitignore'), 'dup-b.ts\n')
+    try {
+      const result = runScriptAgainst(dir)
+      const output = result.stdout + result.stderr
+
+      expect(result.status).not.toBe(0)
+      expect(output).toMatch(/dup-b\.ts:\d+/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to run at all when an .ignore file could shrink the scan', () => {
+    const dir = fixtureDir({ ...fillerTreeFiles(), [IGNORE_FILE_NAME]: 'filler1.ts\n' })
+    try {
+      const result = runScriptAgainst(dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/VERIFY REJECTED/)
+      expect(result.stderr).toMatch(/an ignore file jscpd honours/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to run at all when a symlink inside the scope would be skipped', () => {
+    const dir = fixtureDir(fillerTreeFiles())
+    symlinkSync(join(dir, 'filler0.ts'), join(dir, 'linked.ts'))
+    try {
+      const result = runScriptAgainst(dir)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/is a symbolic link/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * N2 end to end: the flag must be refused BEFORE it reaches jscpd's argument
+   * vector. `--config=` is the sharp one — it points jscpd at a config file outside
+   * cwd, exactly where `findExternalJscpdConfig` cannot see it, re-opening the channel
+   * the external-config refusal closed. Both of these previously exited 0 over the
+   * real `src` tree with a planted 212-line clone present.
+   */
+  it.each(['--max-size=6kb', '--config=/tmp/evil.json'])(
+    'refuses %s as an argument instead of forwarding it to jscpd',
+    (arg) => {
+      const result = spawnSync(process.execPath, [resolve('scripts/check-duplication.mjs'), arg], {
+        encoding: 'utf8',
+      })
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toMatch(/starts with "-"/)
+      expect(result.stdout).not.toMatch(/check-duplication: \d+ files/)
+    },
+  )
+
+  it('refuses a scope argument that is not an existing directory', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve('scripts/check-duplication.mjs'), join(tmpdir(), 'no-such-tree-98765')],
+      { encoding: 'utf8' },
+    )
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/not an existing directory/)
   })
 
   it('exits 0 over the same fixture tree when the process cwd has no external config', () => {

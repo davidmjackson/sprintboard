@@ -16,9 +16,9 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** Production code only. See docs/adr/0005-the-duplication-gate.md. */
@@ -39,7 +39,7 @@ export const IGNORE_PATTERNS = [
 ]
 
 /**
- * jscpd's detection sensitivity, stated rather than inherited.
+ * jscpd's detection and file-selection settings, stated rather than inherited.
  *
  * These match jscpd 5.0.14's behaviour today. Pinning them is the ruff lesson:
  * api/pyproject.toml selected no rules, inherited whatever the installed version
@@ -47,8 +47,16 @@ export const IGNORE_PATTERNS = [
  * whose verdict can move without a commit is not a gate. All four detection
  * modes produced identical results on this tree when `mild` was pinned, so the
  * choice buys future determinism, not a change in today's verdict.
+ *
+ * `maxSize` is jscpd's silent file-skipping cap (its default is also 1mb). It is
+ * stated here for the same reason as the rest — but note what it does NOT buy:
+ * a production file larger than the cap is still dropped from the scan without a
+ * word, and the file/line floors below have far too much headroom to notice one
+ * missing file. Nothing in this repo comes close today (the largest file under
+ * `src` is ~40kb), and a >1mb source file would be a glaring diff; if one ever
+ * lands, raise this and say so in the ADR rather than letting it go unmeasured.
  */
-export const SENSITIVITY = { minLines: 5, minTokens: 50, mode: 'mild' }
+export const SENSITIVITY = { minLines: 5, minTokens: 50, mode: 'mild', maxSize: '1mb' }
 
 /**
  * `maxPercentage` is the standard's bar (core/THRESHOLDS.md: under 3%). A
@@ -110,11 +118,28 @@ export function evaluateReport(report, limits = LIMITS) {
 }
 
 /** Pure: the CLI args jscpd needs for one scan. Extracted so `runDuplicationScan` stays
- * under the standard's 30-line function threshold. (`.mjs` is outside
+ * under the standard's 30-line function threshold, and so the flags below can be
+ * asserted directly rather than only through a scan's numbers. (`.mjs` is outside
  * `eslint.config.js`'s `**\/*.{ts,tsx}` scope, so nothing but this comment enforces
  * that here — new code holds to the bar whether or not the linter can see it.)
+ *
+ * `--no-gitignore` is load-bearing, not tidiness. jscpd's merged config defaults to
+ * `no_gitignore: false`, so without this flag every gitignore-family file silently
+ * removes matching files from the scan. Git keeps tracking a file that is already in
+ * the index when it is later added to `.gitignore`, so such a file still ships to
+ * production while never being measured — and the summary line comes out
+ * BYTE-IDENTICAL to an honest run (same file count, same line count), because the
+ * hidden file was never counted. Reproduced on this repo: a tracked 212-line verbatim
+ * duplicate plus one line in `.gitignore` turned `3.49% / exit 1` into
+ * `64 files / 5822 lines, 0 clones, 0% / exit 0`.
+ *
+ * Measured, so the boundary is known rather than assumed: this flag switches off a
+ * root `.gitignore`, a nested `src/lib/.gitignore`, `.git/info/exclude`, and a
+ * machine-global git excludes file. It does NOT switch off a plain `.ignore` — that
+ * is a different family with no flag to disable it, and `scanScopeError` refuses to
+ * run rather than pretending this flag covers it.
  */
-function buildJscpdArgs({ shim, scope, sensitivity, ignore, reportDir }) {
+export function buildJscpdArgs({ shim, scope, sensitivity, ignore, reportDir }) {
   const args = [
     shim,
     scope,
@@ -124,6 +149,9 @@ function buildJscpdArgs({ shim, scope, sensitivity, ignore, reportDir }) {
     String(sensitivity.minTokens),
     '--mode',
     sensitivity.mode,
+    '--max-size',
+    String(sensitivity.maxSize),
+    '--no-gitignore',
     '--reporters',
     'json',
     '--output',
@@ -188,10 +216,17 @@ export function runDuplicationScan({
  * refused too, defensively, since a future jscpd bump could reintroduce support for
  * a legacy name without this file being touched.
  *
- * The fix here is deliberately not "enumerate and pass every jscpd CLI flag": the
- * `SENSITIVITY` comment already claims detection settings are "stated rather than
- * inherited"; refusing to run at all in the presence of external config is what
- * actually makes that claim true, rather than chasing individual options forever.
+ * Discovery is cwd-only, confirmed empirically against the pinned binary: a
+ * `.jscpd.json` in a PARENT of the cwd, and one inside the scanned tree itself, both
+ * had no effect. So checking `process.cwd()` alone is sufficient, not a shortcut.
+ *
+ * What this refusal does and does not buy. It closes the discovered-config channel
+ * completely — nothing on disk can hand jscpd options behind this script's back. It
+ * does NOT make every jscpd setting explicit: `formats`, `pattern`, `ignore_patterns`
+ * and `cross_formats` are still whatever jscpd 5.0.14 defaults to, and the only thing
+ * pinning those is the exact version in package.json. That is a deliberate trade —
+ * pinning `--format` to a list would silently drop any new file type someone adds to
+ * `src`, which is the same failure in the other direction. See the ADR.
  */
 const EXTERNAL_CONFIG_FILES = ['.jscpd.json', '.jscpdrc', '.jscpdrc.json', '.jscpd.js']
 
@@ -213,36 +248,153 @@ export function findExternalJscpdConfig(cwd = process.cwd()) {
   return null
 }
 
-/**
- * Prints the crafted rejection and exits when an external config exists, returning
- * whether it did — `main()` checks the return value and returns immediately rather
- * than relying on `process.exit()`'s timing to stop the rest of the function.
- */
-function rejectExternalConfigIfPresent() {
-  const configFile = findExternalJscpdConfig()
-  if (!configFile) return false
-
-  console.error(
-    `\n  VERIFY REJECTED — found ${configFile}, an external jscpd configuration file.\n\n` +
-      '  jscpd auto-discovers config from the process cwd and lets it silently override\n' +
-      '  every option this script does not pass explicitly — that defeats the whole\n' +
-      '  point of this gate. The settings live in scripts/check-duplication.mjs\n' +
-      '  (SENSITIVITY, IGNORE_PATTERNS, LIMITS) and nowhere else: remove this file, or\n' +
-      '  fold whatever it was trying to do into that script instead.\n',
+/** Pure: the crafted rejection text for a discovered config file, or `null` for none. */
+export function externalConfigReason(configFile) {
+  if (!configFile) return null
+  return (
+    `found ${configFile}, an external jscpd configuration file.\n\n` +
+    '    jscpd auto-discovers config from the process cwd and lets it silently override\n' +
+    '    every option this script does not pass explicitly — that defeats the whole\n' +
+    '    point of this gate. The settings live in scripts/check-duplication.mjs\n' +
+    '    (SENSITIVITY, IGNORE_PATTERNS, LIMITS) and nowhere else: remove this file, or\n' +
+    '    fold whatever it was trying to do into that script instead.'
   )
+}
+
+const ARGUMENT_ADVICE =
+  '\n\n    This script takes at most one argument: a directory to scan instead of\n' +
+  '    production `src`, used only by its own process-level tests. It is forwarded\n' +
+  '    to jscpd as a positional path, so an unchecked value is an unchecked jscpd\n' +
+  '    CLI token: `--config=/elsewhere/dup.json`, `--max-size=6kb`, `--ignore=...`\n' +
+  '    and `--pattern=...` each redefine what the gate measures while it still\n' +
+  '    reports a clean 0% and exits 0 — and a flag also empties the positional path\n' +
+  '    list, so jscpd walks the whole cwd instead of the intended tree. `npm run\n' +
+  '    lint:duplication -- --max-size=6kb` needed no repo change at all to do this.'
+
+/**
+ * Pure: why these raw CLI arguments are not an acceptable scope override, or `null`.
+ * Split from `scanScopeError` so the "is it a flag" rule can be tested without a
+ * filesystem, and validated BEFORE the value can reach jscpd's argument vector.
+ */
+export function cliArgsError(args) {
+  if (args.length > 1) {
+    return `expected at most one argument (a directory to scan), got ${args.length}: ${args.join(' ')}${ARGUMENT_ADVICE}`
+  }
+  if (args[0]?.startsWith('-')) {
+    return `"${args[0]}" starts with "-", so it is a jscpd flag and not a directory.${ARGUMENT_ADVICE}`
+  }
+  return null
+}
+
+/**
+ * The one ignore-file family `--no-gitignore` does NOT switch off, measured against
+ * the pinned binary rather than assumed. With `--no-gitignore` in place, a `.gitignore`
+ * (root or nested), `.git/info/exclude`, and even a machine-global git excludes file
+ * (`$XDG_CONFIG_HOME/git/ignore`) all stopped affecting the scan — that last one is
+ * worth noticing, since it lives entirely outside the repo. A plain `.ignore` kept
+ * working: 120 sources became 119 with `.ignore` present, flag or no flag. jscpd 5.0.14
+ * exposes no `--no-ignore`, so the only honest response is to refuse to run.
+ */
+export const IGNORE_FILE_NAME = '.ignore'
+
+/** Every directory from `scope` up to the filesystem root, innermost first. */
+export function ancestorDirectories(scope) {
+  const dirs = []
+  let dir = resolve(scope)
+  while (dirname(dir) !== dir) {
+    dir = dirname(dir)
+    dirs.push(dir)
+  }
+  return dirs
+}
+
+/**
+ * One recursive walk of `scope`, returning the first symbolic link and the first
+ * `.ignore` file found in it, each as a full path or `null`. A single walk because
+ * both checks want the same directory listing. `readdirSync({ recursive: true })`
+ * does not follow links, so a symlink loop terminates rather than hanging — verified
+ * directly against a self-referential tree.
+ */
+export function walkScope(scope) {
+  const entries = readdirSync(scope, { withFileTypes: true, recursive: true })
+  const at = (entry) => (entry ? join(entry.parentPath, entry.name) : null)
+  return {
+    symlink: at(entries.find((entry) => entry.isSymbolicLink())),
+    ignoreFile: at(entries.find((entry) => entry.isFile() && entry.name === IGNORE_FILE_NAME)),
+  }
+}
+
+const IGNORE_FILE_ADVICE =
+  '\n\n    `.ignore` files are read by jscpd from the scanned tree AND from every\n' +
+  '    directory above it, and `--no-gitignore` does not switch them off — verified\n' +
+  '    against this pinned binary. A tracked production file named in one still ships\n' +
+  '    while never being measured, and the summary line is byte-identical to an honest\n' +
+  '    run. Delete it, or express the exclusion in IGNORE_PATTERNS in\n' +
+  '    scripts/check-duplication.mjs, where it is pinned by a test and visible in the ADR.'
+
+const SYMLINK_ADVICE =
+  '\n\n    jscpd does not follow links (`follow_symlinks: false`), so it and anything\n' +
+  '    under it would be dropped from the scan without a word while still shipping —\n' +
+  '    measured: a fixture of two real files plus a symlinked duplicate reported\n' +
+  '    `sources: 1, clones: 0`, and `sources: 3` with the clone found once links were\n' +
+  '    followed. This refuses rather than passing `--follow-symlinks`, because\n' +
+  '    following links fails the other way: a link pointing out of `src` pulls foreign\n' +
+  '    code into the denominator and can dilute a real violation under the 3% bar.\n' +
+  '    Replace it with the real file, or move it out of the scanned tree.'
+
+/**
+ * Why the resolved scan scope is unusable, or `null`. A scope that IS itself a symlink
+ * is fine and deliberately not refused — jscpd traverses a symlinked root normally,
+ * verified — so only links found *inside* the tree are rejected.
+ */
+export function scanScopeError(scope) {
+  if (!existsSync(scope) || !statSync(scope).isDirectory()) {
+    return `the scan scope "${scope}" is not an existing directory, so there is nothing to measure.`
+  }
+  const { symlink, ignoreFile } = walkScope(scope)
+  const above = ancestorDirectories(scope)
+    .map((dir) => join(dir, IGNORE_FILE_NAME))
+    .find((path) => existsSync(path))
+
+  const foundIgnoreFile = ignoreFile ?? above
+  if (foundIgnoreFile)
+    return `found ${foundIgnoreFile}, an ignore file jscpd honours.${IGNORE_FILE_ADVICE}`
+  if (symlink) return `"${symlink}" inside the scan scope is a symbolic link.${SYMLINK_ADVICE}`
+  return null
+}
+
+/**
+ * Prints the crafted rejection and terminates the process. Takes the reason returned
+ * by one of the pure checks above, and does nothing when that reason is `null`.
+ *
+ * There is no return value on purpose: `process.exit` does not return control, so a
+ * caller cannot observe one and an earlier `return true` here was dead code whose
+ * JSDoc described a contract that could only ever yield `false`.
+ */
+function refuseIf(reason) {
+  if (!reason) return
+  console.error(`\n  VERIFY REJECTED — ${reason}\n`)
   process.exit(1)
-  return true
 }
 
 /**
  * `scopeOverride` — this script's own process-level tests pass `process.argv[2]` to
- * point a real subprocess run at a fixture tree instead of production `src`. That is
- * the ONLY thing an override may change: `ignore` is always `IGNORE_PATTERNS` and
- * `limits` is always `LIMITS`, full stop — there is deliberately no parameter, env
- * var, or code path that relaxes the floor or drops the ignore list for any
- * invocation. A redirected scope must still fail closed on the real 40-file /
- * 3,000-line floor, exactly like a broken ignore glob would; the tests prove this
- * with a real fixture tree sized past that floor rather than by shrinking it.
+ * point a real subprocess run at a fixture tree instead of production `src`.
+ *
+ * What this genuinely guarantees: the override reaches only the `scope` field.
+ * `ignore` is always `IGNORE_PATTERNS` and `limits` is always `LIMITS`; neither is a
+ * parameter here, so no argument can relax the floor or drop the ignore list, and a
+ * redirected scope still fails closed on the real 40-file / 3,000-line floor. The
+ * tests prove that with a fixture tree sized past the floor rather than by shrinking
+ * it, and `main()` validates the raw argument (`cliArgsError`, then `scanScopeError`)
+ * before it ever reaches jscpd's argument vector.
+ *
+ * What it does NOT guarantee, so nobody stops looking here: a valid directory
+ * override still redirects the gate away from production code, and the only thing
+ * stopping `package.json` from shipping one is a test pinning `lint:duplication` to
+ * exactly `node scripts/check-duplication.mjs`. Nor can any check inside this file
+ * defend against `NODE_OPTIONS`, a tampered `node_modules`, or an edit to the file
+ * itself — anyone able to set those can replace the gate outright.
  * `npm run verify` calls this with no argument.
  */
 export function resolveScanOptions(scopeOverride) {
@@ -255,27 +407,34 @@ export function resolveScanOptions(scopeOverride) {
  * message from the violations branch, not a bare `TypeError` from a destructure that
  * ran before anything checked whether `total` exists.
  */
-function main() {
-  if (rejectExternalConfigIfPresent()) return
+function reportViolations(report, violations) {
+  console.error('\n  VERIFY REJECTED — the duplication gate did not pass.\n')
+  for (const { what } of violations) console.error(`    ${what}`)
+  for (const duplicate of report.duplicates ?? []) {
+    const { firstFile, secondFile, lines: cloneLines } = duplicate
+    console.error(
+      `\n    ${cloneLines} duplicated lines:\n` +
+        `      ${firstFile?.name}:${firstFile?.start}\n` +
+        `      ${secondFile?.name}:${secondFile?.start}`,
+    )
+  }
+  console.error('')
+}
 
-  const { scope, ignore, limits } = resolveScanOptions(process.argv[2])
+function main() {
+  const args = process.argv.slice(2)
+  refuseIf(externalConfigReason(findExternalJscpdConfig()))
+  refuseIf(cliArgsError(args))
+
+  const { scope, ignore, limits } = resolveScanOptions(args[0])
+  refuseIf(scanScopeError(scope))
+
   const report = runDuplicationScan({ scope, ignore })
   const violations = evaluateReport(report, limits)
 
   if (violations.length > 0) {
-    console.error('\n  VERIFY REJECTED — the duplication gate did not pass.\n')
-    for (const { what } of violations) console.error(`    ${what}`)
-    for (const duplicate of report.duplicates ?? []) {
-      const { firstFile, secondFile, lines: cloneLines } = duplicate
-      console.error(
-        `\n    ${cloneLines} duplicated lines:\n` +
-          `      ${firstFile?.name}:${firstFile?.start}\n` +
-          `      ${secondFile?.name}:${secondFile?.start}`,
-      )
-    }
-    console.error('')
+    reportViolations(report, violations)
     process.exit(1)
-    return
   }
 
   const { sources, lines, percentage, clones } = report.statistics.total
