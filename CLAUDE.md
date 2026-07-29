@@ -84,6 +84,15 @@ override rationale in `docs/adr/0001` and `0002`, and each one is pinned **at it
 boundary** in `verify-gate.test.mjs`: at the limit passes, one unit past fails.
 Widening a max there turns the suite red, which is deliberate.
 
+**Scope: `**/*.{ts,tsx,mjs,js}` — every source file in the repo, not just TypeScript.**
+Until SPRIN-60 the glob read `{ts,tsx}`, which quietly exempted all four `.mjs`/`.js`
+files, including `scripts/check-bundle.mjs` (a security control) and
+`verify-gate.test.mjs` (the guard on this gate). Narrowing it back is an exemption
+shaped like a file extension, and `verify-gate.test.mjs` now probes a `scripts/*.mjs`
+path, a root `*.mjs` path and a `.js` path so it cannot happen silently again. ADR
+0002's test-file override is `{ts,tsx,mjs}` for the same reason — **not** a bare
+`**/*.mjs`, which would hand `check-bundle.mjs` its exemption straight back.
+
 Write to the thresholds from the first line rather than retrofitting. A genuine
 misfit is an **ADR in this repo**, never an inline disable.
 
@@ -91,7 +100,9 @@ misfit is an **ADR in this repo**, never an inline disable.
 of this during the pivot; SPRIN-59 put the thresholds back the same day, once
 measuring showed they were free — the tree reported **122 files, 0 errors, 0
 warnings**, because SPRIN-50 had driven violations to zero before gating them and
-the pivot only deleted code. The session weight the pivot targeted was never T1-T5;
+the pivot only deleted code. Read that 122 as what it was: `.ts`/`.tsx` only, which
+is how the `.mjs` gap survived it. SPRIN-60 widened the scope and re-measured — one
+violation repo-wide, `check-bundle.mjs`'s 43-line `main()`, since split. The session weight the pivot targeted was never T1-T5;
 it was the ceremony around them, and the deep-review policy below is where that
 saving actually came from. See `docs/adr/0006`.
 

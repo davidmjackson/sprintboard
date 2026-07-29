@@ -40,3 +40,23 @@ would force suites to be restructured to satisfy a duplication metric, exactly
 as gating T1/T5 would have forced them to be split to satisfy a line count. The
 decision above is unchanged; this records that its scope now covers a third
 threshold. See docs/adr/0005-the-duplication-gate.md.
+
+## Addendum, 2026-07-29 — the override glob gained `.mjs` (SPRIN-60)
+
+The **Decision** above now reads `**/*.{test,spec}.{ts,tsx,mjs}`. Nothing about
+the decision changed; the file list it was always meant to describe did.
+
+Until SPRIN-60, `eslint.config.js` scoped every rule to `'**/*.{ts,tsx}'`, so no
+`.mjs` file was linted at all and this override had nothing to say about them.
+Widening that glob to `{ts,tsx,mjs,js}` brought `verify-gate.test.mjs` and
+`scripts/check-bundle.test.mjs` into scope, and their `it` blocks are suite size
+for exactly the reason argued above. Measured before widening: with `.mjs` in the
+main scope but *not* in this override, the repo reported 7 T1 violations, 6 of
+them `describe`/`it` blocks in those two files. With this override extended, 1 —
+a genuine 43-line `main()` in `scripts/check-bundle.mjs`, since split.
+
+**The extension list matters and a bare `'**/*.mjs'` would be wrong.** It reads as
+the tidier glob and would silently re-exempt `scripts/check-bundle.mjs` — the
+control that keeps a service-role key out of the browser bundle, and the whole
+reason SPRIN-60 existed. `verify-gate.test.mjs` pins this: one test asserts T1 is
+off in a `.mjs` test file, another that it stays on in a non-test `.mjs`.
