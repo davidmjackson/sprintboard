@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import {
   chmodSync,
   mkdirSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -248,11 +249,19 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(path, contents)
     }
-    afterWrite?.(distDir)
     const scriptPath = resolve('scripts/check-bundle.mjs')
+    // `afterWrite` runs INSIDE the try: it is where fixtures make things
+    // unreadable, so it is the call most likely to throw — and a throw above the
+    // try leaked a mkdtemp directory (containing a mode-000 file) on every failed
+    // run, without bound. It may return a restore function, which the finally runs
+    // before rmSync: a chmod-000 *directory* cannot be recursively removed, so the
+    // fixture that creates one has to put the mode back.
+    let restore
     try {
+      restore = afterWrite?.(distDir)
       return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
     } finally {
+      restore?.()
       rmSync(cwd, { recursive: true, force: true })
     }
   }
@@ -432,38 +441,74 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     // directory keeps all tests green AND keeps the walk()-recursion mutation green
     // — the exact hole this block exists to close, reopened by a test-side refactor
     // with the suite reporting success. Asserting the FLAGGED PATH is the only
-    // observable that carries the property.
+    // observable that carries the property. Note the cost, accepted deliberately:
+    // six fixtures now depend on the violation line printing a PATH, so changing
+    // that line's format reddens six tests on a wholly correct control. It fails in
+    // the safe direction, but do not delete it wholesale when it fires — the
+    // recursion pin goes with it.
     expect(result.stderr).toMatch(/assets[/\\]/)
   }
 
   /**
-   * The real chunk this stands in for, from this branch's own CI build:
-   * `dist/assets/index-BFIoGDIN.js  704.05 kB`, with a planted key landing near
-   * byte 497,931 — the MIDDLE.
+   * The fail-closed contract, asserted as BEHAVIOUR rather than errno text.
    *
-   * Both numbers are load-bearing, and the first cut of this fixture got both wrong
-   * by putting a 600,000-byte pad BEFORE the canary and nothing after it:
+   * Measured: `status !== 0` is the assertion that kills the dangerous
+   * `catch { continue }` mutation. A `/EACCES|permission denied/i` assertion killed
+   * nothing — and went RED on a strict IMPROVEMENT, a clean
+   * "BUILD REJECTED — could not read <file>; failing closed" handler. Pinning
+   * Node's raw stack trace punishes the next person for hardening this control, and
+   * what they will do about a red `verify` is weaken the test.
    *
-   *   - Canary at the END pins head-anchored truncation only. `.slice(-1024)`,
-   *     `.slice(-65536)` and a head+tail read all kept the suite green while the
-   *     real 704KB shape leaked. Four independent reviewers found this separately.
-   *   - A 600,056-byte fixture is SMALLER than the ~704,000-byte artefact it models,
-   *     so a size cap anywhere in that band (`size > 650000`) skipped the real chunk
-   *     unread with the suite green.
-   *
-   * Mid-file and oversized fixes both at once: head reads miss it, tail reads miss
-   * it, and any size cap below ~808KB skips a file this test requires to be read.
+   * The stdout half matters as much as the status: the failure mode being pinned is
+   * a gate that announces a clean bundle having not read it.
    */
-  const KEY_OFFSET = 497_931
-  const TAIL_PAD = 310_000
+  function expectFailedClosed(result) {
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).not.toMatch(/no privileged credentials found/)
+  }
 
-  it('catches a credential mid-file in a chunk larger than the real bundle', () => {
-    const chunk = 'x'.repeat(KEY_OFFSET) + '\n' + CANARY + '\n' + 'y'.repeat(TAIL_PAD)
+  /**
+   * ONE canary can only ever pin one side of a window. This fixture took two goes
+   * to get right, and the second was a REGRESSION:
+   *
+   *   - Cut 1 put a 600,000-byte pad BEFORE the canary and nothing after it. Every
+   *     head-anchored cap below 600,000 died, but `.slice(-1024)`, `.slice(-65536)`
+   *     and a head+tail read all stayed green while a real 704KB build leaked.
+   *   - Cut 2 moved the canary to byte 497,931 to catch both. It did — and it
+   *     silently GAVE BACK the head band [497,932..600,055], which contains 512 KiB,
+   *     the single likeliest value anyone would pick for a read cap. `.slice(0,
+   *     524288)` went red at cut 1 and green at cut 2. Trading one blind band for
+   *     another is not progress, and the spec claimed the class was closed.
+   *
+   * The fix is not a better offset — no single offset exists. It is TWO DISTINCT
+   * credential patterns at OPPOSITE ENDS of one file, both of which must be
+   * reported. `findPrivilegedCredentials` yields one violation per PATTERN, not per
+   * occurrence, so two copies of the same canary would collapse into one finding
+   * and prove nothing; a different pattern at each end cannot collapse.
+   *
+   * Now any contiguous window read — head, tail, or interior — misses at least one
+   * end and goes red. The residual is honest and unavoidable through a subprocess:
+   * a cap ABOVE this file's size is still invisible, because nothing observable
+   * reports bytes read. See "Not verified here" in the PR.
+   */
+  const SPAN = 800_000
+  const TAIL_CANARY = 'process.env.SUPABASE_SERVICE_ROLE_KEY'
+
+  it('reads a chunk end to end, not a window of it', () => {
+    const chunk = CANARY + '\n' + 'x'.repeat(SPAN) + '\n' + TAIL_CANARY + '\n'
     // Nested TWO levels: one level pins only "recursion exists at all", and a walk
     // capped at depth 1 stayed green. dist/ also carries public/ passthroughs, whose
     // directory structure is copied verbatim and is arbitrarily deep.
     const result = runAgainstDist({ ...cleanTopLevel, 'assets/chunks/index-a1b2c3.js': chunk })
     expectRejectedForTheKey(result)
+    // Both ends, or the read was a window. These are DIFFERENT TEXT_PATTERNS
+    // entries, so both appear as separate violations on the same file.
+    expect(result.stderr).toMatch(/service-role key environment variable/)
+    // The shared helper only asserts /assets[/\\]/, which one separator satisfies —
+    // measured: a helper collapsing just the SECOND level kept all 35 tests green
+    // while a depth-1-capped walk shipped unscanned. Pin the depth this fixture
+    // actually supplies.
+    expect(result.stderr).toMatch(/assets[/\\]chunks[/\\]/)
   })
 
   it('catches a credential in a nested dist/assets/ chunk that is small', () => {
@@ -534,7 +579,29 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
       // silently vacuous — CI is ubuntu-latest with no container, so this holds.
       expect(() => readFileSync(path, 'utf8')).toThrow()
     })
-    expect(result.status).not.toBe(0)
-    expect(result.stderr).toMatch(/EACCES|permission denied/i)
+    expectFailedClosed(result)
+  })
+
+  /**
+   * The sibling door, and it is the wider one. The test above covers a file that
+   * cannot be READ; this covers a directory that cannot be ENUMERATED, which is
+   * where walk() lives. The same defensive tidy applied there —
+   * `try { … } catch { return [] }` — silently drops an ENTIRE SUBTREE, and
+   * measured, it reported "2 files scanned, no privileged credentials found" over a
+   * chmod-000 `assets/` holding a real key, exit 0. The floor cannot see it for the
+   * reason it never can: the vanished subtree never reaches the SCANNABLE filter,
+   * and the two clean top-level files satisfy the floor by themselves.
+   *
+   * The restore callback is required, not tidiness: rmSync cannot recurse into a
+   * mode-000 directory, so without it the fixture's own cleanup throws.
+   */
+  it('fails closed when a directory under dist/ cannot be enumerated', () => {
+    const result = runAgainstDist({ ...cleanTopLevel, 'assets/chunk.js': CANARY }, (dist) => {
+      const dir = join(dist, 'assets')
+      chmodSync(dir, 0o000)
+      expect(() => readdirSync(dir)).toThrow() // positive control, as above
+      return () => chmodSync(dir, 0o755)
+    })
+    expectFailedClosed(result)
   })
 })
