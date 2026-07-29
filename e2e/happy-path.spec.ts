@@ -126,6 +126,34 @@ test.describe('S8.1 end-to-end happy path', () => {
       detailDialog.getByLabel('sprint').selectOption({ index: 1 }),
     ])
     expect(assignResponse.ok()).toBeTruthy()
+
+    // 4c. SPRIN-61: change the status with the KEYBOARD ALONE, no pointer at any step.
+    //     This is the gesture the jsdom suite structurally cannot perform — it can assert
+    //     the control's shape and wiring, never that a keyboard actually drives it.
+    //     Tab from wherever focus currently sits until it lands on the status select.
+    //     Radix traps focus inside the dialog, so this terminates; the cap turns a broken
+    //     tab order into a clear failure instead of a hang.
+    const statusSelect = detailDialog.getByLabel('status')
+    let reachedStatus = false
+    for (let i = 0; i < 40 && !reachedStatus; i++) {
+      await page.keyboard.press('Tab')
+      reachedStatus = await statusSelect.evaluate((el) => el === document.activeElement)
+    }
+    expect(reachedStatus).toBeTruthy()
+
+    // The ticket is To Do (index 0), so one ArrowDown selects In Progress and fires
+    // `change`. NOTE: on a focused closed <select>, ArrowDown changes the value directly
+    // on Linux and Windows Chromium; on macOS it opens the popup instead. CI and this
+    // project's dev environment are both Linux, so this is deterministic here.
+    const [keyboardStatusResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().includes('/rest/v1/tickets') && r.request().method() === 'PATCH',
+      ),
+      page.keyboard.press('ArrowDown'),
+    ])
+    expect(keyboardStatusResponse.ok()).toBeTruthy()
+    await expect(statusSelect).toHaveValue('in_progress')
+
     await page.keyboard.press('Escape')
     await expect(detailDialog).toBeHidden()
 
