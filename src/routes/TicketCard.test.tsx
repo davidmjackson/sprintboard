@@ -68,6 +68,11 @@ describe('TicketCard', () => {
   it('is reachable by Tab (the card is a real button, not a clickable div)', async () => {
     render(<TicketCard ticket={ticket} onOpen={vi.fn()} />)
     await userEvent.tab()
-    expect(screen.getByRole('button', { name: /wire the board/i })).toHaveFocus()
+    const focused = screen.getByRole('button', { name: /wire the board/i })
+    expect(focused).toHaveFocus()
+    // A `role="button"` div passes the assertion above too (jsdom honours the ARIA role
+    // in getByRole), so the name's claim ("a real button") is only true once the element
+    // itself is checked, not just its accessible role.
+    expect(focused.tagName).toBe('BUTTON')
   })
 })

@@ -723,16 +723,20 @@ describe('TicketDetailDialog', () => {
   })
 
   it('renders a status picker showing the ticket current status', () => {
+    // `base.status` is 'todo', which is ALSO the first <option> — an uncontrolled select
+    // would show 'todo' too, so that fixture cannot tell a controlled select apart from
+    // an unbound one. Render a ticket whose status is not the first option so the
+    // assertion only passes if the select is genuinely wired to `ticket.status`.
     render(
       <TicketDetailDialog
-        ticket={base}
+        ticket={{ ...base, status: 'in_review' }}
         currentUser={user}
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
       />,
     )
-    expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('todo')
+    expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('in_review')
   })
 
   it('offers all four board columns as status options, in board order', () => {
@@ -848,9 +852,16 @@ describe('TicketDetailDialog', () => {
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /status/i }), 'done')
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
-    // Rolled back to the original status...
+    // Rolled back to the original status, and the error is shown.
     expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('todo')
-    // ...and the rollback did NOT revert the whole ticket to a stale snapshot.
+    // This only proves the status field is restored and `summary` still reads its
+    // original value from THIS render — it does not distinguish a field-scoped revert
+    // from a whole-ticket revert to a stale snapshot, because nothing here changes a
+    // second field between the optimistic apply and the failure. The sibling test
+    // 'preserves a concurrent field edit when an earlier save fails and rolls back only
+    // its own field' is the one that actually pins field-scoped rollback (it edits
+    // summary and points concurrently, out of commit order) — do not delete it believing
+    // this test covers the same ground.
     expect(onUpdated.mock.calls.at(-1)![0]).toMatchObject({
       status: 'todo',
       summary: 'Original summary',
