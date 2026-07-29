@@ -116,7 +116,7 @@ describe('findPrivilegedCredentials', () => {
   })
 })
 
-describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encoding and symlink guard bugs)', () => {
+describe('isEntryPoint (the space/percent-encoding and symlink guard bugs)', () => {
   it('is false when argv[1] is undefined — imported as a module, not run as a script', () => {
     expect(isEntryPoint('file:///anything/check-bundle.mjs', undefined)).toBe(false)
   })
@@ -147,7 +147,7 @@ describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encodin
     expect(
       isEntryPoint(
         'file:///var/www/sprintboard/scripts/check-bundle.mjs',
-        '/var/www/sprintboard/scripts/check-duplication.mjs',
+        '/var/www/sprintboard/scripts/some-other-script.mjs',
       ),
     ).toBe(false)
   })
@@ -157,9 +157,8 @@ describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encodin
   })
 
   // IMPORTANT 5: without realpathSync on both sides, invoking this script through
-  // a symlink made main() silently never run — measured directly on this exact
-  // guard's twin in scripts/check-duplication.mjs (see its test file for the
-  // full before/after subprocess proof: status 0, empty stdout AND stderr).
+  // a symlink made main() silently never run — measured directly, as a real
+  // subprocess: status 0, with empty stdout AND stderr, having scanned nothing.
   it('is true when the module URL is the real target of a symlink argv[1] points at', () => {
     const dir = mkdtempSync(join(tmpdir(), 'check-bundle-entry-point-symlink-'))
     const target = join(dir, 'real.mjs')
@@ -179,8 +178,8 @@ describe('package.json wiring (IMPORTANT 4: nothing pinned that build runs check
   // whole scoped suite green — verified directly (140 tests, 3 files, all
   // passed with the credential control entirely absent from the build). This
   // is the control that stops a service-role key shipping to browsers; it
-  // needs the same exact-token pin scripts/check-duplication.test.mjs already
-  // gives lint:duplication's presence in verify.
+  // needs the same exact-token pin verify-gate.test.mjs gives every other step
+  // of verify.
   const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
 
   it('scripts.build runs the type check, the Vite build, then check-bundle, in that order', () => {
@@ -190,18 +189,6 @@ describe('package.json wiring (IMPORTANT 4: nothing pinned that build runs check
   it('is invoked by build as its own exact step', () => {
     const steps = pkg.scripts.build.split('&&').map((step) => step.trim())
     expect(steps).toContain('node scripts/check-bundle.mjs')
-  })
-})
-
-describe('devDependencies.jscpd is pinned to the exact version ADR 0005 relies on', () => {
-  // MINOR 11: ADR 0005 says the pinned jscpd version is the only thing holding
-  // its unset defaults stable — a floating spec (jscpd: "^5.0.14" or "~5.0.14")
-  // would let a future install silently pick up a different minor/patch whose
-  // defaults differ, exactly the ruff-version-drift lesson this repo already
-  // learned once for api/pyproject.toml.
-  it('devDependencies.jscpd is exactly 5.0.14, not a range', () => {
-    const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
-    expect(pkg.devDependencies.jscpd).toBe('5.0.14')
   })
 })
 
@@ -291,9 +278,9 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
   /**
    * IMPORTANT 9: before MIN_SCANNED_FILES existed, an empty (or near-empty)
    * dist/ reported "no privileged credentials found" having scanned nothing —
-   * the same "cannot tell clean from did-not-look" gap check-duplication.mjs's
-   * floors exist to close, on the control that actually stops a service-role
-   * key shipping. These build a dist/ directory that EXISTS (the no-dist/ test
+   * the "cannot tell clean from did-not-look" gap that any scanning gate has to
+   * close, on the control that actually stops a service-role key shipping.
+   * These build a dist/ directory that EXISTS (the no-dist/ test
    * above covers "does not exist at all") but is below the floor.
    */
   function runAgainstSparseDist(fileCount) {

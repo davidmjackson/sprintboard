@@ -26,9 +26,10 @@ const SCANNABLE = /\.(js|mjs|cjs|css|html|map)$/
 /**
  * IMPORTANT 9: a `dist/` that exists but is empty — or nearly so — reports
  * "no privileged credentials found" having scanned nothing, the exact
- * "cannot tell clean from did-not-look" gap `check-duplication.mjs`'s floors
- * exist to close, on the more important control: this is what stops a
- * service-role key shipping to every visitor.
+ * "cannot tell clean from did-not-look" gap that any scanning gate has to close.
+ * A control that reports success while having measured nothing is worse than no
+ * control, because the green tells you it looked. This is the control that stops
+ * a service-role key shipping to every visitor, so it fails closed instead.
  *
  * BLOCKER: the floor counts the files actually READ, never everything `walk()`
  * returns, and the success line reports that same number. The first cut of this
@@ -51,8 +52,8 @@ const SCANNABLE = /\.(js|mjs|cjs|css|html|map)$/
  * and it cannot claim to have scanned a file it never opened. A floor of 2
  * leaves headroom for the only plausible honest shrink (the CSS chunk
  * disappearing) while still refusing the shapes that mean the build did not
- * look. Like `LIMITS.minSources` in `scripts/check-duplication.mjs` it is a
- * tripwire, not a target to track dist/ growth against.
+ * look. It is a tripwire, not a target to track dist/ growth against: raising it
+ * to follow the bundle's size defeats the point.
  */
 export const MIN_SCANNED_FILES = 2
 
@@ -197,15 +198,14 @@ function realOrSelf(path) {
  * character, because import.meta.url percent-encodes those and process.argv[1]
  * never does.
  *
- * `realOrSelf` on BOTH sides closes a second gap, measured directly on
- * `scripts/check-duplication.mjs`'s identical guard (see its comment): invoking
+ * `realOrSelf` on BOTH sides closes a second gap, measured directly: invoking
  * this script through a symlink — the exact shape `npm` uses for installed bin
  * scripts — made `main()` silently never run, because `import.meta.url` resolves
  * to the symlink's REAL target while `argv[1]` stays the symlink path. Resolving
  * both sides through `realpathSync` (when the path exists on disk; unchanged
  * otherwise) took this guard from 8-of-9 to 9-of-9 invocation shapes caught in
  * review. Exported so the fix can be pinned with plain strings, without needing
- * a real path on disk, and mirrors `isEntryPoint` in check-duplication.mjs.
+ * a real path on disk.
  */
 export function isEntryPoint(moduleUrl, argv1) {
   if (argv1 === undefined) return false
