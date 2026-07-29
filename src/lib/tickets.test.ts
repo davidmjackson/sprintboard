@@ -81,7 +81,7 @@ describe('createTicket', () => {
     expect(payload).toMatchObject({ project_id: 'p1', summary: 'Wire the board' })
   })
 
-  it('sets parent_epic_id when parentEpicId is given (AI decomposition children)', async () => {
+  it('sets parent_epic_id when parentEpicId is given', async () => {
     single.mockResolvedValue({ data: { id: 't2' }, error: null })
     await createTicket({ ...input, parentEpicId: 'e1' })
 

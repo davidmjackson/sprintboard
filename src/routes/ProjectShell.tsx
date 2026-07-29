@@ -198,7 +198,6 @@ export function ProjectShell() {
           }}
           onUpdated={onTicketUpdated}
           onDeleted={onTicketDeleted}
-          onTicketsCreated={(created) => ticketRead.patch(project.id, (ts) => [...ts, ...created])}
         />
       </div>
     </div>

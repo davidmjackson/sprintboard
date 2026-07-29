@@ -1,10 +1,8 @@
 import { X } from 'lucide-react'
 
-import type { Decomposition } from '@/lib/ticket-decomposition'
 import type { Deliverables } from '@/lib/ticket-deliverables'
 import type { Ticket, TicketUpdate } from '@/lib/domain'
 import { EditableText, FieldLabel } from './EditableText'
-import { TicketDecompositionPanel } from './TicketDecompositionPanel'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 
@@ -94,20 +92,18 @@ export function TicketDeliverablesEditor({
   )
 }
 
-/** Epic-only: the context and deliverables that feed Rung 2 AI decomposition. Rendered by
- *  the dialog's main column, beneath the always-visible fields, only when `ticket.type ===
+/** Epic-only: the epic's free-text context and its deliverables list. Rendered by the
+ *  dialog's main column, beneath the always-visible fields, only when `ticket.type ===
  *  'epic'`. */
 export function TicketEpicSection({
   ticket,
   deliverables,
-  decomposition,
   inputRef,
   commit,
   onEditingChange,
 }: {
   ticket: Ticket
   deliverables: Deliverables
-  decomposition: Decomposition
   inputRef: React.RefObject<HTMLInputElement | null>
   commit: (patch: TicketUpdate) => Promise<boolean>
   onEditingChange: (editing: boolean) => void
@@ -131,8 +127,6 @@ export function TicketEpicSection({
         inputRef={inputRef}
         onEditingChange={onEditingChange}
       />
-
-      <TicketDecompositionPanel decomposition={decomposition} items={deliverables.items} />
     </>
   )
 }

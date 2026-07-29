@@ -8,7 +8,7 @@
  * number/object into the list the UI renders. A non-array value (the default read as
  * `Json`, null, or junk) yields `[]`. Deliberately a `string[]` and not a structured
  * `{ id, text }` shape: Phase 1 needs only an ordered, editable list (S4.5 AC), and a
- * richer shape is an additive change for the Rung 2 AI decomposition, not a Phase-1 need.
+ * richer shape would be an additive change if a later feature ever needs one.
  */
 export function parseDeliverables(value: unknown): string[] {
   if (!Array.isArray(value)) return []
