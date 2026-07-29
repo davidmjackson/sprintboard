@@ -54,4 +54,20 @@ describe('TicketCard', () => {
     render(<TicketCard ticket={{ ...ticket, is_blocked: true, blocked_reason: null } as Ticket} />)
     expect(screen.getByText(/blocked/i)).toHaveAttribute('title', 'Blocked')
   })
+
+  it('opens via the keyboard: Enter on the focused card (the keyboard route to the dialog)', async () => {
+    const onOpen = vi.fn()
+    render(<TicketCard ticket={ticket} onOpen={onOpen} />)
+    const card = screen.getByRole('button', { name: /wire the board/i })
+    card.focus()
+    expect(card).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('is reachable by Tab (the card is a real button, not a clickable div)', async () => {
+    render(<TicketCard ticket={ticket} onOpen={vi.fn()} />)
+    await userEvent.tab()
+    expect(screen.getByRole('button', { name: /wire the board/i })).toHaveFocus()
+  })
 })
