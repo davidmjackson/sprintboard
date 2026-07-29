@@ -31,9 +31,17 @@ import { dirname, join, resolve } from 'node:path'
  *      but never "absent everywhere". Named as a limitation, not hidden.
  *
  * Every threshold assertion goes through `errorRuleIdsFor`, never `messagesFor`
- * alone: `eslint .` carries no `--max-warnings 0`, so a rule demoted from
- * 'error' to 'warn' exits 0 on a real violation while an id-only assertion stays
- * green. That defeat was observed on this repo during SPRIN-50.
+ * alone, because a rule demoted from 'error' to 'warn' is invisible to an
+ * id-only assertion. That defeat was observed on this repo during SPRIN-50.
+ *
+ * SPRIN-62 added `--max-warnings 0` to `scripts.lint`, and it is worth being
+ * precise about what that did and did not fix, because it is tempting to read it
+ * as making the severity filter redundant and drop it. Measured directly:
+ * demoting T1 to 'warn' with the flag in place STILL leaves `npm run lint` at
+ * exit 0, because this repo carries zero violations, so a demoted rule has
+ * nothing to warn about. The flag only bites once a demotion and a real
+ * violation arrive together. A demotion on a clean tree is caught here and
+ * nowhere else, so `errorRuleIdsFor` stays load-bearing.
  */
 
 const require = createRequire(import.meta.url)
@@ -48,9 +56,11 @@ async function messagesFor(source, filePath) {
  * Rule ids reported at ESLint severity 2 (error) only.
  *
  * Severity is checked, not just the rule id: demoting a rule from `'error'` to
- * `'warn'` leaves `eslint .` (no `--max-warnings 0`) exiting 0 on a real
- * violation, so an id-only assertion stays green while the gate stops gating.
- * That exact defeat was observed on this repo during SPRIN-50.
+ * `'warn'` leaves an id-only assertion green while the gate stops gating. That
+ * exact defeat was observed on this repo during SPRIN-50. `--max-warnings 0`
+ * (SPRIN-62) narrows the window but does not close it — see the file header for
+ * the measurement — so this filter is still the detector, not a belt-and-braces
+ * duplicate of the flag.
  */
 async function errorRuleIdsFor(source, filePath) {
   return (await messagesFor(source, filePath))
@@ -369,8 +379,13 @@ describe('the verify gate is composed of exactly the steps it claims', () => {
   // the collection assertions below. `format:check` was the odd one out in the
   // first version — narrowing it to a single path left it in the step list,
   // exiting 0, checking almost nothing, with everything green.
-  it('scripts.lint runs plain `eslint .`, with no flag that could weaken it', () => {
-    expect(pkg.scripts.lint).toBe('eslint .')
+  // SPRIN-62. `--max-warnings 0` is part of the body, not decoration: without it
+  // `eslint .` exits 0 on a rule demoted from 'error' to 'warn', so a one-word
+  // edit to eslint.config.js takes a threshold off the gate while `npm run lint`
+  // stays green. Exact equality, so neither the flag nor the target can be
+  // dropped, and no weakening flag can be added alongside them.
+  it('scripts.lint runs `eslint .` and fails on warnings, with no flag that could weaken it', () => {
+    expect(pkg.scripts.lint).toBe('eslint . --max-warnings 0')
   })
 
   it('scripts.format:check runs prettier over the whole repo', () => {

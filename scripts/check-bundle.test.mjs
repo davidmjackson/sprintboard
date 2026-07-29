@@ -292,6 +292,31 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     expect(result.stderr).toMatch(/sb_secret_/)
   })
 
+  /**
+   * SPRIN-62. The test above pins that the build is REJECTED; nothing pinned
+   * what the developer is told next. Every content assertion on this path was
+   * /BUILD REJECTED/ and /sb_secret_/, so deleting the entire remediation
+   * `console.error` — a plausible "tidy the noisy output" edit — left 36/36
+   * green. That block is the whole value of the control at 2am: it names the
+   * offending file, and it names the one action that actually matters. The key
+   * is compromised the moment it was written to disk, so a rebuild without a
+   * rotation is not a fix, and a developer who is only told "BUILD REJECTED"
+   * will reach for the rebuild.
+   *
+   * The filename and its cause are asserted as a PAIR, not as two independent
+   * substrings: with several files scanned, "some file contains a secret" and
+   * "this file contains a secret" are different messages, and only the second
+   * one can be acted on.
+   */
+  it('names the offending file and tells the developer to rotate the key', () => {
+    const result = runAgainstFakeDist(
+      'const key = "sb_secret_abcdefghijklmnopqrstuvwxyz0123456789";',
+    )
+    expect(result.stderr).toMatch(/index-fake\.js\s*\n\s*contains a modern service-role key/)
+    expect(result.stderr).toMatch(/hand every visitor a key that bypasses RLS/)
+    expect(result.stderr).toMatch(/ROTATE THE KEY/)
+  })
+
   it('exits 0 when only a public sb_publishable_ key is in dist/', () => {
     const result = runAgainstFakeDist(
       'const key = "sb_publishable_abcdefghijklmnopqrstuvwxyz0123456789";',
