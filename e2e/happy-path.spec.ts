@@ -6,12 +6,16 @@ import { deleteAuthUser } from './support/admin'
  * project. One user's whole journey, exactly as they'd click it:
  *
  *   sign up → create project → create ticket → add ticket to a sprint →
- *   start the sprint → drag the ticket to Done → complete the sprint.
+ *   start the sprint → change status with the KEYBOARD (SPRIN-61) →
+ *   drag the ticket to Done → complete the sprint.
  *
  * This is the only test that exercises the native HTML5 drag-and-drop for real —
  * jsdom has no `dataTransfer` and cannot fire a genuine drag, so every board test
  * under Vitest can only assert the wiring, never the gesture. Here the gesture is
- * real.
+ * real. The SPRIN-61 leg is the same idea applied to keyboard input: jsdom cannot
+ * fire trusted key events that drive a native `<select>`, so this is the only test
+ * that proves Tab + ArrowDown actually moves a ticket. See the comment at that leg
+ * for exactly what it does and does not cover.
  *
  * Isolation: each run signs up a fresh, unique user, so it never collides with
  * another run or with the shared RLS test users. Teardown deletes that user, which
@@ -55,7 +59,9 @@ test.describe('S8.1 end-to-end happy path', () => {
     for (const id of createdUserIds) await deleteAuthUser(id)
   })
 
-  test('signup → project → ticket → sprint → start → drag to Done → complete', async ({ page }) => {
+  test('signup → project → ticket → sprint → start → keyboard status change → drag to Done → complete', async ({
+    page,
+  }) => {
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`
     const email = `e2e-${stamp}@example.com`
     const password = 'e2e-Password-123!'
@@ -126,6 +132,42 @@ test.describe('S8.1 end-to-end happy path', () => {
       detailDialog.getByLabel('sprint').selectOption({ index: 1 }),
     ])
     expect(assignResponse.ok()).toBeTruthy()
+
+    // 4c. SPRIN-61: from the already-open detail dialog, change the status with the
+    //     KEYBOARD ALONE — Tab to the select, then ArrowDown. This is the gesture the
+    //     jsdom suite structurally cannot perform: it can assert the control's shape and
+    //     wiring, never that a keyboard actually drives it. What this leg proves is that
+    //     the status control is REACHED and OPERATED by keyboard once the dialog is open;
+    //     it does NOT prove a pointer-free journey from the board, because the dialog was
+    //     opened by the `.click()` on the backlog row a few lines up. The board-card →
+    //     Enter → dialog half of the keyboard path is pinned separately, under jsdom, in
+    //     `src/routes/TicketCard.test.tsx` ('opens via the keyboard: Enter on the focused
+    //     card'). No single run — here or in the unit suite — exercises both halves back
+    //     to back in one continuous keyboard-only journey.
+    //     Tab from wherever focus currently sits until it lands on the status select.
+    //     Radix traps focus inside the dialog, so this terminates; the cap turns a broken
+    //     tab order into a clear failure instead of a hang.
+    const statusSelect = detailDialog.getByLabel('status')
+    let reachedStatus = false
+    for (let i = 0; i < 40 && !reachedStatus; i++) {
+      await page.keyboard.press('Tab')
+      reachedStatus = await statusSelect.evaluate((el) => el === document.activeElement)
+    }
+    expect(reachedStatus).toBeTruthy()
+
+    // The ticket is To Do (index 0), so one ArrowDown selects In Progress and fires
+    // `change`. NOTE: on a focused closed <select>, ArrowDown changes the value directly
+    // on Linux and Windows Chromium; on macOS it opens the popup instead. CI and this
+    // project's dev environment are both Linux, so this is deterministic here.
+    const [keyboardStatusResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().includes('/rest/v1/tickets') && r.request().method() === 'PATCH',
+      ),
+      page.keyboard.press('ArrowDown'),
+    ])
+    expect(keyboardStatusResponse.ok()).toBeTruthy()
+    await expect(statusSelect).toHaveValue('in_progress')
+
     await page.keyboard.press('Escape')
     await expect(detailDialog).toBeHidden()
 
@@ -136,7 +178,10 @@ test.describe('S8.1 end-to-end happy path', () => {
     await expect(sprintRow.getByRole('button', { name: 'Complete' })).toBeVisible()
 
     // 6. On the board (which shows only the active sprint's tickets), drag the card
-    //    to Done. This is the real gesture the jsdom suite cannot perform.
+    //    to Done. This is the real gesture the jsdom suite cannot perform. The card
+    //    starts this leg from In Progress, not To Do — step 4c's keyboard status change
+    //    already moved it there — so this drag proves In Progress → Done, not the
+    //    To Do → Done span the original comment implied.
     await page.goto(`/projects/${projectId}/board`)
     const card = page.getByRole('button', { name: new RegExp(escapeRegExp(ticketSummary)) })
     await expect(card).toBeVisible()
