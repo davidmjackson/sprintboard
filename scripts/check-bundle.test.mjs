@@ -116,7 +116,7 @@ describe('findPrivilegedCredentials', () => {
   })
 })
 
-describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encoding and symlink guard bugs)', () => {
+describe('isEntryPoint (the space/percent-encoding and symlink guard bugs)', () => {
   it('is false when argv[1] is undefined — imported as a module, not run as a script', () => {
     expect(isEntryPoint('file:///anything/check-bundle.mjs', undefined)).toBe(false)
   })
@@ -147,7 +147,7 @@ describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encodin
     expect(
       isEntryPoint(
         'file:///var/www/sprintboard/scripts/check-bundle.mjs',
-        '/var/www/sprintboard/scripts/check-duplication.mjs',
+        '/var/www/sprintboard/scripts/some-other-script.mjs',
       ),
     ).toBe(false)
   })
@@ -157,9 +157,8 @@ describe('isEntryPoint (mirrors check-duplication.mjs; the space/percent-encodin
   })
 
   // IMPORTANT 5: without realpathSync on both sides, invoking this script through
-  // a symlink made main() silently never run — measured directly on this exact
-  // guard's twin in scripts/check-duplication.mjs (see its test file for the
-  // full before/after subprocess proof: status 0, empty stdout AND stderr).
+  // a symlink made main() silently never run — measured directly, as a real
+  // subprocess: status 0, with empty stdout AND stderr, having scanned nothing.
   it('is true when the module URL is the real target of a symlink argv[1] points at', () => {
     const dir = mkdtempSync(join(tmpdir(), 'check-bundle-entry-point-symlink-'))
     const target = join(dir, 'real.mjs')
@@ -279,9 +278,9 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
   /**
    * IMPORTANT 9: before MIN_SCANNED_FILES existed, an empty (or near-empty)
    * dist/ reported "no privileged credentials found" having scanned nothing —
-   * the same "cannot tell clean from did-not-look" gap check-duplication.mjs's
-   * floors exist to close, on the control that actually stops a service-role
-   * key shipping. These build a dist/ directory that EXISTS (the no-dist/ test
+   * the "cannot tell clean from did-not-look" gap that any scanning gate has to
+   * close, on the control that actually stops a service-role key shipping.
+   * These build a dist/ directory that EXISTS (the no-dist/ test
    * above covers "does not exist at all") but is below the floor.
    */
   function runAgainstSparseDist(fileCount) {

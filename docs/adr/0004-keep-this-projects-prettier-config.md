@@ -1,7 +1,17 @@
 # ADR 0004 — Keep this project's Prettier config
 
-**Status:** Accepted, 2026-07-25
-**Overrides:** the standard's `profiles/typescript/.prettierrc.json`
+**Status:** Accepted, 2026-07-25. Still in force — see the amendment below.
+**Originally:** an override of the standard's `profiles/typescript/.prettierrc.json`
+
+> **Amended 2026-07-29 (SPRIN-55).** This project is no longer wired to
+> `/var/www/CodingStandards` at all: the T1–T5 thresholds, the duplication gate and
+> ADRs 0001/0002/0003/0005 were removed with the rest of the pivot's third slice.
+> So this is no longer an *override* of anything — `.prettierrc.json` is simply this
+> project's formatting config, and the decision below stands on its own reasoning.
+> The references to the standard and to T1–T5 in the Context and Decision sections
+> are left as written, because they record why the choice was made at the time.
+> **Do not read them as evidence the standard is still adopted here.** It is not,
+> deliberately; `CLAUDE.md` is authoritative on that.
 
 ## Context
 
