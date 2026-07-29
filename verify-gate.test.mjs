@@ -6,15 +6,14 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 
 /**
- * What survives SPRIN-55.
+ * The guard on the CI gate.
  *
- * The pivot's slice 3 removed the code-quality ceremony — the T1-T5 thresholds,
- * the duplication gate and the four ADRs that existed only to justify threshold
- * overrides. It deliberately did NOT remove the gate. This file is the residue
- * of `eslint.config.test.mjs`: the assertions that were about the gate rather
- * than about the thresholds, kept because they guard what slice 3 keeps.
+ * SPRIN-55 removed the code-quality ceremony; SPRIN-59 put the T1-T5 thresholds
+ * back after measuring that they cost nothing (122 files, 0 errors, 0 warnings)
+ * — see docs/adr/0006. What stayed gone is the duplication gate. This file has
+ * to hold both facts: the thresholds ARE enforced, the duplication gate is NOT.
  *
- * THREE kinds of assertion live here, and the third is weaker than the others.
+ * FOUR kinds of assertion live here, and the fourth is weaker than the others.
  * An earlier draft of this comment claimed there were two and that both were
  * "positive by construction". That was false, and a reader would have trusted it
  * to mean there was no vacuity risk here — the exact trap this project has
@@ -22,13 +21,19 @@ import { dirname, join, resolve } from 'node:path'
  *
  *   1. `eslint .` still reports a real error, at real paths, from each preset.
  *      Positive. The strongest shape available.
- *   2. `verify`'s composition and what `npm test` actually COLLECTS. Positive.
- *   3. The duplication gate is really gone. NEGATIVE, and therefore bounded by
+ *   2. Each T1-T5 threshold, pinned at its BOUNDARY — at the limit passes, one
+ *      unit past it fails. Positive, and two-sided on purpose: a single "flags a
+ *      violation" assertion survives a widened max, measured (T1 30->37,
+ *      T2 10->13, T3 15->20, T5 400->404 all once passed the whole suite).
+ *   3. `verify`'s composition and what `npm test` actually COLLECTS. Positive.
+ *   4. The duplication gate is really gone. NEGATIVE, and therefore bounded by
  *      the exact names it enumerates: it can tell "absent under these names"
  *      but never "absent everywhere". Named as a limitation, not hidden.
  *
- * Nothing here asserts a threshold rule is absent. That would fight a future
- * decision to bring one back, which is not this file's business.
+ * Every threshold assertion goes through `errorRuleIdsFor`, never `messagesFor`
+ * alone: `eslint .` carries no `--max-warnings 0`, so a rule demoted from
+ * 'error' to 'warn' exits 0 on a real violation while an id-only assertion stays
+ * green. That defeat was observed on this repo during SPRIN-50.
  */
 
 const require = createRequire(import.meta.url)
@@ -144,6 +149,135 @@ describe('npm run lint still covers every part of the tree it used to', () => {
       expect(messages.filter((m) => m.severity === 2).map((m) => m.ruleId)).toContain('no-empty')
     })
   }
+})
+
+describe('the T1-T5 thresholds are enforced, each pinned at its boundary', () => {
+  // SPRIN-59 restored these (docs/adr/0006). Each pair brackets the real limit:
+  // AT the limit must pass, one unit past must fail. A single "flags a violation"
+  // assertion is NOT enough — widening every max by a few units once left the
+  // whole pre-existing suite green, which is how these boundary pairs came to
+  // exist in the first place.
+  //
+  // `src/lib/*.ts` is the probe path throughout: it is production code with no
+  // override applied to it, so every threshold is live there.
+  const PROBE = 'src/lib/threshold-probe.ts'
+
+  it('T1: a 30-line function passes, a 31-line function is flagged', async () => {
+    // 1 declaration + 27 body + 1 return + 1 closing brace = 30.
+    const sized = (bodyLines) =>
+      `export function sized(out: number[]) {\n${Array.from(
+        { length: bodyLines },
+        (_, i) => `  out.push(${i})`,
+      ).join('\n')}\n  return out\n}\n`
+    expect(await errorRuleIdsFor(sized(27), PROBE)).not.toContain('max-lines-per-function')
+    expect(await errorRuleIdsFor(sized(28), PROBE)).toContain('max-lines-per-function')
+  })
+
+  it('T2: cyclomatic complexity of 10 passes, 11 is flagged', async () => {
+    // Complexity is (independent branches + 1), so 9 ifs -> 10.
+    const branchy = (ifs) =>
+      `export function branchy(n: number) {\n${Array.from(
+        { length: ifs },
+        (_, i) => `  if (n === ${i}) return ${i}`,
+      ).join('\n')}\n  return -1\n}\n`
+    expect(await errorRuleIdsFor(branchy(9), PROBE)).not.toContain('complexity')
+    expect(await errorRuleIdsFor(branchy(10), PROBE)).toContain('complexity')
+  })
+
+  it('T3: cognitive complexity of 15 passes, 16 is flagged', async () => {
+    // sonarjs charges more per NESTING level than per sibling branch, so depth-5
+    // nesting costs 1+2+3+4+5 = 15 — exactly the limit. One extra top-level `if`
+    // (nesting 0, cost 1) tips it to 16 without touching cyclomatic complexity.
+    const nested = (extraSibling) => {
+      let open = ''
+      let close = ''
+      for (let i = 0; i < 5; i += 1) {
+        const indent = '  '.repeat(i + 1)
+        open += `${indent}if (n === ${i}) {\n`
+        close = `${indent}}\n${close}`
+      }
+      const extra = extraSibling ? '  if (n === 99) { out = 2 }\n' : ''
+      return `export function nested(n: number) {\n  let out = 0\n${open}${'  '.repeat(6)}out = 1\n${close}${extra}  return out\n}\n`
+    }
+    expect(await errorRuleIdsFor(nested(false), PROBE)).not.toContain(
+      'sonarjs/cognitive-complexity',
+    )
+    const over = await messagesFor(nested(true), PROBE)
+    const hit = over.find((m) => m.ruleId === 'sonarjs/cognitive-complexity' && m.severity === 2)
+    expect(hit).toBeDefined()
+    // The message carries the configured limit, so a changed number is caught
+    // even if the boundary pair above were somehow satisfied another way.
+    expect(hit.message).toMatch(/to the 15 allowed/)
+  })
+
+  it('T4: four parameters pass, five are flagged', async () => {
+    const params = (n) => {
+      const names = Array.from({ length: n }, (_, i) => `a${i}: number`).join(', ')
+      const body = Array.from({ length: n }, (_, i) => `a${i}`).join(' + ')
+      return `export function takes(${names}) {\n  return ${body}\n}\n`
+    }
+    expect(await errorRuleIdsFor(params(4), PROBE)).not.toContain('max-params')
+    expect(await errorRuleIdsFor(params(5), PROBE)).toContain('max-params')
+  })
+
+  it('T5: a 400-line file passes, a 401-line file is flagged', async () => {
+    // Distinct exported consts: distinct names avoid a redeclaration parse error
+    // and `export` keeps each one used, so no-unused-vars stays quiet.
+    const file = (n) =>
+      `${Array.from({ length: n }, (_, i) => `export const v${i} = ${i}`).join('\n')}\n`
+    expect(await errorRuleIdsFor(file(400), PROBE)).not.toContain('max-lines')
+    expect(await errorRuleIdsFor(file(401), PROBE)).toContain('max-lines')
+  })
+})
+
+describe('the threshold overrides are scoped exactly as their ADRs say', () => {
+  const OVERSIZED = `export function sized(out: number[]) {\n${Array.from(
+    { length: 35 },
+    (_, i) => `  out.push(${i})`,
+  ).join('\n')}\n  return out\n}\n`
+  const OVER_COMPLEX = `export function branchy(n: number) {\n${Array.from(
+    { length: 14 },
+    (_, i) => `  if (n === ${i}) return ${i}`,
+  ).join('\n')}\n  return -1\n}\n`
+
+  // ADR 0001 — T1 counts JSX as lines, so it is off for components.
+  it('T1 is off in a .tsx component (ADR 0001) but on in src/lib', async () => {
+    expect(await errorRuleIdsFor(OVERSIZED, 'src/routes/Probe.tsx')).not.toContain(
+      'max-lines-per-function',
+    )
+    expect(await errorRuleIdsFor(OVERSIZED, 'src/lib/threshold-probe.ts')).toContain(
+      'max-lines-per-function',
+    )
+  })
+
+  // ADR 0002 — size rules off in tests; T2 and T4 explicitly stay ON. Both
+  // halves are asserted: turning `complexity` off for test files once left the
+  // rest of this file green.
+  it('T1 is off in test files but T2 stays on (ADR 0002)', async () => {
+    expect(await errorRuleIdsFor(OVERSIZED, 'src/lib/example.test.ts')).not.toContain(
+      'max-lines-per-function',
+    )
+    expect(await errorRuleIdsFor(OVER_COMPLEX, 'src/lib/example.test.ts')).toContain('complexity')
+  })
+
+  // Widening this glob to src/components/** or src/** would exempt ~34 real
+  // production components from T2-T5, so both a real route path and a real
+  // non-ui component path must still be flagged.
+  it('the shadcn override exempts only src/components/ui/**', async () => {
+    expect(await errorRuleIdsFor(OVER_COMPLEX, 'src/components/ui/probe.tsx')).not.toContain(
+      'complexity',
+    )
+    expect(await errorRuleIdsFor(OVER_COMPLEX, 'src/routes/Probe.tsx')).toContain('complexity')
+    expect(await errorRuleIdsFor(OVER_COMPLEX, 'src/components/board/Probe.tsx')).toContain(
+      'complexity',
+    )
+  })
+
+  it('T5 is off only for the generated database.types.ts', async () => {
+    const big = `${Array.from({ length: 405 }, (_, i) => `export const v${i} = ${i}`).join('\n')}\n`
+    expect(await errorRuleIdsFor(big, 'src/lib/database.types.ts')).not.toContain('max-lines')
+    expect(await errorRuleIdsFor(big, 'src/lib/threshold-probe.ts')).toContain('max-lines')
+  })
 })
 
 describe('the shadcn/ui override is scoped exactly to src/components/ui/**', () => {
@@ -268,18 +402,29 @@ describe('npm test really collects the live integration suites', () => {
   })
 })
 
-describe('the duplication gate is gone (a NEGATIVE check — see the header)', () => {
+describe('the duplication gate is still gone (a NEGATIVE check — see the header)', () => {
   const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
 
+  // SPRIN-59 brought the THRESHOLDS back but deliberately not the duplication
+  // gate (docs/adr/0006). This describe holds that line. Note what changed with
+  // it: `eslint-plugin-sonarjs` is no longer forbidden — it supplies T3 — so it
+  // moved from the "must be absent" list to the "must be present" assertion
+  // below. Deleting it would silently drop cognitive complexity, so it needs a
+  // positive assertion, not merely the absence of a negative one.
   it('is not left half-wired under any dependency map or script key', () => {
     // Both maps, not just devDependencies: re-adding jscpd under `dependencies`
     // is the strictly worse reinstatement — it ships the package into every
     // production install — and it passed a devDependencies-only assertion.
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies }
     expect(Object.keys(allDeps)).not.toContain('jscpd')
-    expect(Object.keys(allDeps)).not.toContain('eslint-plugin-sonarjs')
     expect(pkg.scripts['lint:duplication']).toBeUndefined()
     expect(pkg.scripts['lint:standards']).toBeUndefined()
     expect(existsSync(resolve('scripts/check-duplication.mjs'))).toBe(false)
+  })
+
+  it('but the plugin supplying T3 IS a devDependency', () => {
+    // The T3 boundary probe above would also catch its removal, by failing to
+    // parse the rule. This says why, so the failure is diagnosable.
+    expect(Object.keys(pkg.devDependencies)).toContain('eslint-plugin-sonarjs')
   })
 })
