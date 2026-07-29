@@ -1,5 +1,12 @@
 # Code quality standard — adoption baseline, 2026-07-25
 
+> **⚠️ HISTORICAL. The standard is no longer wired to this project.** SPRIN-55 (the
+> 2026-07-29 pivot, slice 3) removed the T1-T5 thresholds, the duplication gate and
+> the ADRs that justified their overrides. `npm run lint:standards` and
+> `npm run lint:duplication` no longer exist. This file is kept as the record of an
+> adoption that happened, not as a description of the current gate — see `CLAUDE.md`
+> for that. **Do not use it as a to-do list.**
+
 Retrofit audit run with the `audit-standards` skill against
 `/var/www/CodingStandards`. **No code was changed.** This is the baseline the
 report is measured from; `npm run lint:standards` reproduces the JS/TS half.

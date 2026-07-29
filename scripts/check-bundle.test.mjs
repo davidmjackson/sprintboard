@@ -179,8 +179,8 @@ describe('package.json wiring (IMPORTANT 4: nothing pinned that build runs check
   // whole scoped suite green — verified directly (140 tests, 3 files, all
   // passed with the credential control entirely absent from the build). This
   // is the control that stops a service-role key shipping to browsers; it
-  // needs the same exact-token pin scripts/check-duplication.test.mjs already
-  // gives lint:duplication's presence in verify.
+  // needs the same exact-token pin verify-gate.test.mjs gives every other step
+  // of verify.
   const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
 
   it('scripts.build runs the type check, the Vite build, then check-bundle, in that order', () => {
@@ -190,18 +190,6 @@ describe('package.json wiring (IMPORTANT 4: nothing pinned that build runs check
   it('is invoked by build as its own exact step', () => {
     const steps = pkg.scripts.build.split('&&').map((step) => step.trim())
     expect(steps).toContain('node scripts/check-bundle.mjs')
-  })
-})
-
-describe('devDependencies.jscpd is pinned to the exact version ADR 0005 relies on', () => {
-  // MINOR 11: ADR 0005 says the pinned jscpd version is the only thing holding
-  // its unset defaults stable — a floating spec (jscpd: "^5.0.14" or "~5.0.14")
-  // would let a future install silently pick up a different minor/patch whose
-  // defaults differ, exactly the ruff-version-drift lesson this repo already
-  // learned once for api/pyproject.toml.
-  it('devDependencies.jscpd is exactly 5.0.14, not a range', () => {
-    const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'))
-    expect(pkg.devDependencies.jscpd).toBe('5.0.14')
   })
 })
 

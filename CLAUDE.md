@@ -72,11 +72,18 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 - Supabase: Auth, Postgres, RLS. Anon key client-side only.
 - Tooling: ESLint, Prettier, Vitest, Playwright.
 
-**The code-quality standard is part of the gate, not a report.** `npm run lint`
-enforces T1-T5 (thresholds in `eslint.config.js`, overrides in `docs/adr/`), and
-`npm run lint:duplication` holds production code under 3% duplication with a
-floor that fails an empty scan. Both are inside `npm run verify`. There is no
-`lint:standards` script any more.
+**The quality ceremony is gone; the gate is not.** SPRIN-55 removed the T1-T5 size
+and complexity thresholds, the duplication gate (`lint:duplication` and
+`scripts/check-duplication.mjs`) and the four ADRs that existed only to justify
+threshold overrides. `npm run lint` is now the ordinary correctness lint —
+recommended JS/TS rules, the React hook rules, no swallowed errors — and it is
+still inside `npm run verify`, which is still the required check.
+
+**This project is deliberately not wired to `/var/www/CodingStandards`.** That is a
+decision taken on 2026-07-29, not a gap to fill: do not re-add the profile, the
+threshold rules, a `lint:standards` script or `jscpd`, and do not offer to scaffold
+or audit the standard here. Write good code because it is good code. If a threshold
+ever earns its way back, it comes back as a story with an ADR, not as tidying.
 
 ## Workflow
 - GitHub Flow. One feature branch and one small PR per story. Squash merge.
@@ -139,8 +146,9 @@ as a failure.
 keepalive, signup, login, project, and the cross-tenant write paths. That difference is
 what stays put. The absolute numbers do not: every story that adds a unit-test file moves
 both, and they have been wrong in this file twice in a single session
-(44/37 → 45/38 → 46/39). At `542f786` it is **54 vs 47**; treat that as a timestamped
-observation, not a constant, and re-derive it with
+(44/37 → 45/38 → 46/39). At SPRIN-55 it is **50 vs 43** — down from 51/44, because that
+story deleted two threshold-test files and added one gate test. Treat that as a
+timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` rather than trusting this line.
 
 If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the
@@ -231,17 +239,23 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
   reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
   the exclude, don't rename the specs.
 
-## Deep review for security-boundary changes
+## Review depth is chosen by the diff, not applied by default
 
-Every story gets the standard two-reviewer pass (peer + security) on PR open. **In
-addition, run a deep multi-agent review** — many independent lenses, each finding
-adversarially verified — for any change that touches a **security boundary**:
-authentication, RLS / tenant isolation, secret handling, or the CI gate workflow
-itself. These are the diffs where one missed defect is expensive, and the project has
+**An ordinary story gets ONE reviewer on PR open.** A board tweak, a dialog, a copy
+change, a refactor already covered by tests — one pass, and move on. The weight of
+earlier sessions came from applying a security-boundary rule to ordinary UI work, and
+SPRIN-55 retired that. Do not spin up a review fleet for a form field.
+
+**A security-boundary diff gets the deep multi-agent review** — many independent
+lenses, each finding adversarially verified. The boundary is narrow and specific:
+**authentication, RLS / tenant isolation, secret handling, or the CI gate workflow
+itself.** These are the diffs where one missed defect is expensive, and the project has
 form here: a 48-agent adversarial pass once caught a broken `check-bundle` control that
 four conventional reviews missed. **Read the KILLED findings, not just the survivors** —
-majority-vote has discarded a correct finding before. Skip the deep pass for low-risk
-diffs (docs, copy, pure refactors already covered by tests); it is not free.
+majority-vote has discarded a correct finding before.
+
+If a diff sits on the line, the honest move is to ask rather than to guess upward: a
+deep pass is not free, and neither is a missed RLS defect.
 
 **Give every mutation-testing reviewer its own worktree** (`isolation: "worktree"`). A
 serious review breaks the code deliberately to prove a test can fail, so two reviewers in
