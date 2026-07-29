@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { MIN_SCANNED_FILES, findPrivilegedCredentials, isEntryPoint } from './check-bundle.mjs'
@@ -231,7 +239,7 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
    * a real Vite build puts index.html at the top level and the chunk carrying
    * inlined VITE_* values under dist/assets/, and every fixture here was flat.
    */
-  function runAgainstDist(files) {
+  function runAgainstDist(files, afterWrite) {
     const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-dist-'))
     const distDir = join(cwd, 'dist')
     mkdirSync(distDir)
@@ -240,6 +248,7 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
       mkdirSync(dirname(path), { recursive: true })
       writeFileSync(path, contents)
     }
+    afterWrite?.(distDir)
     const scriptPath = resolve('scripts/check-bundle.mjs')
     try {
       return spawnSync(process.execPath, [scriptPath], { cwd, encoding: 'utf8' })
@@ -399,12 +408,17 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
    * Clean, credential-free readable files at the TOP level, enough to clear
    * MIN_SCANNED_FILES on their own.
    *
-   * Load-bearing, and the reason is easy to miss: a dist/ holding only a nested
-   * `assets/x.js` has ONE readable file, which is below the floor, so the script
-   * exits non-zero with "below the floor of 2" — the credential never found. A
-   * fixture without this filler therefore passes while recursion is deleted, which
-   * is precisely the regression it exists to catch. Two routes to the same pass;
-   * `expectRejectedForTheKey` closes the second by refusing the floor message.
+   * What this actually does is prevent a false ALARM, not a false pass — the first
+   * cut of this comment claimed the opposite and it was wrong when measured. A
+   * dist/ holding only a nested `assets/x.js` has ONE readable file, below the
+   * floor, so the script exits via the floor before scanning anything: without the
+   * filler these fixtures are RED on CORRECT code (`expected 'only 1 readable
+   * file(s)…' to match /sb_secret_/`), which is useless rather than dangerous.
+   *
+   * The assertion that prevents a false PASS is `toMatch(/sb_secret_/)`, because
+   * the floor message contains no such substring. Defend THAT one. The
+   * `not.toMatch(/below the floor/)` below is belt-and-braces and, measured, never
+   * fires on its own — keep it if you like, but do not mistake it for the guard.
    */
   const cleanTopLevel = { 'index.html': '<!doctype html>', 'runtime.js': 'export const a = 1' }
 
@@ -413,13 +427,42 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     expect(result.stderr).toMatch(/BUILD REJECTED/)
     expect(result.stderr).toMatch(/sb_secret_/)
     expect(result.stderr).not.toMatch(/below the floor/)
+    // The nesting is supplied entirely by runAgainstDist, and nothing else observes
+    // it. Measured: a helper that flattens nested names instead of creating the
+    // directory keeps all tests green AND keeps the walk()-recursion mutation green
+    // — the exact hole this block exists to close, reopened by a test-side refactor
+    // with the suite reporting success. Asserting the FLAGGED PATH is the only
+    // observable that carries the property.
+    expect(result.stderr).toMatch(/assets[/\\]/)
   }
 
-  it('catches a credential past a 1KB prefix in a nested dist/assets/ chunk', () => {
-    const result = runAgainstDist({
-      ...cleanTopLevel,
-      'assets/index-a1b2c3.js': 'x'.repeat(600_000) + '\n' + CANARY,
-    })
+  /**
+   * The real chunk this stands in for, from this branch's own CI build:
+   * `dist/assets/index-BFIoGDIN.js  704.05 kB`, with a planted key landing near
+   * byte 497,931 — the MIDDLE.
+   *
+   * Both numbers are load-bearing, and the first cut of this fixture got both wrong
+   * by putting a 600,000-byte pad BEFORE the canary and nothing after it:
+   *
+   *   - Canary at the END pins head-anchored truncation only. `.slice(-1024)`,
+   *     `.slice(-65536)` and a head+tail read all kept the suite green while the
+   *     real 704KB shape leaked. Four independent reviewers found this separately.
+   *   - A 600,056-byte fixture is SMALLER than the ~704,000-byte artefact it models,
+   *     so a size cap anywhere in that band (`size > 650000`) skipped the real chunk
+   *     unread with the suite green.
+   *
+   * Mid-file and oversized fixes both at once: head reads miss it, tail reads miss
+   * it, and any size cap below ~808KB skips a file this test requires to be read.
+   */
+  const KEY_OFFSET = 497_931
+  const TAIL_PAD = 310_000
+
+  it('catches a credential mid-file in a chunk larger than the real bundle', () => {
+    const chunk = 'x'.repeat(KEY_OFFSET) + '\n' + CANARY + '\n' + 'y'.repeat(TAIL_PAD)
+    // Nested TWO levels: one level pins only "recursion exists at all", and a walk
+    // capped at depth 1 stayed green. dist/ also carries public/ passthroughs, whose
+    // directory structure is copied verbatim and is arbitrarily deep.
+    const result = runAgainstDist({ ...cleanTopLevel, 'assets/chunks/index-a1b2c3.js': chunk })
     expectRejectedForTheKey(result)
   })
 
@@ -429,13 +472,69 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
   })
 
   /**
-   * SCANNABLE covers `map`, but no fixture planted a credential in one, so the
-   * alternation was deletable with the suite green. This build emits no sourcemaps
-   * today — but a sourcemap embeds original module source, which is exactly where
-   * a VITE_-inlined credential is reproduced verbatim.
+   * The original defect was "SCANNABLE covers `map` but no fixture plants a
+   * credential in one, so the alternation is deletable with the suite green". That
+   * argument holds verbatim for its siblings, and fixing only `map` left them open:
+   * dropping `css`, `mjs` or `cjs` each kept the suite green. `css` is not
+   * hypothetical — the script's own comment says the three files it reads today are
+   * an HTML entry, a JS chunk and a CSS chunk. `mjs`/`cjs` are JavaScript output
+   * extensions, and JavaScript is exactly where Vite inlines VITE_* values.
+   *
+   * Every gate needs its own attack; hardening one alternation teaches nothing
+   * about the next one along.
    */
-  it('catches a credential in a .map sourcemap', () => {
-    const result = runAgainstDist({ ...cleanTopLevel, 'assets/index.js.map': CANARY })
+  it.each(['mjs', 'cjs', 'css', 'map'])('catches a credential in a nested .%s file', (ext) => {
+    const result = runAgainstDist({ ...cleanTopLevel, [`assets/index.${ext}`]: CANARY })
     expectRejectedForTheKey(result)
+  })
+
+  /**
+   * Depth and byte-offset are not the only ways to look at too little. A scan that
+   * stops after N files is a shallow scan too, and `scannable.slice(0, 2)` survived
+   * every other fixture here — because `assets/` sorts first, so the one
+   * credential-bearing file was always read FIRST and no fixture could notice an
+   * early exit. Worse, the success line still prints `scannable.length`, so the
+   * mutant announces "4 files scanned" having read 2 — the "cannot tell clean from
+   * did-not-look" defect the floor was added to close, in a form the floor cannot
+   * see.
+   *
+   * Planting the canary in EVERY file and counting the reported violations makes
+   * this independent of readdir order, which is a filesystem detail and must never
+   * be what a security test rests on.
+   */
+  it('reads every scannable file, not just the first few', () => {
+    const planted = {
+      'index.html': CANARY,
+      'runtime.js': CANARY,
+      'assets/a.js': CANARY,
+      'assets/b.js': CANARY,
+      'assets/c.js': CANARY,
+    }
+    const result = runAgainstDist(planted)
+    expect(result.status).not.toBe(0)
+    const flagged = result.stderr.match(/contains a modern service-role key/g) ?? []
+    expect(flagged).toHaveLength(Object.keys(planted).length)
+  })
+
+  /**
+   * The unreadable-file contract. Today the script fails closed on a read error, but
+   * only by letting the exception escape — which surfaces as a raw `node:fs:449`
+   * stack trace that reads exactly like a bug someone would tidy away. Wrapping the
+   * read in `try { … } catch { continue }` kept the whole suite green while the
+   * mutant printed "3 files scanned, no privileged credentials found" over a
+   * credential it could not read. MIN_SCANNED_FILES cannot catch it: the floor and
+   * the summary both count files that MATCHED SCANNABLE, not files actually read.
+   */
+  it('fails closed when a scannable file exists but cannot be read', () => {
+    const result = runAgainstDist({ ...cleanTopLevel, 'assets/unreadable.js': CANARY }, (dist) => {
+      const path = join(dist, 'assets', 'unreadable.js')
+      chmodSync(path, 0o000)
+      // Positive control. Running as root, chmod 000 does not stop a read, and this
+      // fixture would assert nothing while passing. Go red loudly instead of
+      // silently vacuous — CI is ubuntu-latest with no container, so this holds.
+      expect(() => readFileSync(path, 'utf8')).toThrow()
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/EACCES|permission denied/i)
   })
 })

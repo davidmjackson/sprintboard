@@ -86,6 +86,41 @@ it counts files *opened*, never bytes *read*.
 - **AC3** `npm run verify` green; check-bundle stays a step inside `npm run build` —
   already pinned by the existing `package.json` wiring tests, untouched here.
 
+## What the deep review changed (second commit)
+
+Five mutation-testing lenses in isolated worktrees planted 94 mutations and returned 14
+findings. Six claimed survivals were reproduced independently before acting on any of
+them; all six held. The first cut of this fix pinned **one** direction of a bug class each
+time, and the review found the other direction in every case:
+
+| Claimed by | Reproduced | Fix |
+|---|---|---|
+| Canary at END of file → any tail-anchored read survives (`.slice(-1024)`, `.slice(-65536)`, head+tail) | yes, 30/30 green | canary mid-file at byte 497,931 |
+| Fixture 600,056 B < real bundle ~704,000 B → a size cap in that band survives | yes, 30/30 green | pad to ~808 KB, above the real artefact |
+| Nesting supplied by the harness, observed by nothing → a flattening `runAgainstDist` re-opens the recursion hole with the suite green | yes, 30/30 green | assert the flagged path matches `/assets[/\\]/` |
+| Only `map` pinned; `css`, `mjs`, `cjs` each still deletable | yes, 30/30 green | `it.each` over all four |
+| `scannable.slice(0, 2)` survives — `assets/` sorts first so the credential was always read FIRST | yes, 30/30 green | plant in every file, count reported violations (order-independent) |
+| Read error swallowed by `try/catch` → "3 files scanned, no credentials found" over an unreadable credential | yes, 30/30 green | unreadable-file fixture with a root positive control |
+
+Also fixed, and it is the one that matters most for honesty: **the comment justifying
+`cleanTopLevel` stated a mechanism that is false.** Two lenses measured it. `cleanTopLevel`
+prevents a false **alarm** — without it these fixtures are RED on correct code, because the
+floor rejects before the scan. The assertion that prevents a false **pass** is
+`toMatch(/sb_secret_/)`, since the floor message contains no such substring;
+`not.toMatch(/below the floor/)` never fires on its own. The headline claim — that each
+fixture is rejected because the credential was found, never via the floor — was verified
+and stands. Only my explanation of *which assertion does the work* was wrong, and it was
+wrong in the commit message and the PR body too, which is the fourth
+prose-rationale-no-test-honours hit on this project.
+
+Two `Minor` findings were **not** acted on: that the small nested fixture is dominated by
+its siblings (it is now the only depth-1 case, so it earns its place), and a suggestion to
+delete the inert `not.toMatch(/below the floor/)` assertion (kept as belt-and-braces, with
+the comment corrected to credit the right guard).
+
+Final matrix: **15 of 15 mutation classes killed**, including the test-side flattening
+mutation, which goes from 30/30 green to 7 failed.
+
 ## Not doing
 
 - No change to `MIN_SCANNED_FILES`, `SCANNABLE`, `TEXT_PATTERNS`, or the walk.
