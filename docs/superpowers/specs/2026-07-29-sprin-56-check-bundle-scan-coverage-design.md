@@ -118,8 +118,47 @@ its siblings (it is now the only depth-1 case, so it earns its place), and a sug
 delete the inert `not.toMatch(/below the floor/)` assertion (kept as belt-and-braces, with
 the comment corrected to credit the right guard).
 
-Final matrix: **15 of 15 mutation classes killed**, including the test-side flattening
-mutation, which goes from 30/30 green to 7 failed.
+Matrix after this commit: 15 of 15 mutation classes killed, including the test-side
+flattening mutation.
+
+## That claim was false, and a third pass proved it (third commit)
+
+**The line above — "15 of 15 killed" — was wrong when written.** A focused pass on the
+second commit planted 40 more mutations and found that fixing the tail direction had
+*given back* a head band:
+
+| | `289d534` (cut 1) | `86b3a7c` (cut 2) | `ee0bfa2` (cut 3) |
+|---|---|---|---|
+| `.slice(0, 1024)` | red | red | red |
+| `.slice(0, 524288)` — **512 KiB** | **red** | **GREEN** | red |
+| `.slice(0, 600000)` | **red** | **GREEN** | red |
+| `.slice(-1024)` | GREEN | red | red |
+
+Moving the canary to byte 497,931 narrowed head coverage from "any cap below 600,000" to
+"any cap below 497,932", surrendering the band that contains 512 KiB — the likeliest value
+anyone would pick. **This is the story's own bug class, reintroduced by the commit meant to
+close it, and then recorded as closed.** Fifth prose-rationale-no-test-honours hit, and the
+first one inside the artefact meant to be the record.
+
+No single offset fixes it. The fixture now carries **two distinct credential patterns at
+opposite ends of one file**, both required to be reported —
+`findPrivilegedCredentials` yields one violation per *pattern*, not per occurrence, so two
+copies of one canary collapse into a single finding and prove nothing. Any contiguous
+window read, head, tail or interior, now misses an end.
+
+Also closed in cut 3: a **16th class** (a swallowed `readdir` error in `walk()` drops an
+entire subtree and reported a clean bundle over a chmod-000 `assets/`); the `/assets[/\\]/`
+assertion being satisfied by one separator, so a helper collapsing only the second level
+stayed green; an errno-text assertion that killed nothing and went red on a strict
+improvement; and an `afterWrite` call outside the try/finally that leaked a mode-000 temp
+directory on every failed run.
+
+**Accepted, not fixed** — both are bounds a fixture can only move, never remove, through a
+subprocess that reports no byte count: a size cap *above* the largest fixture is invisible,
+and a walk capped at depth 3+ is invisible. Stated in the PR's "Not verified here" rather
+than papered over.
+
+Final matrix: **16 of 16 killed at `ee0bfa2`**, re-derived from a committed tree.
 
 ## Not doing
 
