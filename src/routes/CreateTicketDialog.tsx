@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { selectClass } from './form-primitives'
-import { CreateDialog } from './CreateDialog'
+import { CreateDialog, GENERIC_CREATE_ERROR, type SubmitActions } from './CreateDialog'
 
 const CreateTicketSchema = z.object({
   summary: z
@@ -55,7 +55,10 @@ export function CreateTicketDialog({
     },
   })
 
-  async function onSubmit(values: CreateTicketValues, close: () => void) {
+  async function onSubmit(
+    values: CreateTicketValues,
+    { close, setError }: SubmitActions<CreateTicketValues>,
+  ) {
     const parsed = CreateTicketSchema.parse(values)
     const result = await createTicket({
       projectId,
@@ -68,7 +71,7 @@ export function CreateTicketDialog({
     })
 
     if (!result.ok) {
-      form.setError('root', { message: 'Something went wrong. Please try again.' })
+      setError('root', { message: GENERIC_CREATE_ERROR })
       return
     }
 

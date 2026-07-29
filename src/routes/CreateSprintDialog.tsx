@@ -7,7 +7,7 @@ import type { Sprint } from '@/lib/domain'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
-import { CreateDialog } from './CreateDialog'
+import { CreateDialog, GENERIC_CREATE_ERROR, type SubmitActions } from './CreateDialog'
 
 /**
  * Create-sprint dialog. `status` is not on this form and is never sent — the column
@@ -34,7 +34,10 @@ export function CreateSprintDialog({
     defaultValues: { name: '', goal: '', startDate: '', endDate: '' },
   })
 
-  async function onSubmit(values: CreateSprintValues, close: () => void) {
+  async function onSubmit(
+    values: CreateSprintValues,
+    { close, setError }: SubmitActions<CreateSprintValues>,
+  ) {
     const parsed = CreateSprintSchema.parse(values)
     const result = await createSprint({
       projectId,
@@ -48,7 +51,7 @@ export function CreateSprintDialog({
     })
 
     if (!result.ok) {
-      form.setError('root', { message: 'Something went wrong. Please try again.' })
+      setError('root', { message: GENERIC_CREATE_ERROR })
       return
     }
 

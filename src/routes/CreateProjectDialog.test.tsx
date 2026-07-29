@@ -78,4 +78,46 @@ describe('CreateProjectDialog', () => {
     expect(await screen.findByText(/already have a project with this key/)).toBeInTheDocument()
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
+
+  /**
+   * SPRIN-51. `CreateDialog` hands `onSubmit` a generation-guarded `setError`, and this
+   * call site must use it rather than reaching for `form.setError` directly. Nothing in
+   * the type system enforces that — reverting either call here leaves every other test in
+   * the repo green, and reverting only the `key` branch keeps `setError` bound so even
+   * `no-unused-vars` stays quiet. This test is the whole control.
+   *
+   * It is the highest-traffic stale path in the app: the duplicate-key failure, in the one
+   * dialog that also carries `keyEdited` state across a reopen.
+   */
+  it('paints no stale duplicate-key error onto a draft opened after the submit was abandoned', async () => {
+    let release: (v: { ok: false; error: 'duplicate_key' }) => void = () => {}
+    mockCreate.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve
+      }) as never,
+    )
+    const user = userEvent.setup()
+    render(<CreateProjectDialog />)
+
+    await user.click(screen.getByRole('button', { name: 'New project' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Name'), 'Sprintboard')
+    await user.click(screen.getByRole('button', { name: 'Create project' }))
+    await screen.findByRole('button', { name: 'Creating…' })
+
+    // Abandoned mid-flight, then reopened for something unrelated.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'New project' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Name'), 'Another Project')
+
+    release({ ok: false, error: 'duplicate_key' })
+
+    // The rejection belongs to a submit the user already walked away from. It must not
+    // land on this draft — which is for a different project and a different key.
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Another Project'))
+    expect(screen.queryByText(/already have a project with this key/)).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
 })
