@@ -72,18 +72,38 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 - Supabase: Auth, Postgres, RLS. Anon key client-side only.
 - Tooling: ESLint, Prettier, Vitest, Playwright.
 
-**The quality ceremony is gone; the gate is not.** SPRIN-55 removed the T1-T5 size
-and complexity thresholds, the duplication gate (`lint:duplication` and
-`scripts/check-duplication.mjs`) and the four ADRs that existed only to justify
-threshold overrides. `npm run lint` is now the ordinary correctness lint —
-recommended JS/TS rules, the React hook rules, no swallowed errors — and it is
-still inside `npm run verify`, which is still the required check.
+**The coding standard is part of the gate, and it is not negotiable.** David,
+2026-07-29: *"Coding standards are very important across all development done in
+these projects. It is the hallmark of quality and a measure of the developer who
+codes. A phrase I like to use is… 'garbage in, garbage out'."*
 
-**This project is deliberately not wired to `/var/www/CodingStandards`.** That is a
-decision taken on 2026-07-29, not a gap to fill: do not re-add the profile, the
-threshold rules, a `lint:standards` script or `jscpd`, and do not offer to scaffold
-or audit the standard here. Write good code because it is good code. If a threshold
-ever earns its way back, it comes back as a story with an ADR, not as tidying.
+`npm run lint` enforces **T1-T5** as errors — 30-line functions, cyclomatic 10,
+cognitive 15, 4 parameters, 400-line files — and `npm run verify` runs
+`npm run lint`, so they gate every merge. Thresholds live in `eslint.config.js`,
+override rationale in `docs/adr/0001` and `0002`, and each one is pinned **at its
+boundary** in `verify-gate.test.mjs`: at the limit passes, one unit past fails.
+Widening a max there turns the suite red, which is deliberate.
+
+Write to the thresholds from the first line rather than retrofitting. A genuine
+misfit is an **ADR in this repo**, never an inline disable.
+
+**The history matters, because it is easy to half-remember.** SPRIN-55 removed all
+of this during the pivot; SPRIN-59 put the thresholds back the same day, once
+measuring showed they were free — the tree reported **122 files, 0 errors, 0
+warnings**, because SPRIN-50 had driven violations to zero before gating them and
+the pivot only deleted code. The session weight the pivot targeted was never T1-T5;
+it was the ceremony around them, and the deep-review policy below is where that
+saving actually came from. See `docs/adr/0006`.
+
+**What stays deleted — do not re-add without being asked:** the duplication gate
+(`lint:duplication`, `scripts/check-duplication.mjs`, `jscpd`, ADRs 0003 and 0005)
+and any `lint:standards` script. `npm run lint` is the entire enforcement surface.
+
+**Existing code already passes.** There is no accepted-violation backlog to work
+around — if `lint` goes red, it is the change under review, not inherited debt. Six
+functions sit at exactly cyclomatic 10, so one added branch reddens the gate: that
+is it working. A broader retrospective tidy is planned as SPRIN-58, but it starts
+from zero violations.
 
 ## Workflow
 - GitHub Flow. One feature branch and one small PR per story. Squash merge.
