@@ -53,11 +53,20 @@ it counts files *opened*, never bytes *read*.
    rejection names `sb_secret_` and is NOT the floor message.** This is the decision the
    issue did not make, and without it the fixtures are worthless:
 
-   A nested-only `dist/` (`assets/x.js` and nothing else) contains **one** readable file.
-   That is below `MIN_SCANNED_FILES`, so the script exits non-zero with
-   `only 1 readable file(s) … below the floor of 2` — the test passes **without the
-   credential ever being found**, and stays green under the recursion mutation it exists
-   to kill. Two routes to the same pass; the second road has to be closed explicitly.
+   **Measured, not reasoned.** The issue's suggested fixture was built exactly as written
+   — `{'assets/x.js': 'x'.repeat(600_000) + credential}`, asserting non-zero exit — and run
+   against the real script both unmutated and with recursion deleted:
+
+   ```
+   unmutated:          exit=1  BUILD REJECTED — only 1 readable file(s) … below the floor of 2
+   recursion removed:  exit=1  BUILD REJECTED — only 0 readable file(s) … below the floor of 2
+   ```
+
+   It exits non-zero **either way**, and in the *unmutated* case the credential is never
+   even found — a nested-only `dist/` has one readable file, below the floor, so the floor
+   rejects the build before the scan matters. "Asserting non-zero exit" is therefore
+   vacuous for AC1 *and* for the recursion mutation: it passes whether or not the scan
+   works at all. Two routes to the same pass, and the wrong one is taken every time.
 
    So each new fixture: ≥ `MIN_SCANNED_FILES` clean readable files at top level, credential
    nested underneath, and three assertions — non-zero status, stderr matches `sb_secret_`,

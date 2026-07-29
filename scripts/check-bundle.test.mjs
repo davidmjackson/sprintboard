@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { MIN_SCANNED_FILES, findPrivilegedCredentials, isEntryPoint } from './check-bundle.mjs'
 
 /** Realistic Supabase-shaped JWT header, base64url-encoded, shared by every token below. */
@@ -225,13 +225,20 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
   /**
    * Runs the real script, as a real subprocess, against a throwaway dist/ built
    * from `{ name: contents }`. Never the repo's own dist/.
+   *
+   * A name may contain a `/` — `mkdirSync(recursive)` creates the parent, which
+   * is a no-op for the flat names most fixtures use. Nested names matter because
+   * a real Vite build puts index.html at the top level and the chunk carrying
+   * inlined VITE_* values under dist/assets/, and every fixture here was flat.
    */
   function runAgainstDist(files) {
     const cwd = mkdtempSync(join(tmpdir(), 'check-bundle-dist-'))
     const distDir = join(cwd, 'dist')
     mkdirSync(distDir)
     for (const [name, contents] of Object.entries(files)) {
-      writeFileSync(join(distDir, name), contents)
+      const path = join(distDir, name)
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, contents)
     }
     const scriptPath = resolve('scripts/check-bundle.mjs')
     try {
@@ -371,5 +378,64 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
     expect(result.status).not.toBe(0)
     expect(result.stderr).toMatch(/BUILD REJECTED/)
     expect(result.stderr).toMatch(/sb_secret_/)
+  })
+
+  /**
+   * SPRIN-56. Every fixture above is a single sub-200-byte line written FLAT into
+   * dist/, with its credential at roughly byte 12. Three mutations of the real
+   * script were applied on this branch and the suite re-run against each: reading
+   * only `.slice(0, 1024)` of a file, deleting walk()'s recursion, and dropping
+   * `map` from SCANNABLE. All three left the suite green — the script's behaviour
+   * was never wrong, but nothing pinned it. MIN_SCANNED_FILES cannot help: it
+   * counts files OPENED, never bytes READ.
+   *
+   * A real build is the opposite shape from these fixtures — index.html at the top
+   * level, the chunk carrying inlined VITE_* values under dist/assets/, and a
+   * planted key landing near byte 497,931 of ~704,000.
+   */
+  const CANARY = 'const k = "sb_secret_abcdefghijklmnopqrstuvwxyz0123456789"'
+
+  /**
+   * Clean, credential-free readable files at the TOP level, enough to clear
+   * MIN_SCANNED_FILES on their own.
+   *
+   * Load-bearing, and the reason is easy to miss: a dist/ holding only a nested
+   * `assets/x.js` has ONE readable file, which is below the floor, so the script
+   * exits non-zero with "below the floor of 2" — the credential never found. A
+   * fixture without this filler therefore passes while recursion is deleted, which
+   * is precisely the regression it exists to catch. Two routes to the same pass;
+   * `expectRejectedForTheKey` closes the second by refusing the floor message.
+   */
+  const cleanTopLevel = { 'index.html': '<!doctype html>', 'runtime.js': 'export const a = 1' }
+
+  function expectRejectedForTheKey(result) {
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toMatch(/BUILD REJECTED/)
+    expect(result.stderr).toMatch(/sb_secret_/)
+    expect(result.stderr).not.toMatch(/below the floor/)
+  }
+
+  it('catches a credential past a 1KB prefix in a nested dist/assets/ chunk', () => {
+    const result = runAgainstDist({
+      ...cleanTopLevel,
+      'assets/index-a1b2c3.js': 'x'.repeat(600_000) + '\n' + CANARY,
+    })
+    expectRejectedForTheKey(result)
+  })
+
+  it('catches a credential in a nested dist/assets/ chunk that is small', () => {
+    const result = runAgainstDist({ ...cleanTopLevel, 'assets/nested.js': CANARY })
+    expectRejectedForTheKey(result)
+  })
+
+  /**
+   * SCANNABLE covers `map`, but no fixture planted a credential in one, so the
+   * alternation was deletable with the suite green. This build emits no sourcemaps
+   * today — but a sourcemap embeds original module source, which is exactly where
+   * a VITE_-inlined credential is reproduced verbatim.
+   */
+  it('catches a credential in a .map sourcemap', () => {
+    const result = runAgainstDist({ ...cleanTopLevel, 'assets/index.js.map': CANARY })
+    expectRejectedForTheKey(result)
   })
 })
