@@ -16,7 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
-import { CreateDialog } from './CreateDialog'
+import { CreateDialog, GENERIC_CREATE_ERROR, type SubmitActions } from './CreateDialog'
 
 const CreateProjectSchema = z.object({
   name: z
@@ -49,9 +49,12 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
     defaultValues: { name: '', key: '' },
   })
 
-  async function onSubmit(values: CreateProjectValues, close: () => void) {
+  async function onSubmit(
+    values: CreateProjectValues,
+    { close, setError }: SubmitActions<CreateProjectValues>,
+  ) {
     if (!user) {
-      form.setError('root', { message: 'You must be signed in to create a project.' })
+      setError('root', { message: 'You must be signed in to create a project.' })
       return
     }
 
@@ -63,9 +66,9 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
 
     if (!result.ok) {
       if (result.error === 'duplicate_key') {
-        form.setError('key', { message: 'You already have a project with this key.' })
+        setError('key', { message: 'You already have a project with this key.' })
       } else {
-        form.setError('root', { message: 'Something went wrong. Please try again.' })
+        setError('root', { message: GENERIC_CREATE_ERROR })
       }
       return
     }

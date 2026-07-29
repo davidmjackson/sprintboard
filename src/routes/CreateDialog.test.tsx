@@ -5,7 +5,7 @@ import { useForm } from 'react-hook-form'
 
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { CreateDialog } from './CreateDialog'
+import { CreateDialog, type SubmitActions } from './CreateDialog'
 
 type Values = { thing: string }
 
@@ -14,7 +14,7 @@ function Harness({
   onSubmit = vi.fn(),
   onClosed,
 }: {
-  onSubmit?: (values: Values, close: () => void) => void | Promise<void>
+  onSubmit?: (values: Values, actions: SubmitActions<Values>) => void | Promise<void>
   onClosed?: () => void
 }) {
   const form = useForm<Values>({ defaultValues: { thing: '' } })
@@ -62,7 +62,7 @@ describe('CreateDialog', () => {
     expect(screen.getByRole('button', { name: 'Create thing' })).toBeInTheDocument()
   })
 
-  it('hands the submitted values and a close callback to onSubmit', async () => {
+  it('hands the submitted values and both guarded callbacks to onSubmit', async () => {
     const onSubmit = vi.fn()
     render(<Harness onSubmit={onSubmit} />)
     const user = await open()
@@ -72,14 +72,16 @@ describe('CreateDialog', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0]![0]).toEqual({ thing: 'a widget' })
-    expect(typeof onSubmit.mock.calls[0]![1]).toBe('function')
+    const actions = onSubmit.mock.calls[0]![1] as SubmitActions<Values>
+    expect(typeof actions.close).toBe('function')
+    expect(typeof actions.setError).toBe('function')
     // Not called => still open. The shell must never close itself.
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('closes when onSubmit invokes the close callback, the same way a manual close does', async () => {
     const onClosed = vi.fn()
-    render(<Harness onSubmit={(_values, close) => close()} onClosed={onClosed} />)
+    render(<Harness onSubmit={(_values, { close }) => close()} onClosed={onClosed} />)
     const user = await open()
 
     await user.type(screen.getByLabelText('Thing'), 'a widget')
@@ -159,5 +161,116 @@ describe('CreateDialog', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.')
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+})
+
+/**
+ * SPRIN-51. A submit's continuation resolves against whatever dialog is open at that
+ * moment, not the one that was open when it started. Every test here drives the same
+ * sequence — submit, close by hand mid-flight, reopen, type — and then releases the
+ * original promise.
+ *
+ * Each was observed to fail against the unguarded shell before the fix: the reopened
+ * dialog closed and took the new draft with it. The `onCreated` assertion is the one that
+ * pins the *shape* of the fix rather than its presence, since an `if (stale) return` over
+ * the whole continuation would satisfy every other assertion here while silently dropping
+ * a record that really was written.
+ */
+describe('CreateDialog — a stale submit must not reach a reopened dialog', () => {
+  /** Opens, types `first`, submits, and holds the submit open. Returns a `release`. */
+  async function submitThenAbandon(
+    onSubmit: (values: Values, actions: SubmitActions<Values>) => Promise<void>,
+  ) {
+    const user = userEvent.setup()
+    render(<Harness onSubmit={onSubmit} />)
+
+    await user.click(screen.getByRole('button', { name: 'New thing' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Thing'), 'first')
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await screen.findByRole('button', { name: 'Creating…' })
+
+    // The user gives up and closes it by hand while the write is still in flight.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // ...then reopens and starts an unrelated draft.
+    await user.click(screen.getByRole('button', { name: 'New thing' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Thing'), 'second draft')
+    return user
+  }
+
+  it('leaves the reopened draft intact when the abandoned submit succeeds', async () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const onCreated = vi.fn()
+    await submitThenAbandon(async (_values, { close }) => {
+      await held
+      onCreated()
+      close()
+    })
+
+    release()
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('Thing')).toHaveValue('second draft')
+  })
+
+  // AC3 — "the parent still receives the created record" — is deliberately NOT tested
+  // here. `onCreated` is invoked by the call site's own `onSubmit`, so no change to this
+  // shell can suppress it and any assertion on it at this level would be unfalsifiable.
+  // It is pinned where a regression could actually land, in `CreateTicketDialog.test.tsx`.
+
+  it('paints no stale error onto the reopened draft when the abandoned submit fails', async () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await submitThenAbandon(async (_values, { setError }) => {
+      await held
+      setError('root', { message: 'Something went wrong.' })
+    })
+
+    release()
+    await waitFor(() => expect(screen.getByLabelText('Thing')).toHaveValue('second draft'))
+
+    // The failure belongs to a submit the user already walked away from.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('does not fire onClosed a second time when a hand-closed submit later resolves', async () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const onClosed = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <Harness
+        onClosed={onClosed}
+        onSubmit={async (_values, { close }) => {
+          await held
+          close()
+        }}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'New thing' }))
+    await screen.findByRole('dialog')
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await screen.findByRole('button', { name: 'Creating…' })
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(onClosed).toHaveBeenCalledTimes(1))
+
+    release()
+    await screen.findByRole('button', { name: 'New thing' })
+    // The dialog is already closed; the resolving submit must not close it again.
+    expect(onClosed).toHaveBeenCalledTimes(1)
   })
 })
