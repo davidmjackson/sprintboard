@@ -112,7 +112,12 @@ describe('CreateTicketDialog', () => {
    * the parent must still be told about it or the new ticket stays invisible until a
    * refetch. This is the assertion that rules out "fixing" the stale-submit bug by
    * bailing out of the whole continuation — it lives here, not in `CreateDialog.test.tsx`,
-   * because `onCreated` is this component's call to make and only a change here can drop it.
+   * because `onCreated` is a call site's call to make and no change to the shell can drop it.
+   *
+   * Known gap, measured not guessed: this pins the TICKET dialog only. The same naive
+   * `if (!isCurrent()) return` inserted into `CreateProjectDialog` or `CreateSprintDialog`
+   * leaves the whole suite green. Covering those two needs the same test twice more; the
+   * shape of the mistake is identical, so it is recorded here rather than triplicated.
    */
   it('still notifies the parent of the created ticket when the submit resolved stale', async () => {
     let release: (v: { ok: true; ticket: { id: string } }) => void = () => {}

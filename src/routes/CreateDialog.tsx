@@ -57,8 +57,25 @@ export type SubmitActions<T extends FieldValues> = {
  * submit later resolves.
  *
  * Call sites must use this `setError` rather than reaching for `form.setError`, which is
- * unguarded. Nothing in the type system enforces that — the guard is the behavioural test
- * that no stale error is painted onto a reopened draft, which goes red if one reverts.
+ * unguarded. Nothing in the type system enforces that, and neither does lint: reverting
+ * only ONE branch of a call site leaves `setError` still bound, so `no-unused-vars` stays
+ * quiet and every shell test here stays green. The control is a **call-site** test —
+ * `CreateProjectDialog.test.tsx`'s stale duplicate-key case — because a test written
+ * against this file's own harness cannot see a production call site bypassing the guard.
+ *
+ * Two consequences worth knowing, both deliberate:
+ * - `onCreated` and anything the parent does with it (`AppLayout` navigates on a created
+ *   project) still run, so a stale success can navigate with the reopened dialog still
+ *   open over the destination. On `main` the draft was destroyed instead; preserving it
+ *   is the point, and the navigation was already happening.
+ * - Calling `close()` bumps the generation, so any `setError` a handler issues *after*
+ *   its own `close()` is swallowed. No call site does this today, but the note above
+ *   about "a handler that succeeds *and* warns" describes exactly that shape — warn
+ *   first, close second.
+ *
+ * (Checked and NOT true, recorded so nobody re-derives it: the reopened draft is not
+ * stuck behind the in-flight request. `form.reset()` clears `isSubmitting`, so the submit
+ * button reads `Create …`, is enabled, and submits.)
  */
 export function CreateDialog<T extends FieldValues>({
   trigger,
@@ -93,8 +110,7 @@ export function CreateDialog<T extends FieldValues>({
     }
   }
 
-  function submitActions(): SubmitActions<T> {
-    const generation = openGeneration.current
+  function submitActions(generation: number): SubmitActions<T> {
     const isCurrent = () => openGeneration.current === generation
     return {
       close: () => {
@@ -106,13 +122,22 @@ export function CreateDialog<T extends FieldValues>({
     }
   }
 
-  // `form.handleSubmit(…)` is invoked here rather than inline in the JSX so that the
-  // generation is read when the user submits, not while rendering. Inline, the ref read
-  // sits inside a callback handed to a function that *is* called during render, which is
-  // both what `react-hooks/refs` objects to and, more to the point, the wrong moment to
-  // sample a generation that this very render may be about to change.
+  // The generation is sampled HERE — before `form.handleSubmit` — and not inside its
+  // callback. That callback runs only after the resolver settles, so sampling in there
+  // reads the generation *after* validation rather than at submit. With a synchronous
+  // resolver (all three dialogs today) the difference is one microtask and unreachable;
+  // with an async resolver it is the full SPRIN-51 bug again. Demonstrated with a held
+  // async resolver: sampling inside the callback closed the reopened dialog and wiped its
+  // draft, and no test that existed at the time could tell the two apart.
+  //
+  // An async resolver is not hypothetical here — the duplicate-key path is exactly the
+  // shape that invites an async uniqueness check on the project key.
+  //
+  // Hoisting out of the JSX is also what satisfies `react-hooks/refs`, which cannot tell
+  // that the callback runs on submit rather than during render. Do not fold it back.
   function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
-    return form.handleSubmit((values) => onSubmit(values, submitActions()))(event)
+    const generation = openGeneration.current
+    return form.handleSubmit((values) => onSubmit(values, submitActions(generation)))(event)
   }
 
   return (

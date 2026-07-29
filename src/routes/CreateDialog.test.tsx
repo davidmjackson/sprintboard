@@ -243,6 +243,75 @@ describe('CreateDialog — a stale submit must not reach a reopened dialog', () 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
+  /**
+   * The generation must be sampled when the form is submitted, NOT inside the callback
+   * `form.handleSubmit` runs after validation resolves. With the synchronous resolvers the
+   * three real dialogs use today the gap is one microtask; with an async resolver it is
+   * the whole bug again, and every other test in this file passes either way.
+   *
+   * This harness holds validation open across the close-and-reopen, so the abandoned
+   * submit reaches `onSubmit` only once a new draft is on screen.
+   */
+  it('samples the generation at submit, not after an async resolver settles', async () => {
+    let releaseValidation = () => {}
+    const validationHeld = new Promise<void>((resolve) => {
+      releaseValidation = resolve
+    })
+
+    function AsyncValidatedHarness() {
+      const form = useForm<Values>({
+        defaultValues: { thing: '' },
+        resolver: async (values) => {
+          await validationHeld
+          return { values, errors: {} }
+        },
+      })
+      return (
+        <CreateDialog
+          trigger="New thing"
+          title="Create a thing"
+          description="It makes a thing."
+          submitLabel="Create thing"
+          form={form}
+          onSubmit={(_values, { close }) => close()}
+        >
+          <FormField
+            control={form.control}
+            name="thing"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Thing</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+        </CreateDialog>
+      )
+    }
+
+    const user = userEvent.setup()
+    render(<AsyncValidatedHarness />)
+
+    await user.click(screen.getByRole('button', { name: 'New thing' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Thing'), 'first')
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+
+    // Validation is still pending — abandon and reopen while it is in flight.
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'New thing' }))
+    await screen.findByRole('dialog')
+    await user.type(screen.getByLabelText('Thing'), 'second draft')
+
+    releaseValidation()
+
+    await waitFor(() => expect(screen.getByLabelText('Thing')).toHaveValue('second draft'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
   it('does not fire onClosed a second time when a hand-closed submit later resolves', async () => {
     let release = () => {}
     const held = new Promise<void>((resolve) => {

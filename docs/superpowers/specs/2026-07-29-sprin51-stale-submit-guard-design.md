@@ -88,10 +88,23 @@ the `'Something went wrong. Please try again.'` literal that S9.4 left triplicat
 the three dialogs.
 
 **Honest limit of the claim:** this is *not* airtight. Each call site still closes over
-its own `form` and could call `form.setError` directly; TypeScript will not stop it. What
-makes it a control rather than a wish is the **behavioural** test — after a stale failure
-resolves, no alert is painted — which goes red if a call site reverts to the unguarded
-call. The guard is the test, not the type.
+its own `form` and could call `form.setError` directly; TypeScript will not stop it.
+
+> **Corrected after review.** This section originally claimed the behavioural test in
+> `CreateDialog.test.tsx` "goes red if a call site reverts". **It does not**, and both
+> reviewers proved it independently. That test drives the shell's own harness, which by
+> construction uses the shell-supplied `setError`; a production call site bypassing the
+> guard is invisible to it. Reverting all three call sites left the entire suite green,
+> caught only incidentally by `no-unused-vars`. Reverting just *one* branch —
+> `CreateProjectDialog`'s `setError('key', …)` — kept `setError` bound, so **lint passed
+> and all tests passed** while the stale duplicate-key error painted onto an unrelated
+> reopened draft.
+>
+> The control now exists as a **call-site** test:
+> `CreateProjectDialog.test.tsx`'s "paints no stale duplicate-key error onto a draft
+> opened after the submit was abandoned", verified to fail under exactly that partial
+> revert. This was a documented control that did not exist — the precise trap of "a
+> comment is not a control".
 
 `setError`'s signature reuses react-hook-form's own `UseFormSetError<T>` so field errors
 (`CreateProjectDialog`'s `key`) work unchanged and the call sites read identically.
@@ -117,15 +130,22 @@ function handleOpenChange(next: boolean) {
 and at submit time:
 
 ```tsx
-form.handleSubmit((values) => {
-  const generation = openGeneration.current
-  const isCurrent = () => openGeneration.current === generation
-  return onSubmit(values, {
-    close: () => { if (isCurrent()) handleOpenChange(false) },
-    setError: (name, error) => { if (isCurrent()) form.setError(name, error) },
-  })
-})
+function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
+  const generation = openGeneration.current            // sampled HERE — see below
+  return form.handleSubmit((values) => onSubmit(values, submitActions(generation)))(event)
+}
 ```
+
+> **Corrected after review.** The generation was originally sampled *inside* the callback
+> handed to `form.handleSubmit`. That callback runs only once the resolver settles, so the
+> sample happened **after validation**, not at submit. With the synchronous zod resolvers
+> all three dialogs use today the window is a single microtask and unreachable — but with
+> an async resolver it is the entire original bug, reproduced: dialog closed, reopened
+> draft wiped, `onClosed` fired twice. An async resolver is not hypothetical here; the
+> duplicate-key path is exactly the shape that invites an async uniqueness check on the
+> key. Sampling before `form.handleSubmit` fixes it, and
+> `CreateDialog.test.tsx`'s async-resolver test now distinguishes the two — no test that
+> existed before could.
 
 Sequence check:
 
