@@ -716,6 +716,141 @@ describe('TicketDetailDialog', () => {
       expect(updateTicket).toHaveBeenCalledWith('t1', { labels: ['ui', 'backend'] }),
     )
   })
+
+  it('renders a status picker showing the ticket current status', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('todo')
+  })
+
+  it('offers all four board columns as status options, in board order', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    const options = screen.getAllByRole('option').filter((o) =>
+      (o as HTMLOptionElement)
+        .closest('select')
+        ?.getAttribute('aria-label')
+        ?.match(/status/i),
+    )
+    expect(options.map((o) => o.textContent)).toEqual([
+      'To Do',
+      'In Progress',
+      'In Review',
+      'Done',
+    ])
+    expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual([
+      'todo',
+      'in_progress',
+      'in_review',
+      'done',
+    ])
+  })
+
+  it('keeps the status picker in the tab order and enabled, so a keyboard user can reach it', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    const select = screen.getByRole('combobox', { name: /status/i })
+    expect(select).toBeEnabled()
+    // A negative tabindex would remove it from sequential navigation while leaving it
+    // clickable — the exact regression this story exists to prevent.
+    expect(select).not.toHaveAttribute('tabindex')
+  })
+
+  it('commits a status change, sending status and nothing else', async () => {
+    updateTicket.mockResolvedValue({ ok: true, ticket: { ...base, status: 'in_progress' } })
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: /status/i }),
+      'in_progress',
+    )
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }))
+  })
+
+  it('applies the status change optimistically, before the write resolves', async () => {
+    const pending = deferred<UpdateTicketResult>()
+    updateTicket.mockReturnValue(pending.promise)
+    const onUpdated = vi.fn()
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={onUpdated}
+        onDeleted={() => {}}
+      />,
+    )
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: /status/i }),
+      'in_review',
+    )
+    // The write has NOT resolved, yet the parent already has the new status.
+    expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ status: 'in_review' }))
+    await act(async () => {
+      pending.resolve({ ok: true, ticket: { ...base, status: 'in_review' } })
+    })
+  })
+
+  it('reverts only the status field and shows an error when the status write fails', async () => {
+    // `error` is the literal type 'unknown', not a free string — any other value is a
+    // compile error. See `UpdateTicketResult` in src/lib/tickets.ts.
+    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onUpdated = vi.fn()
+    function Harness() {
+      const [t, setT] = useState({ ...base, summary: 'Original summary' })
+      return (
+        <TicketDetailDialog
+          ticket={t}
+          currentUser={user}
+          onOpenChange={() => {}}
+          onUpdated={(next) => {
+            setT(next)
+            onUpdated(next)
+          }}
+          onDeleted={() => {}}
+        />
+      )
+    }
+    render(<Harness />)
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /status/i }), 'done')
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    // Rolled back to the original status...
+    expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('todo')
+    // ...and the rollback did NOT revert the whole ticket to a stale snapshot.
+    expect(onUpdated.mock.calls.at(-1)![0]).toMatchObject({
+      status: 'todo',
+      summary: 'Original summary',
+    })
+  })
 })
 
 async function openDeleteConfirm(ue: ReturnType<typeof userEvent.setup>) {

@@ -2,10 +2,13 @@ import { parseStoryPoints } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
 import {
   SPRINT_STATUS_LABELS,
+  TICKET_STATUSES,
+  TICKET_STATUS_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   type Sprint,
   type Ticket,
+  type TicketStatus,
   type TicketType,
   type TicketUpdate,
 } from '@/lib/domain'
@@ -42,6 +45,29 @@ export function TicketDetailSidebar({
       <h3 className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
         Details
       </h3>
+
+      {/* Status. First in the panel: it is the field the board is organised by, and the
+          only one that had no keyboard or touch path at all before SPRIN-61 — drag was
+          the sole way to change it, which excluded keyboard, screen-reader and touch
+          users entirely. Unlike the Sprint picker below this is never disabled: the
+          option list is a compile-time constant, so there is no loading state to be
+          honest about. Options and labels both come from the domain module, so the
+          picker and the board's four columns cannot drift apart. */}
+      <label className="flex flex-col gap-1">
+        <FieldLabel>Status</FieldLabel>
+        <select
+          aria-label="status"
+          className={selectClass}
+          value={ticket.status}
+          onChange={(e) => commit({ status: e.target.value as TicketStatus })}
+        >
+          {TICKET_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {TICKET_STATUS_LABELS[s]}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <label className="flex flex-col gap-1">
         <FieldLabel>Type</FieldLabel>
