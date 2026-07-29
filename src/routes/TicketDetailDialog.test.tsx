@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
 import type { Sprint, Ticket } from '@/lib/domain'
@@ -76,7 +76,12 @@ describe('TicketDetailDialog', () => {
     )
     expect(screen.getByText('MP-1')).toBeInTheDocument()
     expect(screen.getByText('Wire the board')).toBeInTheDocument()
-    expect(screen.getByText('To Do')).toBeInTheDocument()
+    // Scoped to the dialog's title row (the DialogTitle <h2>, uniquely named by the
+    // ticket key) so this pins the header's status badge specifically — the sidebar's
+    // new Status <select> also renders the text "To Do" (as an <option>), but that
+    // node lives outside this heading entirely.
+    const titleRow = screen.getByRole('heading', { name: /MP-1/ })
+    expect(within(titleRow).getByText('To Do')).toBeInTheDocument()
   })
 
   it('renders nothing interactive when ticket is null', () => {
