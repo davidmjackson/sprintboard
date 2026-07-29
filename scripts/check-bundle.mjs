@@ -125,30 +125,39 @@ function walk(dir) {
   })
 }
 
-function main() {
-  let files
+// SPRIN-60 split `main()` into these four steps. It was 43 lines against T1's max
+// of 30 and lint was green, because `.mjs` sat outside the thresholds entirely.
+// Each step keeps its own exit path rather than returning a status for `main()` to
+// interpret: every rejection here must stop the build, and a step that returns a
+// code can have that code dropped at the call site. Messages and exit codes are
+// unchanged — the suite drives `main()` as a real subprocess and reads both.
+
+/** The bundle's file list, or exit 1 if there is no build to read. */
+function listBundleFiles() {
   try {
-    files = walk(DIST)
+    return walk(DIST)
   } catch {
     console.error(`check-bundle: no ${DIST}/ directory. Run the build first.`)
     process.exit(1)
   }
+}
 
-  const scannable = files.filter((file) => SCANNABLE.test(file))
+/** Exit 1 unless enough readable files were found for a clean result to mean anything. */
+function assertScannedEnough(scannable) {
+  if (scannable.length >= MIN_SCANNED_FILES) return
+  console.error(
+    `\n  BUILD REJECTED — only ${scannable.length} readable file(s) under ${DIST}/, below the ` +
+      `floor of ${MIN_SCANNED_FILES}.\n\n` +
+      '    Bundled js/css/html/map files are the only ones this check reads; fonts and\n' +
+      '    other assets are counted by neither the floor nor the summary. A dist/ with\n' +
+      '    fewer than the floor reports "no privileged credentials found" having read\n' +
+      '    almost nothing — that is not a clean result, it is a build that did not look.\n' +
+      '    Run the real build, or investigate why it emitted so little.\n',
+  )
+  process.exit(1)
+}
 
-  if (scannable.length < MIN_SCANNED_FILES) {
-    console.error(
-      `\n  BUILD REJECTED — only ${scannable.length} readable file(s) under ${DIST}/, below the ` +
-        `floor of ${MIN_SCANNED_FILES}.\n\n` +
-        '    Bundled js/css/html/map files are the only ones this check reads; fonts and\n' +
-        '    other assets are counted by neither the floor nor the summary. A dist/ with\n' +
-        '    fewer than the floor reports "no privileged credentials found" having read\n' +
-        '    almost nothing — that is not a clean result, it is a build that did not look.\n' +
-        '    Run the real build, or investigate why it emitted so little.\n',
-    )
-    process.exit(1)
-  }
-
+function collectViolations(scannable) {
   const violations = []
   for (const file of scannable) {
     const contents = readFileSync(file, 'utf8')
@@ -156,19 +165,31 @@ function main() {
       violations.push({ file, ...violation })
     }
   }
+  return violations
+}
 
+/** Report every credential found and exit 1. Only called with a non-empty list. */
+function rejectForViolations(violations) {
+  console.error('\n  BUILD REJECTED — a privileged credential is in the bundle.\n')
+  for (const { file, what } of violations) {
+    console.error(`    ${file}\n      contains ${what}`)
+  }
+  console.error(
+    '\n  This bundle would hand every visitor a key that bypasses RLS.\n' +
+      '  ROTATE THE KEY in the Supabase dashboard — it must be treated as compromised\n' +
+      '  the moment it was written to disk — then remove it from the environment.\n' +
+      '  Only VITE_SUPABASE_ANON_KEY (publishable) belongs in the browser.\n',
+  )
+  process.exit(1)
+}
+
+function main() {
+  const scannable = listBundleFiles().filter((file) => SCANNABLE.test(file))
+  assertScannedEnough(scannable)
+
+  const violations = collectViolations(scannable)
   if (violations.length > 0) {
-    console.error('\n  BUILD REJECTED — a privileged credential is in the bundle.\n')
-    for (const { file, what } of violations) {
-      console.error(`    ${file}\n      contains ${what}`)
-    }
-    console.error(
-      '\n  This bundle would hand every visitor a key that bypasses RLS.\n' +
-        '  ROTATE THE KEY in the Supabase dashboard — it must be treated as compromised\n' +
-        '  the moment it was written to disk — then remove it from the environment.\n' +
-        '  Only VITE_SUPABASE_ANON_KEY (publishable) belongs in the browser.\n',
-    )
-    process.exit(1)
+    rejectForViolations(violations)
   }
 
   console.log(`check-bundle: ${scannable.length} files scanned, no privileged credentials found.`)

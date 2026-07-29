@@ -34,7 +34,15 @@ export default tseslint.config(
   { ignores: ['dist', 'coverage', 'node_modules', '.claude/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ['**/*.{ts,tsx}'],
+    // `.mjs` and `.js` are in scope deliberately — SPRIN-60. This glob read
+    // `'**/*.{ts,tsx}'`, which left every non-TypeScript file in the repo outside
+    // T1-T5 *and* outside the presets above: scripts/check-bundle.mjs (the control
+    // that stops a service-role key reaching the browser), scripts/check-bundle.test.mjs,
+    // verify-gate.test.mjs (the guard on this very gate) and this file. `eslint .`
+    // exited 0 across all four while CLAUDE.md described the thresholds as the whole
+    // enforcement surface. Measured on a scratch branch before widening: one violation
+    // repo-wide, check-bundle.mjs's 43-line `main()`, since split.
+    files: ['**/*.{ts,tsx,mjs,js}'],
     languageOptions: {
       ecmaVersion: 2023,
       globals: globals.browser,
@@ -73,8 +81,13 @@ export default tseslint.config(
   },
   // OVERRIDE 2 — docs/adr/0002-thresholds-are-for-production-code.md
   // In test files T1/T5 measure describe-block size, not design. T2 and T4 stay on.
+  // `.mjs` joined this list with SPRIN-60, for the reason ADR 0002 already gives:
+  // check-bundle.test.mjs and verify-gate.test.mjs are tests, and their long
+  // `it` blocks are block size, not design. Note the extension list here is
+  // `{ts,tsx,mjs}` and NOT a bare `'**/*.mjs'` — the latter would read as tidier
+  // and would hand scripts/check-bundle.mjs back the exemption SPRIN-60 removed.
   {
-    files: ['**/*.{test,spec}.{ts,tsx}', 'src/test/**', 'e2e/**'],
+    files: ['**/*.{test,spec}.{ts,tsx,mjs}', 'src/test/**', 'e2e/**'],
     rules: {
       'max-lines-per-function': 'off',
       'max-lines': 'off',

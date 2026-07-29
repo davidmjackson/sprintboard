@@ -112,6 +112,24 @@ const PRESET_PROBES = [
 const SWALLOWED_ERROR =
   'export function swallow() {\n  try {\n    JSON.parse("{}")\n  } catch {}\n}\n'
 
+/**
+ * Plain-JS twins of the oversized/over-complex probes, for the .mjs and .js paths.
+ *
+ * Deliberately free of type annotations. The .ts probes elsewhere in this file
+ * would ALSO parse at a .mjs path once that extension is in scope, because the
+ * TypeScript parser comes in through the same config block — so a .mjs probe
+ * carrying `n: number` would still pass while proving nothing about whether
+ * ordinary JavaScript is linted. These say what they mean.
+ */
+const OVERSIZED_JS = `export function sized(out) {\n${Array.from(
+  { length: 35 },
+  (_, i) => `  out.push(${i})`,
+).join('\n')}\n  return out\n}\n`
+const OVER_COMPLEX_JS = `export function branchy(n) {\n${Array.from(
+  { length: 14 },
+  (_, i) => `  if (n === ${i}) return ${i}`,
+).join('\n')}\n  return -1\n}\n`
+
 describe('npm run lint still applies every rule set the gate claims to keep', () => {
   // Delete any one preset from eslint.config.js and exactly one of these goes red.
   for (const probe of PRESET_PROBES) {
@@ -138,6 +156,15 @@ describe('npm run lint still covers every part of the tree it used to', () => {
     // `'**/*.test.{ts,tsx}'` in `ignores` un-lint 50 of 118 tracked files silently.
     ['a src/test helper', 'src/test/gate-probe.ts'],
     ['a test file', 'src/lib/example.test.ts'],
+    // SPRIN-60. The `files` glob read `'**/*.{ts,tsx}'`, so every .mjs and .js
+    // file in the repo sat outside T1-T5 AND outside every preset above —
+    // including scripts/check-bundle.mjs, the control that stops a service-role
+    // key reaching the browser, and this guard file itself. `eslint .` exited 0
+    // on all of it. Narrowing the glob back is exactly the shape of an exemption
+    // these path probes exist to catch, and no .ts probe can see it.
+    ['a scripts/ .mjs file', 'scripts/gate-probe.mjs'],
+    ['a root .mjs guard file', 'gate-probe.test.mjs'],
+    ['the .js lint config path', 'gate-probe.config.js'],
   ]
 
   for (const [label, path] of PATHS) {
@@ -258,6 +285,35 @@ describe('the threshold overrides are scoped exactly as their ADRs say', () => {
       'max-lines-per-function',
     )
     expect(await errorRuleIdsFor(OVER_COMPLEX, 'src/lib/example.test.ts')).toContain('complexity')
+  })
+
+  // SPRIN-60 — the thresholds reach .mjs, and scripts/ is not a quiet exemption.
+  // This is the assertion the old config failed: check-bundle.mjs's main() sat at
+  // 43 lines against a max of 30 with `npm run lint` green.
+  it('T1 is on in a scripts/*.mjs file, where the bundle control lives', async () => {
+    expect(await errorRuleIdsFor(OVERSIZED_JS, 'scripts/gate-probe.mjs')).toContain(
+      'max-lines-per-function',
+    )
+  })
+
+  // ADR 0002 covers .mjs test files too, or the six describe/it blocks across
+  // this file and check-bundle.test.mjs would be flagged for block size — the
+  // exact measurement ADR 0002 already ruled is not a design signal in .ts.
+  // Both halves again: the override must not take T2 down with it.
+  it('T1 is off in a .mjs test file but T2 stays on (ADR 0002)', async () => {
+    expect(await errorRuleIdsFor(OVERSIZED_JS, 'gate-probe.test.mjs')).not.toContain(
+      'max-lines-per-function',
+    )
+    expect(await errorRuleIdsFor(OVER_COMPLEX_JS, 'gate-probe.test.mjs')).toContain('complexity')
+  })
+
+  // ...and the exemption really is scoped to TEST .mjs files. A glob of
+  // '**/*.mjs' in the ADR 0002 override would read as tidier and would silently
+  // hand scripts/check-bundle.mjs back its exemption.
+  it('the .mjs test exemption does not leak to non-test .mjs', async () => {
+    expect(await errorRuleIdsFor(OVERSIZED_JS, 'scripts/check-bundle-probe.mjs')).toContain(
+      'max-lines-per-function',
+    )
   })
 
   // Widening this glob to src/components/** or src/** would exempt ~34 real
