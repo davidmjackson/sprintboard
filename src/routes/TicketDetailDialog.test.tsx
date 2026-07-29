@@ -755,12 +755,7 @@ describe('TicketDetailDialog', () => {
         ?.getAttribute('aria-label')
         ?.match(/status/i),
     )
-    expect(options.map((o) => o.textContent)).toEqual([
-      'To Do',
-      'In Progress',
-      'In Review',
-      'Done',
-    ])
+    expect(options.map((o) => o.textContent)).toEqual(['To Do', 'In Progress', 'In Review', 'Done'])
     expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual([
       'todo',
       'in_progress',
@@ -797,10 +792,7 @@ describe('TicketDetailDialog', () => {
         onDeleted={() => {}}
       />,
     )
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: /status/i }),
-      'in_progress',
-    )
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /status/i }), 'in_progress')
     await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }))
   })
 
@@ -817,10 +809,7 @@ describe('TicketDetailDialog', () => {
         onDeleted={() => {}}
       />,
     )
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: /status/i }),
-      'in_review',
-    )
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /status/i }), 'in_review')
     // The write has NOT resolved, yet the parent already has the new status.
     expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ status: 'in_review' }))
     await act(async () => {
