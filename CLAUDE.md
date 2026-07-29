@@ -1,8 +1,8 @@
 # Sprintboard
 
-AI-native Scrum delivery board, part of the Sprint Suite. This is a portfolio
-showcase: a credible Jira-style board with a grounded-AI layer added at Rung 2.
-Parity with Jira is not the goal. A clean working slice plus defensible AI is.
+Scrum delivery board, part of the Sprint Suite. The goal is a credible Jira-style
+board — enough of Jira's core to stand in for it, and no more. Parity with Jira is
+not the goal, and neither is anything beyond it: a tight working slice is the point.
 
 ---
 
@@ -15,11 +15,16 @@ Parity with Jira is not the goal. A clean working slice plus defensible AI is.
   deliverables list.
 - Blocked is a flag on the ticket, never a board column.
 
-## Parked. Do not build in Phase 1.
-- **Rung 2:** FastAPI service, AI epic decomposition (traceable, with coverage-gap
-  and scope-creep detection), grounded estimation assistant.
-- **Rung 3:** Kanban board type, editable columns and workflows, custom fields,
-  teams, roles and permissions.
+## Parked. Do not build.
+- **The AI layer.** A FastAPI service with AI epic decomposition and a grounded
+  estimation assistant was built (Rung 2) and then **deliberately removed** in the
+  2026-07-29 pivot — it sat outside the Jira core this project exists to prove.
+  Story-suggestion from a well-documented epic is the one piece worth reviving, and
+  it is recoverable from git history rather than rebuilt. **Do not re-add any of it
+  without being asked.**
+- **Rung 3:** editable columns, statuses and workflows, custom fields, teams, roles
+  and permissions. Wanted eventually — see the forward-compatibility rules below,
+  which exist to keep it cheap — but not now.
 
 If a task appears to require a parked feature, stop and flag it. Do not build it.
 
@@ -225,22 +230,6 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
   Vitest's default include glob; `vite.config.ts` excludes `e2e/**` for exactly this
   reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
   the exclude, don't rename the specs.
-
-## Rung 2 AI service
-
-`api/` is the Rung 2 FastAPI service: **local-only and stateless**. It verifies the
-caller's Supabase JWT (authentication only) and calls Claude; it touches no database
-and holds no service-role key. Run it with
-`cd api && .venv/bin/uvicorn app.main:app --port 8787` (details in `api/README.md`).
-
-- **`api.yml` is a separate, non-required check** — deterministic (the model is
-  mocked) with its own concurrency group, sharing no live resource with
-  `verify`/`e2e`. It must never be folded into `verify`, and `verify.yml` must stay
-  byte-unchanged.
-- **Secrets:** `ANTHROPIC_API_KEY` and `SUPABASE_URL` are server-side only, never
-  `VITE_`-prefixed. `VITE_AI_API_URL` is public — a localhost URL, not a secret.
-- **Model:** `claude-opus-4-8`, configured via `AI_MODEL`, with structured output.
-  `llm.propose` is the single mock seam for tests.
 
 ## Deep review for security-boundary changes
 

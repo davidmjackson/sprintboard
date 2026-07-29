@@ -145,7 +145,9 @@ create table tickets (
   sprint_id      uuid,   -- null = backlog.        Composite fk below.
   parent_epic_id uuid,   -- story/bug/task -> epic. Composite fk below.
 
-  -- Epic-only fields. Feed the Rung 2 AI decomposition feature.
+  -- Epic-only fields: free-text context plus an ordered deliverables list. Originally
+  -- added to feed the Rung 2 AI decomposition feature, which was removed in the
+  -- 2026-07-29 pivot; the columns are kept as epic documentation in their own right.
   context        text,
   deliverables   jsonb not null default '[]',
 
@@ -231,8 +233,7 @@ create trigger on_ticket_insert
 -- bug) from UPDATE-ing key or number to anything at all, desyncing them from
 -- project_counters and destroying the PROJECTKEY-N invariant. RLS does not help:
 -- tickets_owner grants the owner FOR ALL over their own rows. Owner-scoped means
--- the damage is self-inflicted, but CLAUDE.md treats the key as an invariant, and
--- Rung 2 AI traceability will rely on it.
+-- the damage is self-inflicted, but CLAUDE.md treats the key as an invariant.
 --
 -- Silently restoring beats raising: a PATCH that includes the whole row (as a
 -- naive client will) should not fail merely for echoing the key back unchanged.
