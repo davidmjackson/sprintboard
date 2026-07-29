@@ -23,8 +23,7 @@ export default tseslint.config(
   // this project's tsconfig and every one fails to resolve, so a worktree agent running
   // in the background turns `npm run lint` red with dozens of bogus parse errors.
   // vite.config.ts already excludes the same path from vitest, for the same reason.
-  // `api/**` is Python and is linted by ruff.
-  { ignores: ['dist', 'coverage', 'node_modules', '.claude/**', 'api/**'] },
+  { ignores: ['dist', 'coverage', 'node_modules', '.claude/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

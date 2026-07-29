@@ -1,9 +1,0 @@
--r requirements.txt
-pytest>=8
-httpx>=0.27
-# Pinned exactly, not >=. Ruff's DEFAULT rule set widens between releases, so a
-# floating spec changes the verdict on unchanged code: on 2026-07-25 CI resolved
-# 0.16.0 and the api check went red with 6 errors (2x RUF012, 2x B017, I001,
-# BLE001) that 0.15.22 does not raise. The local venv was on 0.15.22, so the
-# drift was invisible until CI. Bump this deliberately, with the findings.
-ruff==0.15.22
