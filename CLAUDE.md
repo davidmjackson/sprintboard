@@ -73,17 +73,32 @@ slice. The doors are open; leave them that way and walk through them at Rung 3.
 - Tooling: ESLint, Prettier, Vitest, Playwright.
 
 **The quality ceremony is gone; the gate is not.** SPRIN-55 removed the T1-T5 size
-and complexity thresholds, the duplication gate (`lint:duplication` and
+and complexity thresholds from ESLint, the duplication gate (`lint:duplication` and
 `scripts/check-duplication.mjs`) and the four ADRs that existed only to justify
 threshold overrides. `npm run lint` is now the ordinary correctness lint —
 recommended JS/TS rules, the React hook rules, no swallowed errors — and it is
 still inside `npm run verify`, which is still the required check.
 
-**This project is deliberately not wired to `/var/www/CodingStandards`.** That is a
-decision taken on 2026-07-29, not a gap to fill: do not re-add the profile, the
-threshold rules, a `lint:standards` script or `jscpd`, and do not offer to scaffold
-or audit the standard here. Write good code because it is good code. If a threshold
-ever earns its way back, it comes back as a story with an ADR, not as tidying.
+**The standards still apply to code you write. They are simply no longer
+automated.** David, 2026-07-29: *"Keep the coding standards in everything you do
+going forward. We can do a retrospective sweep in a later development phase."*
+What SPRIN-55 removed was the *enforcement machinery*, not the bar. Hold every new
+or changed function to `/var/www/CodingStandards/core/THRESHOLDS.md` — 30-line
+functions, cyclomatic 10, cognitive 15, 4 parameters, 400-line files, under 3%
+duplication — as you write it. Nothing will tell you if you drift, which is exactly
+why it has to be deliberate.
+
+Three things follow, and the distinction between them matters:
+
+- **Do not re-wire the gate.** No profile import, no `lint:standards` script, no
+  `jscpd`, no threshold rules back in `eslint.config.js`, and do not offer to
+  scaffold or audit the standard here. If a threshold earns its way back into CI it
+  returns as a story with an ADR, not as tidying.
+- **Do not use the absence of the gate as licence.** "Lint is green" is no longer
+  evidence a function is within the thresholds. Judge it yourself.
+- **Existing violations are a known, accepted debt** — the codebase predates this
+  and was never swept. A **retrospective sweep is planned** for a later phase
+  (SPRIN-57). Do not sweep unprompted, and do not let a story balloon into one.
 
 ## Workflow
 - GitHub Flow. One feature branch and one small PR per story. Squash merge.
