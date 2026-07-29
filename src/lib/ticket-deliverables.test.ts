@@ -8,9 +8,7 @@ const epic = { id: 'e1', deliverables: ['A', 'B'] } as unknown as Ticket
 const alwaysMounted = () => true
 
 function setup(commit: (patch: unknown) => Promise<boolean>, isMounted = alwaysMounted) {
-  const onWritten = vi.fn()
-  const result = renderHook(() => useDeliverables({ ticket: epic, commit, isMounted, onWritten }))
-  return { ...result, onWritten }
+  return renderHook(() => useDeliverables({ ticket: epic, commit, isMounted }))
 }
 
 describe('useDeliverables', () => {
@@ -23,7 +21,6 @@ describe('useDeliverables', () => {
         ticket: dirty,
         commit: vi.fn().mockResolvedValue(true),
         isMounted: alwaysMounted,
-        onWritten: vi.fn(),
       }),
     )
     expect(result.current.items).toEqual(['A', 'B'])
@@ -35,7 +32,6 @@ describe('useDeliverables', () => {
         ticket: null,
         commit: vi.fn().mockResolvedValue(true),
         isMounted: alwaysMounted,
-        onWritten: vi.fn(),
       }),
     )
     expect(result.current.items).toEqual([])
@@ -43,7 +39,7 @@ describe('useDeliverables', () => {
 
   it('appends the trimmed draft and clears it only on a successful add', async () => {
     const commit = vi.fn().mockResolvedValue(true)
-    const { result, onWritten } = setup(commit)
+    const { result } = setup(commit)
 
     act(() => {
       result.current.setDraft('  C  ')
@@ -54,12 +50,11 @@ describe('useDeliverables', () => {
 
     expect(commit).toHaveBeenCalledWith({ deliverables: ['A', 'B', 'C'] })
     expect(result.current.draft).toBe('')
-    expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps the draft and does not invalidate when the add fails', async () => {
+  it('keeps the draft when the add fails', async () => {
     const commit = vi.fn().mockResolvedValue(false)
-    const { result, onWritten } = setup(commit)
+    const { result } = setup(commit)
 
     act(() => {
       result.current.setDraft('C')
@@ -70,7 +65,6 @@ describe('useDeliverables', () => {
 
     expect(commit).toHaveBeenCalledWith({ deliverables: ['A', 'B', 'C'] })
     expect(result.current.draft).toBe('C')
-    expect(onWritten).not.toHaveBeenCalled()
     expect(result.current.pending).toBe(false)
   })
 
@@ -117,12 +111,11 @@ describe('useDeliverables', () => {
 
   it('removes an item by index', async () => {
     const commit = vi.fn().mockResolvedValue(true)
-    const { result, onWritten } = setup(commit)
+    const { result } = setup(commit)
     await act(async () => {
       result.current.remove(0)
     })
     expect(commit).toHaveBeenCalledWith({ deliverables: ['B'] })
-    expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
   it('treats an edit to blank as a removal', async () => {
@@ -144,16 +137,16 @@ describe('useDeliverables', () => {
   })
 
   // `isMounted` must be CALLED after the await, never snapshotted before it: a write that
-  // resolves after this dialog instance unmounted must touch no state and must not
-  // invalidate the trace. Passing a boolean instead of the function would leave every
-  // other test in this file green while breaking exactly this.
-  it('touches no state and does not invalidate when the write lands after unmount', async () => {
+  // resolves after this dialog instance unmounted must touch no state. Passing a boolean
+  // instead of the function would leave every other test in this file green while breaking
+  // exactly this.
+  it('touches no state when the write lands after unmount', async () => {
     let mounted = true
     const commit = vi.fn().mockImplementation(async () => {
       mounted = false
       return true
     })
-    const { result, onWritten } = setup(commit, () => mounted)
+    const { result } = setup(commit, () => mounted)
 
     act(() => {
       result.current.setDraft('C')
@@ -163,7 +156,6 @@ describe('useDeliverables', () => {
     })
 
     expect(commit).toHaveBeenCalledWith({ deliverables: ['A', 'B', 'C'] })
-    expect(onWritten).not.toHaveBeenCalled()
     expect(result.current.pending).toBe(true)
     expect(result.current.draft).toBe('C')
   })

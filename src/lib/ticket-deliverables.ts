@@ -17,18 +17,16 @@ import type { Ticket, TicketUpdate } from './domain'
  * deliberate — it was chosen over an escape-handler registry.
  */
 
-/** `isMounted` and `onWritten` are the FUNCTIONS, not a snapshotted boolean or a
- *  pre-computed value: both are read at continuation time, after the await. Passing either
- *  by value would silently defeat the mount guard while every test still passed.
- *  `pending` is a plain boolean by contrast, and correctly so — it is read synchronously on
- *  entry, before any await, exactly as the render closure read it in the dialog. */
+/** `isMounted` is the FUNCTION, not a snapshotted boolean: it is read at continuation time,
+ *  after the await. Passing it by value would silently defeat the mount guard while every
+ *  test still passed. `pending` is a plain boolean by contrast, and correctly so — it is read
+ *  synchronously on entry, before any await, exactly as the render closure read it. */
 type WriteDeliverablesArgs = {
   next: string[]
   pending: boolean
   setPending: (value: boolean) => void
   commit: (patch: TicketUpdate) => Promise<boolean>
   isMounted: () => boolean
-  onWritten: () => void
 }
 
 // Deliverables are an epic-only, order-preserving `string[]`. Each mutation rebuilds the
@@ -44,27 +42,12 @@ async function writeDeliverables({
   setPending,
   commit,
   isMounted,
-  onWritten,
 }: WriteDeliverablesArgs): Promise<boolean> {
   if (pending) return false
   setPending(true)
   const ok = await commit({ deliverables: next })
   if (!isMounted()) return ok
   setPending(false)
-  // A successful deliverables write changes the array this decomposition's `covers`
-  // indices and `coverageGaps`/`scopeCreep` positions were computed against — a "delivers"
-  // chip could then name the wrong deliverable, and the coverage count could go negative.
-  // Drop the now-stale decomposition rather than let it lie; the user re-runs to refresh.
-  // A FAILED write rolls the optimistic change back (indices stay valid), so only reset
-  // on ok.
-  //
-  // Scope is deliberate: ONLY deliverable writes invalidate. Editing the epic's context or
-  // summary (which also feed the AI prompt) goes through commit() directly and does NOT
-  // reset the trace — those edits don't shift `covers` indices, so every chip and the count
-  // stay index-correct. The proposals are advisory and one click re-runs them, so that mild
-  // semantic staleness is acceptable; nuking them on a title/context tweak would be more
-  // disruptive than the staleness it prevents.
-  if (ok) onWritten()
   return ok
 }
 
@@ -82,17 +65,9 @@ type UseDeliverablesArgs = {
   ticket: Ticket | null
   commit: (patch: TicketUpdate) => Promise<boolean>
   isMounted: () => boolean
-  /** Called ONLY after a write that persisted — the caller's cue that anything derived from
-   *  the deliverable INDICES (the AI decomposition trace) is now stale. */
-  onWritten: () => void
 }
 
-export function useDeliverables({
-  ticket,
-  commit,
-  isMounted,
-  onWritten,
-}: UseDeliverablesArgs): Deliverables {
+export function useDeliverables({ ticket, commit, isMounted }: UseDeliverablesArgs): Deliverables {
   // The draft for the "add a deliverable" input (epic only). Cleared on a successful add.
   const [draft, setDraft] = useState('')
   // True while a deliverables write is in flight — serializes them so two quick add/remove/
@@ -105,7 +80,7 @@ export function useDeliverables({
   const items = parseDeliverables(ticket?.deliverables)
 
   function write(next: string[]) {
-    return writeDeliverables({ next, pending, setPending, commit, isMounted, onWritten })
+    return writeDeliverables({ next, pending, setPending, commit, isMounted })
   }
   async function add() {
     const trimmed = draft.trim()

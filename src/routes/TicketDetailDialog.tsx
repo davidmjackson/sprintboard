@@ -2,7 +2,6 @@ import { useRef, useState } from 'react'
 
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
-import { useDecomposition } from '@/lib/ticket-decomposition'
 import { useDeliverables } from '@/lib/ticket-deliverables'
 import type { Sprint, Ticket } from '@/lib/domain'
 import type { SprintsPhase } from './ProjectShell'
@@ -15,8 +14,8 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 
 /**
  * Jira-style ticket detail modal. This component is the composition root: it owns the
- * public prop contract, calls the extracted hooks (`useTicketCommit`, `useDecomposition`,
- * `useDeliverables`, `useBlockFlow`, `useDeleteFlow`), and assembles their state into the
+ * public prop contract, calls the extracted hooks (`useTicketCommit`, `useDeliverables`,
+ * `useBlockFlow`, `useDeleteFlow`), and assembles their state into the
  * header, fields, sidebar and action dialogs below. The optimistic-save write engine —
  * commit/rollback/reconcile against `updateTicket`, with `updated_at` coming from the DB
  * trigger via the reconciled row — lives in `useTicketCommit` (`src/lib/ticket-commit.ts`),
@@ -35,7 +34,6 @@ export function TicketDetailDialog({
   onOpenChange,
   onUpdated,
   onDeleted,
-  onTicketsCreated,
 }: {
   ticket: Ticket | null
   currentUser: { id: string; email: string }
@@ -50,9 +48,6 @@ export function TicketDetailDialog({
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
-  /** Appends AI-created child tickets to the shared board/backlog list. Optional so the
-   *  dialog still renders in isolation (tests, non-epic tickets). */
-  onTicketsCreated?: (tickets: Ticket[]) => void
 }) {
   // How many fields are currently mid-edit. Read by `onEscapeKeyDown` below: Radix
   // dismisses the whole dialog on Escape at the document level (capture phase), which
@@ -72,10 +67,6 @@ export function TicketDetailDialog({
   // owns the ref.
   const newDeliverableRef = useRef<HTMLInputElement>(null)
 
-  // The AI decomposition trace (epic only): the proposal list, its traceability signals,
-  // and the two async operations that fill and drain it. `reset()` drops the whole trace.
-  const decomposition = useDecomposition({ ticket, onTicketsCreated })
-
   // The optimistic write engine: field-scoped commit/rollback/reconcile, the ticket-scoped
   // error, and the mounted flag every async continuation checks after its `await`.
   const { commit, error, setError, clearError, applyServerRow, isMounted } = useTicketCommit({
@@ -84,14 +75,8 @@ export function TicketDetailDialog({
   })
 
   // The epic's deliverables list, its add-input draft, and the serialized add/remove/edit
-  // writes. Declared AFTER `useDecomposition` because it invalidates that trace on every
-  // successful write — the write shifts the `covers` indices the trace was computed against.
-  const deliverables = useDeliverables({
-    ticket,
-    commit,
-    isMounted,
-    onWritten: decomposition.reset,
-  })
+  // writes.
+  const deliverables = useDeliverables({ ticket, commit, isMounted })
 
   // Block/unblock (the reason dialog's draft, and the two writes behind Block and Unblock)
   // and the delete confirm. Both are declared AFTER `useTicketCommit` because they reconcile
@@ -142,12 +127,11 @@ export function TicketDetailDialog({
               onEditingChange={handleEditingChange}
             />
 
-            {/* Epic-only: the context and deliverables that feed Rung 2 AI decomposition. */}
+            {/* Epic-only: the epic's context and its deliverables list. */}
             {ticket.type === 'epic' ? (
               <TicketEpicSection
                 ticket={ticket}
                 deliverables={deliverables}
-                decomposition={decomposition}
                 inputRef={newDeliverableRef}
                 commit={commit}
                 onEditingChange={handleEditingChange}
