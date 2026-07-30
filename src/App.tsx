@@ -19,10 +19,20 @@ import { CrashFallback, ErrorBoundary } from '@/routes/ErrorBoundary'
  * The app-scope `ErrorBoundary` is mounted here rather than in `main.tsx` because
  * `main.tsx` is an untested bootstrap, so a boundary placed there could never be
  * verified — a throw inside `AuthProvider` or `BrowserRouter` is still above this one.
+ *
+ * **Its fallback's action is a full page reload, not `reset`.** This boundary wraps
+ * `<Routes>` itself, so when its fallback is on screen the entire router is unmounted —
+ * there is no nav, no link, nothing left above the fallback that a re-render could change.
+ * `reset` would only re-run the same render that just threw and reproduce the identical
+ * crash. A reload is the one action that actually recovers a crashed root. `ProjectShell`'s
+ * tab-scope boundary keeps `reset`: a tab crash leaves the rest of the shell mounted, so
+ * re-rendering just the subtree is genuinely useful there.
  */
 export default function App() {
   return (
-    <ErrorBoundary fallback={(reset) => <CrashFallback scope="app" onRetry={reset} />}>
+    <ErrorBoundary
+      fallback={() => <CrashFallback scope="app" onRetry={() => window.location.reload()} />}
+    >
       <Routes>
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/login" element={<LoginPage />} />

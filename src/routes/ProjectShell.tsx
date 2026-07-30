@@ -173,9 +173,14 @@ export function ProjectShell() {
          * user switches to another: `ErrorBoundary` only clears its `crashed` state via
          * `reset`, never on its own re-render, so without this key the boundary would stay
          * mounted (and stuck showing the fallback) across a tab change that only swaps the
-         * Outlet's children. `TicketDetailDialog` stays OUTSIDE this boundary — keying on
-         * pathname would otherwise remount it on every tab switch and reset its inline-edit
-         * state. */}
+         * Outlet's children. `TicketDetailDialog` stays OUTSIDE this boundary on purpose: this
+         * boundary is scoped to TAB content, and the dialog is shell-level furniture, not a
+         * tab — it is still covered by the app-scope boundary in `App.tsx`. Keying it on
+         * pathname the way the tab content is keyed would remount it on every tab switch,
+         * which is a real behaviour change no test currently exercises (the dialog is modal,
+         * so reaching a tab link to trigger that remount would require closing it first) —
+         * kept out to keep this boundary's blast radius minimal, not because the remount is
+         * demonstrated to be harmful. */}
         <ErrorBoundary
           key={location.pathname}
           fallback={(reset) => <CrashFallback scope="tab" onRetry={reset} />}

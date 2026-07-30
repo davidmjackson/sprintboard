@@ -10,6 +10,16 @@ const CRASH_COPY: Record<'app' | 'tab', string> = {
   tab: 'Something went wrong displaying this view.',
 }
 
+/** The action button's label, keyed by the same closed union as `CRASH_COPY` — kept as a
+ *  neighbouring `Record` rather than folded into it, so the two concerns (what happened,
+ *  what the button does) stay independently editable. `app`'s `onRetry` is a full page
+ *  reload (see `App.tsx`), not a subtree re-render, so its label says so; `tab`'s `onRetry`
+ *  really does re-render the subtree in place, so "Try again" still fits there. */
+const ACTION_COPY: Record<'app' | 'tab', string> = {
+  app: 'Reload page',
+  tab: 'Try again',
+}
+
 /**
  * What a contained crash looks like. Deliberately takes a `scope`, NOT a message — it has
  * no way to receive the error, because `ErrorBoundary` never puts one in state. See that
@@ -25,7 +35,7 @@ export function CrashFallback({ scope, onRetry }: { scope: 'app' | 'tab'; onRetr
         {CRASH_COPY[scope]}
       </p>
       <Button variant="outline" size="sm" onClick={onRetry}>
-        Try again
+        {ACTION_COPY[scope]}
       </Button>
     </div>
   )
@@ -53,7 +63,8 @@ type State = { crashed: boolean }
 export class ErrorBoundary extends Component<Props, State> {
   state: State = { crashed: false }
 
-  // Note the discarded parameter: React passes the error, and we deliberately drop it.
+  // Takes no parameter: React calls this with the thrown error, but the signature
+  // deliberately does not accept it, so there is nowhere to put it even by accident.
   static getDerivedStateFromError(): State {
     return { crashed: true }
   }
