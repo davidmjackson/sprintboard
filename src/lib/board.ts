@@ -26,3 +26,28 @@ export function selectActiveSprint(sprints: readonly Sprint[]): Sprint | null {
 export function selectBlockedTickets(tickets: readonly Ticket[]): Ticket[] {
   return tickets.filter((t) => t.is_blocked)
 }
+
+/** What a board column is worth, in one pass: how many cards, how many points, and how
+ *  many of those cards carry no estimate at all.
+ *
+ *  The three numbers are always read together by the same caller, so they are one
+ *  function rather than three — one iteration, one place to change the rule, and one
+ *  mutation target. Kept here beside `selectActiveSprint` and `selectBlockedTickets`
+ *  rather than inlined in `BoardTab`, because board rules live in this module
+ *  (CLAUDE.md forbids inlining domain rules in components).
+ *
+ *  `story_points` is `int` and NULLABLE, and the null case is the point of `unestimated`:
+ *  a column whose total is understated by unpointed work must say so rather than quietly
+ *  report a smaller number. The guard is `== null`, never a falsy check — **0 is a real
+ *  estimate**, not "unestimated", and the difference is the whole signal on a Scrum board. */
+export type ColumnSummary = { count: number; points: number; unestimated: number }
+
+export function summariseColumn(tickets: readonly Ticket[]): ColumnSummary {
+  let points = 0
+  let unestimated = 0
+  for (const t of tickets) {
+    if (t.story_points == null) unestimated += 1
+    else points += t.story_points
+  }
+  return { count: tickets.length, points, unestimated }
+}
