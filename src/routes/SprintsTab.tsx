@@ -1,26 +1,13 @@
 import { useOutletContext } from 'react-router-dom'
 
 import { selectSprintTickets } from '@/lib/backlog'
-import { formatSprintDate } from '@/lib/sprint-dates'
-import { SPRINT_STATUS_LABELS, type Sprint } from '@/lib/domain'
+import { SPRINT_STATUS_LABELS } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CompleteSprintButton } from './CompleteSprintButton'
 import { CreateSprintDialog } from './CreateSprintDialog'
 import { LoadFailure } from './LoadFailure'
+import { SprintDates } from './SprintDates'
 import { StartSprintButton } from './StartSprintButton'
-
-function SprintDates({ sprint }: { sprint: Sprint }) {
-  if (!sprint.start_date && !sprint.end_date) {
-    return <span className="text-muted-foreground text-xs">No dates set</span>
-  }
-  const start = sprint.start_date ? formatSprintDate(sprint.start_date) : '—'
-  const end = sprint.end_date ? formatSprintDate(sprint.end_date) : '—'
-  return (
-    <span className="text-muted-foreground font-mono text-xs tabular-nums">
-      {start} – {end}
-    </span>
-  )
-}
 
 /**
  * The project's sprints, newest first, with a create dialog.

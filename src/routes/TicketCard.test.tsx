@@ -75,4 +75,29 @@ describe('TicketCard', () => {
     // itself is checked, not just its accessible role.
     expect(focused.tagName).toBe('BUTTON')
   })
+
+  it('shows the story points with a screen-reader unit (SPRIN-65 AC1)', () => {
+    render(<TicketCard ticket={{ ...ticket, story_points: 5 } as Ticket} />)
+    expect(screen.getByText('5')).toBeInTheDocument()
+    expect(screen.getByText(/story points/i)).toBeInTheDocument()
+    // The whole point of the `sr-only` unit over an `aria-label`: it must join the
+    // *button's* accessible name, not just exist as isolated text somewhere on the page.
+    expect(screen.getByRole('button', { name: /story points/i })).toBeInTheDocument()
+  })
+
+  // 0 is a real estimate. A falsy guard would hide this badge, silently turning an
+  // estimated-at-zero ticket into an unestimated one.
+  it('shows a 0-point estimate rather than hiding it', () => {
+    render(<TicketCard ticket={{ ...ticket, story_points: 0 } as Ticket} />)
+    expect(screen.getByText('0')).toBeInTheDocument()
+    expect(screen.getByText(/story points/i)).toBeInTheDocument()
+  })
+
+  // Negative control. Its positive control is the two tests above: they prove the
+  // `/story points/i` text exists to be missing, so this assertion cannot pass
+  // merely because the string was never rendered anywhere.
+  it('shows no points badge for an unestimated ticket', () => {
+    render(<TicketCard ticket={{ ...ticket, story_points: null } as Ticket} />)
+    expect(screen.queryByText(/story points/i)).not.toBeInTheDocument()
+  })
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Sprint, Ticket } from './domain'
-import { selectActiveSprint, selectBlockedTickets } from './board'
+import { selectActiveSprint, selectBlockedTickets, summariseColumn } from './board'
 
 /** A sprint with only the field this rule reads. `status` is always stated. */
 function sprint(fields: Partial<Sprint> & Pick<Sprint, 'id' | 'status'>): Sprint {
@@ -59,5 +59,38 @@ describe('selectBlockedTickets', () => {
 
   it('returns an empty array for an empty list', () => {
     expect(selectBlockedTickets([])).toEqual([])
+  })
+})
+
+describe('summariseColumn', () => {
+  it('returns zeroes for an empty column', () => {
+    expect(summariseColumn([])).toEqual({ count: 0, points: 0, unestimated: 0 })
+  })
+
+  it('counts the tickets and sums their points', () => {
+    const column = [
+      ticket({ id: 't1', is_blocked: false, story_points: 3 }),
+      ticket({ id: 't2', is_blocked: false, story_points: 5 }),
+    ]
+    expect(summariseColumn(column)).toEqual({ count: 2, points: 8, unestimated: 0 })
+  })
+
+  it('treats a null estimate as 0 points and tallies it as unestimated', () => {
+    const column = [
+      ticket({ id: 't1', is_blocked: false, story_points: 3 }),
+      ticket({ id: 't2', is_blocked: false, story_points: null }),
+      ticket({ id: 't3', is_blocked: false, story_points: null }),
+    ]
+    expect(summariseColumn(column)).toEqual({ count: 3, points: 3, unestimated: 2 })
+  })
+
+  // The one that matters: 0 is a real estimate. A falsy check would count this
+  // ticket as unestimated, which on a Scrum board is a different claim entirely.
+  it('treats a 0-point ticket as ESTIMATED, contributing 0', () => {
+    const column = [
+      ticket({ id: 't1', is_blocked: false, story_points: 0 }),
+      ticket({ id: 't2', is_blocked: false, story_points: 2 }),
+    ]
+    expect(summariseColumn(column)).toEqual({ count: 2, points: 2, unestimated: 0 })
   })
 })

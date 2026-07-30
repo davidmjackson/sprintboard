@@ -403,6 +403,142 @@ describe('BoardTab', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
     expect(screen.getByText('Open one')).toBeInTheDocument()
   })
+
+  it('names the active sprint and its dates above the board (SPRIN-65 AC2)', () => {
+    const dated = {
+      ...(ACTIVE_SPRINT as object),
+      start_date: '2026-07-20T00:00:00.000Z',
+      end_date: '2026-08-03T00:00:00.000Z',
+    }
+    renderTab(BoardTab, boardCtx({ sprints: [dated] as never }))
+    expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+    expect(screen.getByText('2026-07-20 – 2026-08-03')).toBeInTheDocument()
+  })
+
+  it('says the sprint has no dates rather than inventing a range', () => {
+    renderTab(BoardTab, boardCtx())
+    expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+    expect(screen.getByText(/no dates set/i)).toBeInTheDocument()
+  })
+
+  // Negative control: with no active sprint the caption must be absent, and the
+  // existing "No active sprint" message must still be the thing on screen.
+  it('shows no sprint caption when there is no active sprint', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
+    expect(screen.queryByText('Sprint 1')).not.toBeInTheDocument()
+    expect(screen.getByText(/no active sprint/i)).toBeInTheDocument()
+  })
+
+  // `screen.getByText` is unscoped (Task 2 review finding), so the three tests above pin the
+  // caption's CONTENT but not its POSITION — a review of this task proved that by moving the
+  // caption <p> inside the column grid (past the columns wrapper) and watching all 43 tests
+  // stay green. This test pins the position too: the caption must render outside the grid of
+  // columns, and before it in document order — "above the board", per the brief's title and
+  // the component's own docstring (line 28, "a caption above the grid").
+  it('renders the sprint caption above the grid of board columns, not nested inside it (SPRIN-65 AC2 position pin)', () => {
+    const dated = {
+      ...(ACTIVE_SPRINT as object),
+      start_date: '2026-07-20T00:00:00.000Z',
+      end_date: '2026-08-03T00:00:00.000Z',
+    }
+    renderTab(BoardTab, boardCtx({ sprints: [dated] as never }))
+    const grid = screen.getByRole('heading', { name: 'To Do' }).closest('.grid') as HTMLElement
+    const caption = screen.getByText('Sprint 1')
+    expect(within(grid).queryByText('Sprint 1')).not.toBeInTheDocument()
+    expect(caption.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  const POINTED = [
+    {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Three pointer',
+      type: 'story',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: 3,
+    },
+    {
+      id: 't2',
+      key: 'MP-2',
+      number: 2,
+      summary: 'Five pointer',
+      type: 'story',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: true,
+      blocked_reason: 'waiting',
+      story_points: 5,
+    },
+    {
+      id: 't3',
+      key: 'MP-3',
+      number: 3,
+      summary: 'No estimate',
+      type: 'task',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: null,
+    },
+    {
+      id: 't4',
+      key: 'MP-4',
+      number: 4,
+      summary: 'Shipped',
+      type: 'bug',
+      status: 'done',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: 2,
+    },
+  ] as never
+
+  // `within` is already imported at the top of this file. Scope every assertion to its
+  // own column: the numbers are short strings and a page-wide `getByText('8')` would
+  // happily match a different column, or a card's own points badge.
+  function column(label: string) {
+    return screen.getByRole('heading', { name: label }).closest('section') as HTMLElement
+  }
+
+  it('shows each column card count and point total (SPRIN-65 AC3)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: POINTED }))
+    const todo = within(column('To Do'))
+    expect(todo.getByText(/3 cards/i)).toBeInTheDocument()
+    expect(todo.getByText(/8 points/i)).toBeInTheDocument()
+    const done = within(column('Done'))
+    expect(done.getByText(/1 card/i)).toBeInTheDocument()
+    expect(done.getByText(/2 points/i)).toBeInTheDocument()
+  })
+
+  it('says when a column total is understated by unestimated work (AC5)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: POINTED }))
+    expect(within(column('To Do')).getByText(/1 unestimated/i)).toBeInTheDocument()
+    // Negative control: Done has no unestimated ticket, so it must not say so.
+    expect(within(column('Done')).queryByText(/unestimated/i)).not.toBeInTheDocument()
+  })
+
+  it('gives an empty column no summary — "No tickets yet" already says it', () => {
+    renderTab(BoardTab, boardCtx({ tickets: POINTED }))
+    const review = within(column('In Review'))
+    expect(review.getByText(/no tickets yet/i)).toBeInTheDocument()
+    expect(review.queryByText(/points/i)).not.toBeInTheDocument()
+  })
+
+  // AC4: the numbers describe what is on screen. With the filter on, the To Do column
+  // shows one card worth 5, not three cards worth 8.
+  it('recounts against the visible cards when the blocked-only filter is on (AC4)', async () => {
+    renderTab(BoardTab, boardCtx({ tickets: POINTED }))
+    expect(within(column('To Do')).getByText(/8 points/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
+    const todo = within(column('To Do'))
+    expect(todo.getByText(/1 card/i)).toBeInTheDocument()
+    expect(todo.getByText(/5 points/i)).toBeInTheDocument()
+    expect(todo.queryByText(/8 points/i)).not.toBeInTheDocument()
+    expect(todo.queryByText(/unestimated/i)).not.toBeInTheDocument()
+  })
 })
 
 describe('BacklogTab', () => {

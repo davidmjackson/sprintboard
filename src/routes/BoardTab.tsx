@@ -3,13 +3,42 @@ import type { DragEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
 import { TICKET_STATUSES, TICKET_STATUS_LABELS } from '@/lib/domain'
-import type { TicketStatus } from '@/lib/domain'
-import { selectActiveSprint, selectBlockedTickets } from '@/lib/board'
+import type { Ticket, TicketStatus } from '@/lib/domain'
+import { selectActiveSprint, selectBlockedTickets, summariseColumn } from '@/lib/board'
 import { selectSprintTickets } from '@/lib/backlog'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
 import { LoadFailure } from './LoadFailure'
+import { SprintDates } from './SprintDates'
 import { TicketCard } from './TicketCard'
+
+/**
+ * What a column is worth, under its heading: how many cards, how many points, and — only
+ * when there are any — how many cards carry no estimate, so a total is never silently
+ * understated.
+ *
+ * It is a separate component for two reasons. `BoardTab` sits at the T2 cyclomatic limit
+ * of 10, so its three conditionals (the empty check, the singular/plural count, and the
+ * unestimated count) have to be somebody else's; and the arithmetic itself is
+ * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
+ *
+ * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards
+ * actually on screen — the blocked-only filter changes them. A total that disagreed with
+ * the cards under it would be a distinct state wearing another state's face.
+ *
+ * Nothing is rendered for an empty column: "No tickets yet." is already there and says it
+ * better than "0 cards · 0 points" would.
+ */
+function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
+  const { count, points, unestimated } = summariseColumn(tickets)
+  if (count === 0) return null
+  return (
+    <span className="text-muted-foreground text-xs tabular-nums">
+      {count === 1 ? '1 card' : `${count} cards`} · {points} points
+      {unestimated > 0 ? ` · ${unestimated} unestimated` : ''}
+    </span>
+  )
+}
 
 /**
  * The board: the four fixed columns, in board order (from the domain module — never inlined).
@@ -119,15 +148,24 @@ export function BoardTab() {
         </p>
       ) : null}
       {activeSprint !== null ? (
-        <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={blockedOnly}
-            onChange={(e) => setBlockedOnly(e.target.checked)}
-            className="size-4"
-          />
-          Blocked only
-        </label>
+        <>
+          {/* The board never said WHICH sprint it was showing. Both children hang off the
+              ONE `activeSprint !== null` test on purpose: `BoardTab` sits at the T2
+              cyclomatic limit of 10, so a second conditional here reddens the lint gate. */}
+          <p className="flex flex-wrap items-baseline gap-2 text-sm">
+            <span className="font-medium">{activeSprint.name}</span>
+            <SprintDates sprint={activeSprint} />
+          </p>
+          <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={blockedOnly}
+              onChange={(e) => setBlockedOnly(e.target.checked)}
+              className="size-4"
+            />
+            Blocked only
+          </label>
+        </>
       ) : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {TICKET_STATUSES.map((status) => {
@@ -139,7 +177,10 @@ export function BoardTab() {
               onDrop={() => handleDrop(status)}
               className="bg-muted/30 flex flex-col gap-3 rounded-lg border p-3"
             >
-              <h2 className="text-sm font-medium">{TICKET_STATUS_LABELS[status]}</h2>
+              <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+                <h2 className="text-sm font-medium">{TICKET_STATUS_LABELS[status]}</h2>
+                <BoardColumnSummary tickets={column} />
+              </div>
               {column.length === 0 ? (
                 <p className="text-muted-foreground text-xs">No tickets yet.</p>
               ) : (
