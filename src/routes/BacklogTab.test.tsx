@@ -81,3 +81,32 @@ describe('BacklogTab keyboard reachability (SPRIN-61 AC6)', () => {
     expect(onOpenTicket).toHaveBeenCalledWith(TICKETS[0])
   })
 })
+
+// SPRIN-63. Until this block existed the loading branch was pinned by NOTHING — every case
+// above defaults to `ticketsPhase: 'loaded'` — so removing the vacuous
+// `&& backlog.length === 0` conjunct from its guard would have gone green whether it was
+// right or wrong. These two tests are what make the branch load-bearing, and they fail in
+// opposite directions on purpose.
+describe('BacklogTab does not claim an empty backlog while the read is in flight', () => {
+  // Kills DELETING the branch: fall through and an in-flight read renders
+  // "Nothing in the backlog." — a confident claim about work we have not seen yet, the
+  // same defect the `failed`-before-empty ordering exists to prevent.
+  it('renders Loading, not the empty state, while tickets are loading', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: [] as never, ticketsPhase: 'loading' }))
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument()
+  })
+
+  // Kills RE-ADDING the conjunct: with it back, a loading phase carrying rows falls
+  // through and paints a list the read has not confirmed. The state is unreachable today
+  // (`useTaggedRead` derives phase and items from one binding), which is exactly why the
+  // guard must not depend on it — a guard that is only correct because of a coupling
+  // enforced somewhere else is one refactor away from being wrong.
+  it('renders Loading even if a row is somehow present in the loading phase', () => {
+    renderTab(BacklogTab, ctxWith({ ticketsPhase: 'loading' }))
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /do the todo/i })).not.toBeInTheDocument()
+  })
+})

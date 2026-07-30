@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
  *  threaded down from the dialog rather than owned here: Radix dismisses the dialog at the
  *  document level in the capture phase, so a child's `stopPropagation` cannot keep it open —
  *  the dialog's own `onEscapeKeyDown` must read the ref, so it has to stay there. */
-export function TicketDeliverablesEditor({
+function TicketDeliverablesEditor({
   deliverables,
   inputRef,
   onEditingChange,

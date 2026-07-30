@@ -36,7 +36,7 @@ export function useIsMounted(): () => boolean {
   return () => mountedRef.current
 }
 
-export type TicketError = {
+type TicketError = {
   error: string | null
   setError: (ticketId: string, message: string) => void
   clearError: () => void
@@ -44,7 +44,7 @@ export type TicketError = {
 
 /** The save-failure message for ONE ticket. A separate concern from the write itself:
  *  the write decides *whether* there is an error, this decides *whose* it is. */
-export function useTicketError(ticket: Ticket | null): TicketError {
+function useTicketError(ticket: Ticket | null): TicketError {
   // Keyed to the ticket id so switching tickets resets any stale error without a
   // synchronous "reset on prop change" effect (the project's react-hooks lint rule
   // forbids deriving state that way).
