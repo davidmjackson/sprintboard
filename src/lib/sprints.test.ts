@@ -14,10 +14,12 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
 // createSprint: from('sprints').insert(...).select().single()
 // listSprints:  from('sprints').select().eq(...).order(...)
-// startSprint:  from('sprints').update(...).eq(...).select().single()
+// guard read:   from('sprints').select('status').eq('id', ...).single()
+// startSprint:  from('sprints').update(...).eq('id',...).eq('status',...).select().single()
 const single = vi.fn()
 const order = vi.fn()
-const eq = vi.fn(() => ({ order }))
+const guardSingle = vi.fn()
+const eq = vi.fn(() => ({ order, single: guardSingle }))
 const select = vi.fn(() => ({ eq }))
 // Typed through the signature rather than a named parameter, so `insert.mock.calls[0][0]`
 // is the real insert body without declaring an argument the stub never uses.
@@ -26,7 +28,10 @@ const insert = vi.fn<
 >(() => ({ select: () => ({ single }) }))
 const updateSingle = vi.fn()
 const updateSelect = vi.fn(() => ({ single: updateSingle }))
-const updateEq = vi.fn(() => ({ select: updateSelect }))
+const updateEq: ReturnType<typeof vi.fn> = vi.fn(() => ({
+  eq: updateEq,
+  select: updateSelect,
+}))
 const update = vi.fn<(patch: Record<string, unknown>) => { eq: typeof updateEq }>(() => ({
   eq: updateEq,
 }))
@@ -34,15 +39,16 @@ const update = vi.fn<(patch: Record<string, unknown>) => { eq: typeof updateEq }
 beforeEach(() => {
   single.mockReset()
   order.mockReset()
+  guardSingle.mockReset()
   eq.mockReset()
-  eq.mockReturnValue({ order })
+  eq.mockReturnValue({ order, single: guardSingle })
   select.mockReset()
   select.mockReturnValue({ eq })
   insert.mockReset()
   insert.mockReturnValue({ select: () => ({ single }) })
   updateSingle.mockReset()
   updateSelect.mockReset().mockReturnValue({ single: updateSingle })
-  updateEq.mockReset().mockReturnValue({ select: updateSelect })
+  updateEq.mockReset().mockReturnValue({ eq: updateEq, select: updateSelect })
   update.mockReset().mockReturnValue({ eq: updateEq })
   vi.mocked(supabase.from).mockReset()
   vi.mocked(supabase.from).mockReturnValue({
@@ -184,7 +190,13 @@ describe('listSprints', () => {
 })
 
 describe('startSprint', () => {
+  // Every start now passes a precondition read first: stub it to the status under test.
+  function guardReturns(status: string | null, error: unknown = null) {
+    guardSingle.mockResolvedValue({ data: status === null ? null : { status }, error })
+  }
+
   it('sets status active and returns the updated sprint on success', async () => {
+    guardReturns('future')
     const active = sprint({ status: 'active' })
     updateSingle.mockResolvedValue({ data: active, error: null })
 
@@ -192,10 +204,45 @@ describe('startSprint', () => {
 
     expect(update).toHaveBeenCalledWith({ status: 'active' })
     expect(updateEq).toHaveBeenCalledWith('id', 's1')
+    // The compare-and-swap: the update itself refuses a sprint that left `future`
+    // between the read and the write. Drop this filter and this assertion goes red.
+    expect(updateEq).toHaveBeenCalledWith('status', 'future')
     expect(result).toEqual({ ok: true, sprint: active })
   })
 
+  it('refuses to start an already-active sprint and writes nothing', async () => {
+    guardReturns('active')
+
+    const result = await startSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'stale' })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('refuses to start a completed sprint and writes nothing — no resurrection', async () => {
+    // The headline defect. The partial unique index constrains `status = 'active'` only,
+    // so with no other active sprint the database would happily flip this back to active.
+    guardReturns('complete')
+
+    const result = await startSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'stale' })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('maps a failed precondition read to unknown and writes nothing', async () => {
+    // Zero rows covers BOTH a deleted sprint and another owner's sprint — RLS makes them
+    // indistinguishable and they must stay so. Never 'stale', which would confirm existence.
+    guardReturns(null, { code: 'PGRST116' })
+
+    const result = await startSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+    expect(update).not.toHaveBeenCalled()
+  })
+
   it('maps the partial-unique-index violation (23505) to already_active', async () => {
+    guardReturns('future')
     updateSingle.mockResolvedValue({ data: null, error: { code: '23505' } })
 
     const result = await startSprint('s2')
@@ -204,6 +251,7 @@ describe('startSprint', () => {
   })
 
   it('maps any other error to unknown', async () => {
+    guardReturns('future')
     updateSingle.mockResolvedValue({ data: null, error: { code: 'PGRST116' } })
 
     const result = await startSprint('s3')

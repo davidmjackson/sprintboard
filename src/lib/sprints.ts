@@ -1,6 +1,13 @@
 import { supabase } from './supabase'
 import { toUtcMidnight } from './sprint-dates'
-import type { Sprint, SprintCreateInsert, SprintStatusUpdate, Ticket, TicketUpdate } from './domain'
+import type {
+  Sprint,
+  SprintCreateInsert,
+  SprintStatus,
+  SprintStatusUpdate,
+  Ticket,
+  TicketUpdate,
+} from './domain'
 
 /**
  * The default name for a sprint created with the name left blank: `Sprint N`, where N is
@@ -88,11 +95,46 @@ export async function listSprints(projectId: string): Promise<Sprint[]> {
 }
 
 /**
+ * A transition's precondition check. `stale` means the sprint exists and is in a DIFFERENT
+ * status than the transition requires — the caller's view is out of date. `unknown` covers a
+ * failed read and a zero-row match alike, and that conflation is deliberate: RLS makes
+ * "deleted" and "another owner's" indistinguishable, and they must stay so. Returning `stale`
+ * for a row we cannot see would turn this guard into an existence oracle.
+ */
+type SprintStatusGuard = { ok: true } | { ok: false; error: 'stale' | 'unknown' }
+
+/**
+ * Read a sprint's CURRENT status and check it against a transition's precondition.
+ *
+ * Why a read rather than only a filter on the update: `completeSprint` writes TWICE and the
+ * destructive write (returning tickets to the backlog) comes FIRST, so a filter on its status
+ * flip would fire only after the tickets had already moved. The gate has to precede the first
+ * write. `startSprint` uses the same helper for the same error vocabulary — and because only a
+ * read can tell `stale` from `unknown` honestly. These are click-driven actions, so the extra
+ * round trip costs nothing that matters.
+ *
+ * This is NOT a general-purpose sprint read and is deliberately unexported: it returns a
+ * verdict, not a sprint.
+ */
+async function requireSprintStatus(id: string, expected: SprintStatus): Promise<SprintStatusGuard> {
+  const { data, error } = await supabase.from('sprints').select('status').eq('id', id).single()
+
+  if (error || !data) return { ok: false, error: 'unknown' }
+  return data.status === expected ? { ok: true } : { ok: false, error: 'stale' }
+}
+
+/**
  * Start a sprint: flip its status to `active`. The one-active-per-project rule is enforced
  * by the `sprints_one_active_per_project` partial unique index, NOT by this function — we
  * attempt the update and let the database reject a second active sprint. We never deactivate
  * another sprint to make room: that would work around the index (CLAUDE.md forbids it) and
  * silently end a running sprint.
+ *
+ * A sprint can only be started from `future`. `requireSprintStatus` is the gate; the
+ * `status = 'future'` filter on the update is a compare-and-swap that closes the window
+ * between the read and the write. A lost race there surfaces as `unknown` rather than
+ * `stale` — the filter's job is to prevent the wrong write, not to produce a nice message,
+ * and a retry hits the guard and reports `stale` correctly.
  *
  * Unlike `createSprint`, this has a user-correctable failure. A `23505` (unique_violation)
  * is the index rejecting a second active sprint — the user can finish the current one and
@@ -104,13 +146,18 @@ export async function listSprints(projectId: string): Promise<Sprint[]> {
 export type StartSprintResult =
   | { ok: true; sprint: Sprint }
   | { ok: false; error: 'already_active' }
+  | { ok: false; error: 'stale' }
   | { ok: false; error: 'unknown' }
 
 export async function startSprint(id: string): Promise<StartSprintResult> {
+  const guard = await requireSprintStatus(id, 'future')
+  if (!guard.ok) return guard
+
   const { data, error } = await supabase
     .from('sprints')
     .update({ status: 'active' } satisfies SprintStatusUpdate)
     .eq('id', id)
+    .eq('status', 'future')
     .select()
     .single()
 
