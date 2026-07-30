@@ -449,10 +449,51 @@ describe('BoardTab', () => {
   })
 
   const POINTED = [
-    { id: 't1', key: 'MP-1', number: 1, summary: 'Three pointer', type: 'story', status: 'todo', sprint_id: 's-active', is_blocked: false, story_points: 3 },
-    { id: 't2', key: 'MP-2', number: 2, summary: 'Five pointer', type: 'story', status: 'todo', sprint_id: 's-active', is_blocked: true, blocked_reason: 'waiting', story_points: 5 },
-    { id: 't3', key: 'MP-3', number: 3, summary: 'No estimate', type: 'task', status: 'todo', sprint_id: 's-active', is_blocked: false, story_points: null },
-    { id: 't4', key: 'MP-4', number: 4, summary: 'Shipped', type: 'bug', status: 'done', sprint_id: 's-active', is_blocked: false, story_points: 2 },
+    {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Three pointer',
+      type: 'story',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: 3,
+    },
+    {
+      id: 't2',
+      key: 'MP-2',
+      number: 2,
+      summary: 'Five pointer',
+      type: 'story',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: true,
+      blocked_reason: 'waiting',
+      story_points: 5,
+    },
+    {
+      id: 't3',
+      key: 'MP-3',
+      number: 3,
+      summary: 'No estimate',
+      type: 'task',
+      status: 'todo',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: null,
+    },
+    {
+      id: 't4',
+      key: 'MP-4',
+      number: 4,
+      summary: 'Shipped',
+      type: 'bug',
+      status: 'done',
+      sprint_id: 's-active',
+      is_blocked: false,
+      story_points: 2,
+    },
   ] as never
 
   // `within` is already imported at the top of this file. Scope every assertion to its
