@@ -428,6 +428,25 @@ describe('BoardTab', () => {
     expect(screen.queryByText('Sprint 1')).not.toBeInTheDocument()
     expect(screen.getByText(/no active sprint/i)).toBeInTheDocument()
   })
+
+  // `screen.getByText` is unscoped (Task 2 review finding), so the three tests above pin the
+  // caption's CONTENT but not its POSITION — a review of this task proved that by moving the
+  // caption <p> inside the column grid (past the columns wrapper) and watching all 43 tests
+  // stay green. This test pins the position too: the caption must render outside the grid of
+  // columns, and before it in document order — "above the board", per the brief's title and
+  // the component's own docstring (line 28, "a caption above the grid").
+  it('renders the sprint caption above the grid of board columns, not nested inside it (SPRIN-65 AC2 position pin)', () => {
+    const dated = {
+      ...(ACTIVE_SPRINT as object),
+      start_date: '2026-07-20T00:00:00.000Z',
+      end_date: '2026-08-03T00:00:00.000Z',
+    }
+    renderTab(BoardTab, boardCtx({ sprints: [dated] as never }))
+    const grid = screen.getByRole('heading', { name: 'To Do' }).closest('.grid')!
+    const caption = screen.getByText('Sprint 1')
+    expect(within(grid).queryByText('Sprint 1')).not.toBeInTheDocument()
+    expect(caption.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
 })
 
 describe('BacklogTab', () => {
