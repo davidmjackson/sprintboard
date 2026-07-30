@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Navigate, Outlet, useOutletContext, useParams } from 'react-router-dom'
+import { Navigate, Outlet, useLocation, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
@@ -8,6 +8,7 @@ import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
 import { useAuth } from '@/lib/auth-context'
+import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
 import { TicketDetailDialog } from './TicketDetailDialog'
 
@@ -75,6 +76,7 @@ export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
   const { projectId } = useParams()
   const { user } = useAuth()
+  const location = useLocation()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const project = loading ? undefined : projects.find((p) => p.id === projectId)
   const activeProjectId = project?.id
@@ -167,25 +169,42 @@ export function ProjectShell() {
         onTicketCreated={(ticket) => ticketRead.patch(project.id, (ts) => [...ts, ticket])}
       />
       <div className="flex-1 p-8">
-        <Outlet
-          context={
-            {
-              project,
-              tickets,
-              ticketsPhase,
-              sprints,
-              sprintsPhase,
-              onRetry,
-              onSprintCreated,
-              onSprintUpdated,
-              onSprintCompleted,
-              currentUser,
-              onOpenTicket: (t) => setSelectedId(t.id),
-              onTicketUpdated,
-              onTicketDeleted,
-            } satisfies ProjectShellContext
-          }
-        />
+        {/* Keyed on the path so a crash on one tab doesn't linger as a stale fallback when the
+         * user switches to another: `ErrorBoundary` only clears its `crashed` state via
+         * `reset`, never on its own re-render, so without this key the boundary would stay
+         * mounted (and stuck showing the fallback) across a tab change that only swaps the
+         * Outlet's children. `TicketDetailDialog` stays OUTSIDE this boundary on purpose: this
+         * boundary is scoped to TAB content, and the dialog is shell-level furniture, not a
+         * tab — it is still covered by the app-scope boundary in `App.tsx`. Keying it on
+         * pathname the way the tab content is keyed would remount it on every tab switch,
+         * which is a real behaviour change no test currently exercises (the dialog is modal,
+         * so reaching a tab link to trigger that remount would require closing it first) —
+         * kept out to keep this boundary's blast radius minimal, not because the remount is
+         * demonstrated to be harmful. */}
+        <ErrorBoundary
+          key={location.pathname}
+          fallback={(reset) => <CrashFallback scope="tab" onRetry={reset} />}
+        >
+          <Outlet
+            context={
+              {
+                project,
+                tickets,
+                ticketsPhase,
+                sprints,
+                sprintsPhase,
+                onRetry,
+                onSprintCreated,
+                onSprintUpdated,
+                onSprintCompleted,
+                currentUser,
+                onOpenTicket: (t) => setSelectedId(t.id),
+                onTicketUpdated,
+                onTicketDeleted,
+              } satisfies ProjectShellContext
+            }
+          />
+        </ErrorBoundary>
         <TicketDetailDialog
           key={selected?.id ?? 'none'}
           ticket={selected}

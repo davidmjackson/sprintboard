@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectShell, type ProjectShellContext } from './ProjectShell'
 import { BoardTab } from './BoardTab'
@@ -154,6 +154,26 @@ function ContextProvider({ ctx }: { ctx: ProjectsContext }) {
   return <Outlet context={ctx} />
 }
 
+const CRASH_CANARY = 'canary-rls-policy-detail'
+
+/** A tab that throws during render — drives the tab-scope boundary through a real route. */
+function CrashProbe(): never {
+  throw new Error(CRASH_CANARY)
+}
+
+// Module-level flag, reset per test in the tab-scope boundary describe block's beforeEach —
+// same shape as `Flaky` in ErrorBoundary.test.tsx. `CrashProbe` above always throws (other
+// tests in this file depend on that), so recovery needs a SEPARATE probe that can be made to
+// stop throwing mid-test, to observe what the fallback's button actually does.
+let flakyCrashShouldThrow = true
+
+/** Throws until `flakyCrashShouldThrow` is flipped false, then renders real content — lets a
+ *  click on the tab fallback's button be observed as an actual in-place re-render. */
+function FlakyCrashProbe() {
+  if (flakyCrashShouldThrow) throw new Error(CRASH_CANARY)
+  return <p>recovered tab content</p>
+}
+
 function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, loading: false }) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -167,6 +187,8 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="sprints" element={<SprintsTab />} />
             <Route path="probe" element={<SprintContextProbe />} />
             <Route path="ticket-probe" element={<TicketContextProbe />} />
+            <Route path="crash" element={<CrashProbe />} />
+            <Route path="crash-flaky" element={<FlakyCrashProbe />} />
           </Route>
         </Route>
       </Routes>
@@ -779,5 +801,78 @@ describe('ProjectShell', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'This sprint is no longer waiting to start. Refresh to see its current state.',
     )
+  })
+})
+
+describe('the tab-scope error boundary', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    flakyCrashShouldThrow = true
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('contains a tab crash and leaves the header and tab bar usable', async () => {
+    renderShell('/projects/p1/crash')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong displaying this view.',
+    )
+    // AC1: the shell around the tab survives, so the user can navigate away.
+    expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Backlog' })).toBeInTheDocument()
+    expect(screen.getByText('Apple')).toBeInTheDocument()
+  })
+
+  it('does not render the thrown error text', async () => {
+    renderShell('/projects/p1/crash')
+    await screen.findByRole('alert')
+    expect(document.body.textContent).not.toContain(CRASH_CANARY)
+  })
+
+  it('clears the crash when the user navigates to another tab', async () => {
+    const user = userEvent.setup()
+    renderShell('/projects/p1/crash')
+    await screen.findByRole('alert')
+
+    await user.click(screen.getByRole('link', { name: 'Backlog' }))
+
+    // AC4: the fallback must not survive the navigation.
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('contains the real formatSprintDate crash, the case this story exists for', async () => {
+    // `timestamptz` would reject this at the database edge; the point is that when a value
+    // Date cannot parse does reach render, the tab degrades instead of the app dying.
+    mockListSprints.mockResolvedValue([{ ...sprintBase, start_date: 'not-a-timestamp' }])
+    renderShell('/projects/p1/sprints')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong displaying this view.',
+    )
+    expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
+  })
+
+  // AC5: the tab fallback's action re-renders the subtree IN PLACE, not a full page reload.
+  // None of the tests above ever click the button, so a call site that swapped `onRetry={reset}`
+  // for `onRetry={() => window.location.reload()}` left them all green — this is the one that
+  // must go red for that change, because it is the only one that observes what the click does.
+  it('re-renders the tab content in place when Try again is clicked (AC5)', async () => {
+    const user = userEvent.setup()
+    renderShell('/projects/p1/crash-flaky')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong displaying this view.',
+    )
+
+    flakyCrashShouldThrow = false
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+
+    // The subtree re-rendered with real content, in the SAME shell — no reload, no reset of
+    // component state elsewhere (the header/tab bar never unmounted).
+    expect(await screen.findByText('recovered tab content')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
   })
 })
