@@ -403,6 +403,31 @@ describe('BoardTab', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
     expect(screen.getByText('Open one')).toBeInTheDocument()
   })
+
+  it('names the active sprint and its dates above the board (SPRIN-65 AC2)', () => {
+    const dated = {
+      ...(ACTIVE_SPRINT as object),
+      start_date: '2026-07-20T00:00:00.000Z',
+      end_date: '2026-08-03T00:00:00.000Z',
+    }
+    renderTab(BoardTab, boardCtx({ sprints: [dated] as never }))
+    expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+    expect(screen.getByText('2026-07-20 – 2026-08-03')).toBeInTheDocument()
+  })
+
+  it('says the sprint has no dates rather than inventing a range', () => {
+    renderTab(BoardTab, boardCtx())
+    expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+    expect(screen.getByText(/no dates set/i)).toBeInTheDocument()
+  })
+
+  // Negative control: with no active sprint the caption must be absent, and the
+  // existing "No active sprint" message must still be the thing on screen.
+  it('shows no sprint caption when there is no active sprint', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
+    expect(screen.queryByText('Sprint 1')).not.toBeInTheDocument()
+    expect(screen.getByText(/no active sprint/i)).toBeInTheDocument()
+  })
 })
 
 describe('BacklogTab', () => {

@@ -9,6 +9,7 @@ import { selectSprintTickets } from '@/lib/backlog'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
 import { LoadFailure } from './LoadFailure'
+import { SprintDates } from './SprintDates'
 import { TicketCard } from './TicketCard'
 
 /**
@@ -119,15 +120,24 @@ export function BoardTab() {
         </p>
       ) : null}
       {activeSprint !== null ? (
-        <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={blockedOnly}
-            onChange={(e) => setBlockedOnly(e.target.checked)}
-            className="size-4"
-          />
-          Blocked only
-        </label>
+        <>
+          {/* The board never said WHICH sprint it was showing. Both children hang off the
+              ONE `activeSprint !== null` test on purpose: `BoardTab` sits at the T2
+              cyclomatic limit of 10, so a second conditional here reddens the lint gate. */}
+          <p className="flex flex-wrap items-baseline gap-2 text-sm">
+            <span className="font-medium">{activeSprint.name}</span>
+            <SprintDates sprint={activeSprint} />
+          </p>
+          <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={blockedOnly}
+              onChange={(e) => setBlockedOnly(e.target.checked)}
+              className="size-4"
+            />
+            Blocked only
+          </label>
+        </>
       ) : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {TICKET_STATUSES.map((status) => {
