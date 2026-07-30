@@ -161,6 +161,19 @@ function CrashProbe(): never {
   throw new Error(CRASH_CANARY)
 }
 
+// Module-level flag, reset per test in the tab-scope boundary describe block's beforeEach —
+// same shape as `Flaky` in ErrorBoundary.test.tsx. `CrashProbe` above always throws (other
+// tests in this file depend on that), so recovery needs a SEPARATE probe that can be made to
+// stop throwing mid-test, to observe what the fallback's button actually does.
+let flakyCrashShouldThrow = true
+
+/** Throws until `flakyCrashShouldThrow` is flipped false, then renders real content — lets a
+ *  click on the tab fallback's button be observed as an actual in-place re-render. */
+function FlakyCrashProbe() {
+  if (flakyCrashShouldThrow) throw new Error(CRASH_CANARY)
+  return <p>recovered tab content</p>
+}
+
 function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, loading: false }) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -175,6 +188,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="probe" element={<SprintContextProbe />} />
             <Route path="ticket-probe" element={<TicketContextProbe />} />
             <Route path="crash" element={<CrashProbe />} />
+            <Route path="crash-flaky" element={<FlakyCrashProbe />} />
           </Route>
         </Route>
       </Routes>
@@ -793,6 +807,7 @@ describe('ProjectShell', () => {
 describe('the tab-scope error boundary', () => {
   beforeEach(() => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
+    flakyCrashShouldThrow = true
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -836,6 +851,28 @@ describe('the tab-scope error boundary', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Something went wrong displaying this view.',
     )
+    expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
+  })
+
+  // AC5: the tab fallback's action re-renders the subtree IN PLACE, not a full page reload.
+  // None of the tests above ever click the button, so a call site that swapped `onRetry={reset}`
+  // for `onRetry={() => window.location.reload()}` left them all green — this is the one that
+  // must go red for that change, because it is the only one that observes what the click does.
+  it('re-renders the tab content in place when Try again is clicked (AC5)', async () => {
+    const user = userEvent.setup()
+    renderShell('/projects/p1/crash-flaky')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong displaying this view.',
+    )
+
+    flakyCrashShouldThrow = false
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+
+    // The subtree re-rendered with real content, in the SAME shell — no reload, no reset of
+    // component state elsewhere (the header/tab bar never unmounted).
+    expect(await screen.findByText('recovered tab content')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
   })
 })
