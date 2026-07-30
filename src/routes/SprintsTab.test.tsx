@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
@@ -6,8 +6,11 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { Project, Sprint, Ticket } from '@/lib/domain'
+import { completeSprint, startSprint } from '@/lib/sprints'
 
 vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn(), completeSprint: vi.fn() }))
+const mockStart = vi.mocked(startSprint)
+const mockComplete = vi.mocked(completeSprint)
 
 // The dialog is exercised by its own suite; here it is a button that reports its props
 // and, on click, invokes `onCreated` with a fixture sprint — so the tab's hand-off to
@@ -128,6 +131,11 @@ function renderTab(
     </MemoryRouter>,
   )
 }
+
+beforeEach(() => {
+  mockStart.mockReset()
+  mockComplete.mockReset()
+})
 
 describe('SprintsTab', () => {
   it('lists a sprint with its name, status, goal and ISO dates', () => {
@@ -359,5 +367,42 @@ describe('SprintsTab', () => {
 
     const completeRow = screen.getByText('Done one').closest('li') as HTMLElement
     expect(within(completeRow).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+  })
+
+  // SPRIN-64 review: the button-level suites stub `onRetry={vi.fn()}` and pin only that the
+  // message renders against a no-op parent — a contract the REAL composition negated. This
+  // test is a step up from that (real `SprintsTab` rendering a real button, not a mocked one),
+  // but it is NOT the test that catches the regression: this file's `renderTab` hands
+  // `SprintsTab` a static context object built once per `render()` call, so the mock `onRetry`
+  // it supplies mutates nothing and calling it here is inert. The actual bug lives one level up
+  // — the shell's real `onRetry` bumps `reloadNonce`, which is what makes `useTaggedRead` drop
+  // the in-flight sprints and unmount this row. Proven: re-adding the reverted `onRetry()` call
+  // on the stale path does NOT turn this test red. The test that DOES catch it renders the real
+  // `ProjectShell` — see "shows the stale Complete/Start message in the real shell composition"
+  // in `ProjectShell.test.tsx`. Kept here anyway because it still pins something real: the
+  // message reaches the DOM through the actual `SprintsTab` → `CompleteSprintButton` wiring,
+  // not just a component tested in isolation.
+  it('shows the stale Complete message in the real SprintsTab composition, not a stubbed parent', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
+    const user = userEvent.setup()
+    renderTab({ sprints: [sprint({ id: 's1', name: 'Hardening push', status: 'active' })] })
+
+    await user.click(screen.getByRole('button', { name: 'Complete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer active. Refresh to see its current state.',
+    )
+  })
+
+  it('shows the stale Start message in the real SprintsTab composition, not a stubbed parent', async () => {
+    mockStart.mockResolvedValue({ ok: false, error: 'stale' })
+    const user = userEvent.setup()
+    renderTab({ sprints: [sprint({ id: 's1', name: 'Hardening push', status: 'future' })] })
+
+    await user.click(screen.getByRole('button', { name: 'Start' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer waiting to start. Refresh to see its current state.',
+    )
   })
 })

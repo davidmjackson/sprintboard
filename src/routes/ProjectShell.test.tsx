@@ -737,4 +737,47 @@ describe('ProjectShell', () => {
     expect(within(row).getByText('0')).toBeInTheDocument()
     expect(vi.mocked(completeSprint)).toHaveBeenCalledTimes(2)
   })
+
+  // SPRIN-64 review, AC3: this is the REAL composition the earlier fix broke. Both button
+  // suites (StartSprintButton.test.tsx / CompleteSprintButton.test.tsx) pin the stale message
+  // against a stubbed `onRetry={vi.fn()}` — a no-op that cannot observe what the shell's real
+  // `onRetry` does. `SprintsTab.test.tsx`'s own harness is no better: it hands `SprintsTab` a
+  // static context object built once, so calling that mock `onRetry` mutates nothing either.
+  // Only the real `ProjectShell` owns the `reloadNonce` state that `onRetry` bumps — bumping it
+  // makes `useTaggedRead` drop the in-flight sprints and re-render `sprints: []`, which
+  // unmounts this row (and the alert with it) in the same commit that set the message. Render
+  // the real shell so that mechanism is actually exercised.
+  it('shows the stale Complete message in the real shell composition, and it stays visible', async () => {
+    const user = userEvent.setup()
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({ ok: false, error: 'stale' })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer active. Refresh to see its current state.',
+    )
+  })
+
+  it('shows the stale Start message in the real shell composition, and it stays visible', async () => {
+    const user = userEvent.setup()
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'future' },
+    ])
+    vi.mocked(startSprint).mockResolvedValue({ ok: false, error: 'stale' })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: 'Start' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer waiting to start. Refresh to see its current state.',
+    )
+  })
 })

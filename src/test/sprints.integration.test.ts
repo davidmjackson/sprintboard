@@ -243,9 +243,10 @@ describe.skipIf(!hasRlsCredentials)(
       const asB = RLS_USERS.B
       await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
       try {
-        // `sprints_owner` scopes the UPDATE through the owned project: B's write matches ZERO
-        // rows (not A's row), `.single()` then errors, and startSprint maps that to 'unknown' —
-        // never 'already_active' (which would leak that the row exists), never a mutation.
+        // For B the precondition read matches ZERO rows (`sprints_owner` scopes it through the
+        // owned project), so startSprint returns 'unknown' having written nothing at all —
+        // never 'already_active' and never 'stale', either of which would confirm A's sprint
+        // exists. The write path below it is never reached.
         const result = await startSprint(id)
         expect(result).toEqual({ ok: false, error: 'unknown' })
       } finally {
@@ -297,8 +298,9 @@ describe.skipIf(!hasRlsCredentials)(
       const asB = RLS_USERS.B
       await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
       try {
-        // Both statements filter to zero rows for B; the status flip's `.single()` errors →
-        // 'unknown', never leaking existence, never mutating A's data.
+        // The precondition read matches zero rows for B, so completeSprint now returns
+        // 'unknown' before ANY write — strictly better than before, when the ticket move ran
+        // and was filtered to zero rows by RLS. 'unknown' never leaks existence.
         const result = await completeSprint(id)
         expect(result).toEqual({ ok: false, error: 'unknown' })
       } finally {
@@ -306,10 +308,44 @@ describe.skipIf(!hasRlsCredentials)(
         await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
       }
 
-      // Re-read as A: the sprint is still active AND its ticket unmoved — proof the bulk update
-      // filtered to zero rows for B too, not just the sprint update.
+      // Re-read as A: the sprint is still active AND its ticket unmoved — proof that B's call
+      // left the database exactly where it found it. The bulk update never even ran for B: the
+      // precondition read is the gate now, and it matched zero rows before either write.
       const { data: s } = await a.from('sprints').select('status').eq('id', id).single()
       expect(s!.status).toBe('active')
+      const { data: t } = await a.from('tickets').select('sprint_id').eq('id', todoId).single()
+      expect(t!.sprint_id).toBe(id)
+    }, 30_000)
+
+    it('refuses to restart a completed sprint: no resurrection', async () => {
+      // The headline defect, at the database. `sprints_one_active_per_project` constrains
+      // `status = 'active'` ONLY, so with no other active sprint nothing here stops the flip —
+      // before the guard this call returned ok:true and a completed sprint went live again,
+      // having already returned its incomplete tickets to the backlog.
+      const id = await newFutureSprint('Resurrect')
+      expect((await startSprint(id)).ok).toBe(true)
+      expect((await completeSprint(id)).ok).toBe(true) // positive control: really complete
+
+      const result = await startSprint(id)
+      expect(result).toEqual({ ok: false, error: 'stale' })
+
+      const { data, error } = await a.from('sprints').select('status').eq('id', id).single()
+      expect(error).toBeNull()
+      expect(data!.status).toBe('complete')
+    }, 30_000)
+
+    it('refuses to complete a future sprint and leaves its tickets attached', async () => {
+      // AC2 proven at the database, not at a mock. The ticket move runs before the status
+      // flip, so a guard in the wrong place would strip this ticket's sprint_id and only
+      // then fail — the assertion below is what catches that.
+      const id = await newFutureSprint('Never started')
+      const todoId = await ticketInSprint(id, 'todo')
+
+      const result = await completeSprint(id)
+      expect(result).toEqual({ ok: false, error: 'stale' })
+
+      const { data: s } = await a.from('sprints').select('status').eq('id', id).single()
+      expect(s!.status).toBe('future')
       const { data: t } = await a.from('tickets').select('sprint_id').eq('id', todoId).single()
       expect(t!.sprint_id).toBe(id)
     }, 30_000)

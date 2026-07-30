@@ -75,4 +75,18 @@ describe('StartSprintButton', () => {
     // Let the resolution flush so the pending state clears — avoids a dangling microtask.
     await screen.findByRole('button', { name: 'Start' })
   })
+
+  it('shows a distinct refresh message when the sprint is no longer startable', async () => {
+    mockStart.mockResolvedValue({ ok: false, error: 'stale' })
+    const onStarted = vi.fn()
+
+    render(<StartSprintButton sprint={sprint} onStarted={onStarted} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+
+    // The exact string, so collapsing this back into the generic copy goes red.
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer waiting to start. Refresh to see its current state.',
+    )
+    expect(onStarted).not.toHaveBeenCalled()
+  })
 })
