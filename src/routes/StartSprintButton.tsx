@@ -4,6 +4,12 @@ import { startSprint } from '@/lib/sprints'
 import type { Sprint } from '@/lib/domain'
 import { Button } from '@/components/ui/button'
 
+const START_ERRORS: Record<'already_active' | 'stale' | 'unknown', string> = {
+  already_active: 'This project already has an active sprint. Complete it before starting another.',
+  stale: 'This sprint is no longer waiting to start. Refresh to see its current state.',
+  unknown: 'Something went wrong. Please try again.',
+}
+
 /**
  * Starts one sprint. Owns the async call, its pending state, and the error message for a
  * single row so `SprintsTab` stays a pure view. The `already_active` case (the partial
@@ -33,11 +39,7 @@ export function StartSprintButton({
       onStarted(result.sprint)
       return
     }
-    setError(
-      result.error === 'already_active'
-        ? 'This project already has an active sprint. Complete it before starting another.'
-        : 'Something went wrong. Please try again.',
-    )
+    setError(START_ERRORS[result.error])
   }
 
   return (

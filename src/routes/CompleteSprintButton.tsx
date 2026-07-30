@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button'
 
 /**
  * Completes one active sprint. Owns the async call, its pending state, and the error message
- * for a single row so `SprintsTab` stays a pure view. Completing has no user-correctable
- * failure (unlike Start's `already_active`), so there is a single generic message.
+ * for a single row so `SprintsTab` stays a pure view. Completing has one user-correctable
+ * failure — `stale`, meaning the sprint left `active` under a view this row was rendered
+ * from — so it gets its own message telling the user to refresh. Everything else is the
+ * generic retry copy.
  *
  * On success it hands up BOTH the completed sprint and the tickets that returned to the
  * backlog, so the shell can patch the sprint row and the ticket list in one update.
@@ -31,7 +33,11 @@ export function CompleteSprintButton({
       onCompleted(result.sprint, result.returnedTickets)
       return
     }
-    setError('Something went wrong. Please try again.')
+    setError(
+      result.error === 'stale'
+        ? 'This sprint is no longer active. Refresh to see its current state.'
+        : 'Something went wrong. Please try again.',
+    )
   }
 
   return (

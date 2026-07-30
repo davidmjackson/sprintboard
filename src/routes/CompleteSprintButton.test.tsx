@@ -64,4 +64,17 @@ describe('CompleteSprintButton', () => {
     resolve({ ok: true, sprint: { ...sprint, status: 'complete' }, returnedTickets: [] })
     await screen.findByRole('button', { name: 'Complete' })
   })
+
+  it('shows a distinct refresh message when the sprint is no longer active', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
+    const onCompleted = vi.fn()
+
+    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This sprint is no longer active. Refresh to see its current state.',
+    )
+    expect(onCompleted).not.toHaveBeenCalled()
+  })
 })
