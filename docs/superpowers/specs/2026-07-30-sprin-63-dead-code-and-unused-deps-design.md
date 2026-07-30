@@ -165,11 +165,19 @@ Restoration is automatic rather than manual: `components.json` sets `cssVariable
 ### 7. `@vitest/coverage-v8` leaves `devDependencies`
 
 Referenced by nothing: no `coverage` script, no `--coverage` flag in any workflow, and coverage
-is not gated — the T7/80%-coverage question is closed. Re-adding it is one `npm i -D` if the
-SPRIN-58 re-scope ever wants a coverage measurement. **Recorded tension:** SPRIN-58 is the one
-open story that might plausibly want it. Removing it now and reinstalling later is cheaper than
-carrying an unreferenced dependency against a story whose premise is itself unsettled, and the
-epic's rule is to remove what is dead *today*.
+is not gated — the T7/80%-coverage question is closed.
+
+**Corrected after measuring, because the first version of this section overstated the cost.**
+The concern written here initially was that SPRIN-58 might be re-scoped to a coverage
+measurement and want this back. It would not have to be: `@vitest/coverage-v8` is an
+*optional peer dependency of vitest*, so it stays resolvable after the direct declaration is
+removed. Verified rather than assumed — `npm ls` reports it under `vitest@4.1.10`, and
+`npx vitest run <file> --coverage` still produces a report on this branch.
+
+So the honest scope of this change is narrower than "removes a dependency": it stops
+`package.json` **declaring** a package the project does not directly use, while the tool stays
+available through vitest. Install weight does not move. That is still the right change — a
+manifest should say what the project depends on — but it should not be sold as a saving.
 
 ---
 
