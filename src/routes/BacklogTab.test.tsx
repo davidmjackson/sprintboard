@@ -82,24 +82,20 @@ describe('BacklogTab keyboard reachability (SPRIN-61 AC6)', () => {
   })
 })
 
-// SPRIN-63. Until this block existed the loading branch was pinned by NOTHING — every case
-// above defaults to `ticketsPhase: 'loaded'` — so removing the vacuous
-// `&& backlog.length === 0` conjunct from its guard would have gone green whether it was
-// right or wrong. These two tests are what make the branch load-bearing, and they fail in
-// opposite directions on purpose.
-describe('BacklogTab does not claim an empty backlog while the read is in flight', () => {
-  // Kills DELETING the branch: fall through and an in-flight read renders
-  // "Nothing in the backlog." — a confident claim about work we have not seen yet, the
-  // same defect the `failed`-before-empty ordering exists to prevent.
-  it('renders Loading, not the empty state, while tickets are loading', () => {
-    renderTab(BacklogTab, ctxWith({ tickets: [] as never, ticketsPhase: 'loading' }))
-
-    expect(screen.getByText('Loading…')).toBeInTheDocument()
-    expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument()
-  })
-
-  // Kills RE-ADDING the conjunct: with it back, a loading phase carrying rows falls
-  // through and paints a list the read has not confirmed. The state is unreachable today
+// SPRIN-63, and the scope of this test is narrower than it first looks — stated precisely
+// because the first draft of this comment got it wrong.
+//
+// DELETING the `ticketsPhase === 'loading'` branch was ALREADY pinned, by
+// `BoardTab.test.tsx:551` and `:556`, which render this same component through the same
+// harness with an empty, loading context. Nothing here is needed for that.
+//
+// What was pinned by nothing is the `&& backlog.length === 0` CONJUNCT that guard used to
+// carry: no test anywhere renders BacklogTab loading AND holding rows, so removing the
+// conjunct would have gone green whether it was right or wrong. That single gap is what
+// this test closes.
+describe('BacklogTab does not paint an unconfirmed list while the read is in flight', () => {
+  // Kills RE-ADDING the conjunct: with it back, a loading phase carrying rows falls through
+  // and paints a list the read has not confirmed. The state is unreachable today
   // (`useTaggedRead` derives phase and items from one binding), which is exactly why the
   // guard must not depend on it — a guard that is only correct because of a coupling
   // enforced somewhere else is one refactor away from being wrong.

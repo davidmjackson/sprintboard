@@ -1,5 +1,5 @@
-# Planning docs and the schema are authored by hand and reviewed as prose.
-# Prettier reflows them into noisy diffs that bury real changes.
+# Planning docs are authored by hand and reviewed as prose (the schema included — it lives
+# under docs/). Prettier reflows them into noisy diffs that bury real changes.
 docs/
 CLAUDE.md
 

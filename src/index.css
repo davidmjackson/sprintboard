@@ -3,6 +3,20 @@
 @import 'shadcn/tailwind.css';
 @import '@fontsource-variable/geist';
 
+/* Markdown is prose, not a template. Tailwind v4 auto-source-detection scans the whole
+   non-ignored tree, so naming a utility inside a design doc or CLAUDE.md compiles a real
+   rule into the production stylesheet. Measured at SPRIN-63: this slice's own spec added
+   ~1.6 kB of animation and radius rules that nothing renders, and an amber text colour
+   named only in a planning doc had been shipping for weeks. Nothing in `npm run verify`
+   can see it — jsdom computes no styles and Playwright runs the default colour scheme.
+   Excluding .md fixes the class of problem rather than one document, and leaves
+   documentation free to name the utilities it is documenting.
+
+   Note the same rule applies to THIS file: a comment here is scanned, so describe
+   utilities rather than spelling them. That is not hypothetical — the first draft of this
+   comment shipped a rule for the very class it was warning about. */
+@source not '../**/*.md';
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

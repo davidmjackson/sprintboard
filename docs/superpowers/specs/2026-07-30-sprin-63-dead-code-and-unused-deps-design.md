@@ -41,11 +41,20 @@ to default to "not dead" under uncertainty. **25 candidates, 10 survived, 15 wer
 The sweep's single most valuable output was **killing a candidate this document's author had
 already written into the Jira issue as fact**: that `shadcn` sits in `dependencies` while being
 a CLI imported by nothing. It is not. `src/index.css:3` is `@import 'shadcn/tailwind.css'`,
-resolved through the package's exports map, and its `@utility`/`@custom-variant` output is
-demonstrably in the built CSS (`shimmer`, `shimmer-angle`, `shimmer-text-fill` appear in
-`dist/` and nowhere in `src/`). **Removing it would have failed `npm run build`, inside the
-required gate.** A JS/TS dependency scanner cannot see this because it never opens a `.css`
-file — which is exactly why the second pass existed. Verified independently before accepting.
+resolved through the package's exports map, so **removing it fails `npm run build` outright,
+inside the required gate.** A JS/TS dependency scanner cannot see this because it never opens a
+`.css` file — which is exactly why the second pass existed. Verified independently before
+accepting.
+
+*Corrected during review, and the correction is instructive.* The first version of this
+paragraph offered a second piece of evidence: that the package's `@utility` output was
+"demonstrably in the built CSS" because certain animation utility names appeared in `dist/`.
+A reviewer measured it and that was wrong — on `origin/main` only the unconditional
+`@property` registrations ship, with no rule body at all, so the observation showed the
+utility was *unused*, not in use. It was also **self-confirming**: this very document
+mentioning those names is what compiled them into `dist/` (see the build note below), so a
+future session re-running the grep would have "verified" the claim against evidence the
+document itself manufactured. The import is the load-bearing argument; the grep was noise.
 
 The other 14 kills are recorded in the PR; two are worth naming here because they are the kind
 of "obvious tidy-up" a future session will re-propose:
@@ -92,13 +101,23 @@ phase alone, so this converges the two tabs. Deleting the whole branch would let
 fall through to *"Nothing in the backlog."* — a confident claim about work we have not seen,
 which is the exact defect the `failed`-before-empty ordering below it exists to prevent.
 
-**This is the one item that gets a new test, and it is not optional.** `BacklogTab.test.tsx`
-never sets `ticketsPhase: 'loading'` — line 38 defaults every case to `'loaded'`. The loading
-branch is currently pinned by nothing, so the deletion goes green **whether it is right or
-wrong**: precisely the shape this project has been bitten by before. A test asserting that
-`ticketsPhase: 'loading'` renders "Loading…" and *not* "Nothing in the backlog." makes the
-branch's survival load-bearing. It must be seen to fail against a deliberately broken version,
-not merely observed to pass.
+**This item gets a new test, and the reason is narrower than the first draft of this section
+claimed.** That draft said the loading branch "is currently pinned by nothing" — it observed
+that `BacklogTab.test.tsx` never sets `ticketsPhase: 'loading'` (line 38 defaults every case
+to `'loaded'`) and generalised from one file to the suite. A reviewer refuted it by grep:
+`BoardTab.test.tsx:551` and `:556` render *this same component* through the same harness with
+an empty, loading context, so **deleting the branch was already pinned** and would already
+have gone red.
+
+What is genuinely pinned by nothing is the **conjunct**. No test anywhere renders `BacklogTab`
+with `ticketsPhase: 'loading'` *and* a non-empty backlog — the only state in which the two
+guards differ — so removing it would go green whether it was right or wrong. That single gap
+is what the new test closes, and the first draft of this work also added a second test that
+merely restated `BoardTab.test.tsx:551`; it has been dropped rather than shipped as new
+coverage. Adding a redundant test inside a PR about removing redundancy is not a small irony.
+
+The surviving test must be *seen* to fail against a deliberately broken version, not merely
+observed to pass.
 
 ### 3. `.prettierignore` loses `api/` and `*.sql`
 
@@ -178,6 +197,37 @@ So the honest scope of this change is narrower than "removes a dependency": it s
 `package.json` **declaring** a package the project does not directly use, while the tool stays
 available through vitest. Install weight does not move. That is still the right change — a
 manifest should say what the project depends on — but it should not be sold as a saving.
+
+### 8. Markdown is excluded from Tailwind's source scanning
+
+**Added during review, after a reviewer measured the branch and found it shipping a *larger*
+stylesheet than `main`.** This is the finding of the whole slice.
+
+Tailwind v4's auto-source-detection scans the entire non-ignored tree. Writing a bare utility
+name in prose therefore compiles a real rule into the production stylesheet — so **this very
+design document was adding ~1.6 kB of dead CSS**: animation rules and a radius utility that
+nothing in the app renders, emitted purely because the document discusses them. Measured:
+
+| Tree | `dist/assets/*.css` |
+|---|---|
+| `origin/main` | 46,401 B |
+| this branch, before the fix | 47,164 B |
+| this branch, after `@source not '../**/*.md'` | **43,590 B** |
+
+A "remove dead code" slice was shipping 763 bytes *more* CSS than the branch it deletes from.
+Nothing in `npm run verify` could see it: jsdom computes no styles and Playwright runs the
+default colour scheme.
+
+The fix excludes `.md` from scanning rather than contorting the prose, because the alternative
+does not scale — every future design document would have to avoid naming the classes it exists
+to discuss, and one slip silently re-pollutes the bundle. Excluding markdown fixes the class of
+problem. It also drops a pre-existing instance nobody had noticed: an amber text colour named
+only in a protected planning document had been shipping in the production stylesheet for weeks.
+
+**The trap bites CSS comments too**, and it bit this one: the first draft of the comment
+explaining the exclusion *named the class it was warning about*, in `src/index.css` — which is
+a stylesheet, not markdown, and so is still scanned. It compiled exactly the rule it was
+documenting. The comment now describes utilities instead of spelling them.
 
 ---
 
