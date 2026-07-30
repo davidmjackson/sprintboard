@@ -23,7 +23,13 @@ export function BacklogTab() {
 
   const backlog = selectBacklogTickets(tickets)
 
-  if (ticketsPhase === 'loading' && backlog.length === 0) {
+  // Guarded on the phase alone, as `BoardTab` is. `useTaggedRead` derives `phase` and
+  // `items` from one binding, so 'loading' already implies an empty list — an extra
+  // `backlog.length === 0` conjunct could never be false here and was only ever
+  // transcribed from a plan draft. The branch itself is load-bearing: without it a
+  // loading read falls through to "Nothing in the backlog.", the same false claim the
+  // `failed` check below exists to prevent.
+  if (ticketsPhase === 'loading') {
     return <p className="text-muted-foreground text-sm">Loading…</p>
   }
 
