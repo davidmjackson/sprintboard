@@ -131,10 +131,14 @@ export function SprintsTab() {
                 {SPRINT_STATUS_LABELS[sprint.status]}
               </span>
               {sprint.status === 'future' ? (
-                <StartSprintButton sprint={sprint} onStarted={onSprintUpdated} />
+                <StartSprintButton sprint={sprint} onStarted={onSprintUpdated} onRetry={onRetry} />
               ) : null}
               {sprint.status === 'active' ? (
-                <CompleteSprintButton sprint={sprint} onCompleted={onSprintCompleted} />
+                <CompleteSprintButton
+                  sprint={sprint}
+                  onCompleted={onSprintCompleted}
+                  onRetry={onRetry}
+                />
               ) : null}
             </li>
           ))}

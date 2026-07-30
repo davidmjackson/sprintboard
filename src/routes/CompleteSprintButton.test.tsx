@@ -29,7 +29,7 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: true, sprint: completed, returnedTickets })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} onRetry={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(mockComplete).toHaveBeenCalledWith('s1')
@@ -40,7 +40,7 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} onRetry={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -57,7 +57,7 @@ describe('CompleteSprintButton', () => {
       }),
     )
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} />)
+    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} onRetry={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(screen.getByRole('button', { name: 'Completing…' })).toBeDisabled()
@@ -69,12 +69,49 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} onRetry={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'This sprint is no longer active. Refresh to see its current state.',
     )
     expect(onCompleted).not.toHaveBeenCalled()
+  })
+
+  it('triggers the shell refetch on a stale result, so the row self-corrects', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
+    const onRetry = vi.fn()
+
+    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} onRetry={onRetry} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+    await screen.findByRole('alert')
+
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trigger the shell refetch on an unknown failure', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
+    const onRetry = vi.fn()
+
+    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} onRetry={onRetry} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+    await screen.findByRole('alert')
+
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger the shell refetch on success', async () => {
+    mockComplete.mockResolvedValue({
+      ok: true,
+      sprint: { ...sprint, status: 'complete' },
+      returnedTickets: [],
+    })
+    const onRetry = vi.fn()
+
+    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} onRetry={onRetry} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
+    await screen.findByRole('button', { name: 'Complete' })
+
+    expect(onRetry).not.toHaveBeenCalled()
   })
 })

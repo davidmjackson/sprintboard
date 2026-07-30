@@ -13,13 +13,23 @@ import { Button } from '@/components/ui/button'
  *
  * On success it hands up BOTH the completed sprint and the tickets that returned to the
  * backlog, so the shell can patch the sprint row and the ticket list in one update.
+ *
+ * A `stale` result also calls `onRetry` — the shell's `onRetry`, threaded down as a prop —
+ * so the row self-corrects instead of dead-ending: without it, the badge would keep reading
+ * `active`, the button would keep offering a complete the guard will keep refusing, and the
+ * ticket count would keep counting a ticket the database already returned to the backlog. The
+ * error message is set FIRST, for the same unmount reason `StartSprintButton` documents: a
+ * successful refetch can change this sprint's status and unmount the button, so nothing may
+ * be set on it after `onRetry` runs.
  */
 export function CompleteSprintButton({
   sprint,
   onCompleted,
+  onRetry,
 }: {
   sprint: Sprint
   onCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
+  onRetry: () => void
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +53,7 @@ export function CompleteSprintButton({
         ? 'This sprint is no longer active. Refresh to see its current state.'
         : 'Something went wrong. Please try again.',
     )
+    if (result.error === 'stale') onRetry()
   }
 
   return (

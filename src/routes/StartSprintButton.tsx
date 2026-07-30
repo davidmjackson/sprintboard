@@ -20,13 +20,22 @@ const START_ERRORS: Record<'already_active' | 'stale' | 'unknown', string> = {
  * `setPending(false)` runs BEFORE `onStarted`: a successful start flips the sprint out of
  * `future`, so `SprintsTab` stops rendering this button and it unmounts — no state is set
  * on it afterwards.
+ *
+ * A `stale` result also calls `onRetry` — the shell's `onRetry`, threaded down as a prop —
+ * so the row self-corrects instead of dead-ending: without it, the badge would keep reading
+ * `future` and the button would keep offering a start the guard will keep refusing. The error
+ * message is set FIRST, for the same unmount reason as `setPending`/`onStarted` above: a
+ * successful refetch can change this sprint's status and unmount the button, so nothing may
+ * be set on it after `onRetry` runs.
  */
 export function StartSprintButton({
   sprint,
   onStarted,
+  onRetry,
 }: {
   sprint: Sprint
   onStarted: (sprint: Sprint) => void
+  onRetry: () => void
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -41,6 +50,7 @@ export function StartSprintButton({
       return
     }
     setError(START_ERRORS[result.error])
+    if (result.error === 'stale') onRetry()
   }
 
   return (
