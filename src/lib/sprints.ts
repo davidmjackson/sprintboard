@@ -204,6 +204,15 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * existence and never mutating another owner's sprint holds exactly as before — RLS still
  * scopes both writes underneath, in case anything upstream of this function ever calls them
  * directly.
+ *
+ * This safety depends on `sprints_owner` being a single `for all` policy: the same predicate
+ * governs the guard's `select` and both writes, so "can read this sprint's status" and "can
+ * write it" are the same fact today. Rung 3's membership model (CLAUDE.md's forward-compat
+ * rules) could break that equivalence — e.g. a member who can `select` a sprint but not
+ * `update` it would pass this guard and reach the ticket move first. RLS would still filter
+ * that `update` to zero rows, so this stays defence-in-depth rather than an actual hole, but
+ * whoever writes that migration needs to know the guard currently assumes read and write are
+ * co-extensive, and should re-check this function once they aren't.
  */
 export type CompleteSprintResult =
   | { ok: true; sprint: Sprint; returnedTickets: Ticket[] }
