@@ -187,17 +187,28 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * atomic across all matching rows and returns them via `.select()` for the UI's local patch —
  * these are the database's own post-update rows, not a guess.
  *
- * No user-correctable failure exists here (no unique index on `complete`; a re-complete and a
- * re-null are both legal), so a single `'unknown'` like `createSprint`. RLS (`sprints_owner` /
- * `tickets_owner`) scopes both writes through the owned project. For a cross-tenant caller the
- * bulk update filters to zero rows and returns NO error (an UPDATE matching nothing is not an
- * error), so it cannot be the gate — the status flip's `.single()` on a zero-row match errors
- * and becomes `'unknown'`, never leaking existence and never mutating another owner's sprint.
+ * A sprint can only be completed from `active`, and the gate has to precede the ticket move:
+ * `requireSprintStatus` runs FIRST so a `future` or already-`complete` sprint is rejected
+ * having moved nothing. A re-complete used to be silently legal and is now `stale` — a
+ * user-correctable failure, so it gets its own tag and its own message. The
+ * `status = 'active'` filter on the flip is a compare-and-swap for the window between the
+ * read and the write; a lost race there is `unknown` and self-corrects on retry.
+ *
+ * RLS (`sprints_owner` / `tickets_owner`) scopes both writes through the owned project. For a
+ * cross-tenant caller the bulk update filters to zero rows and returns NO error (an UPDATE
+ * matching nothing is not an error), so it cannot be the gate — the status flip's `.single()`
+ * on a zero-row match errors and becomes `'unknown'`, never leaking existence and never
+ * mutating another owner's sprint.
  */
 export type CompleteSprintResult =
-  { ok: true; sprint: Sprint; returnedTickets: Ticket[] } | { ok: false; error: 'unknown' }
+  | { ok: true; sprint: Sprint; returnedTickets: Ticket[] }
+  | { ok: false; error: 'stale' }
+  | { ok: false; error: 'unknown' }
 
 export async function completeSprint(id: string): Promise<CompleteSprintResult> {
+  const guard = await requireSprintStatus(id, 'active')
+  if (!guard.ok) return guard
+
   const { data: moved, error: ticketsError } = await supabase
     .from('tickets')
     .update({ sprint_id: null } satisfies TicketUpdate)
@@ -211,6 +222,7 @@ export async function completeSprint(id: string): Promise<CompleteSprintResult> 
     .from('sprints')
     .update({ status: 'complete' } satisfies SprintStatusUpdate)
     .eq('id', id)
+    .eq('status', 'active')
     .select()
     .single()
 

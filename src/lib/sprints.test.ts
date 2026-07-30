@@ -288,37 +288,56 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
 }
 
 describe('completeSprint', () => {
-  // tickets: update({sprint_id:null}).eq('sprint_id',id).neq('status','done').select() -> {data,error}
-  // sprints: update({status:'complete'}).eq('id',id).select().single()                 -> {data,error}
+  // tickets:    update({sprint_id:null}).eq('sprint_id',id).neq('status','done').select()
+  // guard read: from('sprints').select('status').eq('id', id).single()
+  // sprints:    update({status:'complete'}).eq('id',id).eq('status','active').select().single()
   const ticketsSelect = vi.fn()
   const ticketsNeq = vi.fn(() => ({ select: ticketsSelect }))
   const ticketsEq = vi.fn(() => ({ neq: ticketsNeq }))
   const ticketsUpdate = vi.fn(() => ({ eq: ticketsEq }))
 
+  const guardSingleC = vi.fn()
+  const guardEq = vi.fn(() => ({ single: guardSingleC }))
+  const guardSelect = vi.fn(() => ({ eq: guardEq }))
+
   const sprintSingle = vi.fn()
   const sprintSelect = vi.fn(() => ({ single: sprintSingle }))
-  const sprintEq = vi.fn(() => ({ select: sprintSelect }))
+  const sprintEq: ReturnType<typeof vi.fn> = vi.fn(() => ({
+    eq: sprintEq,
+    select: sprintSelect,
+  }))
   const sprintUpdate = vi.fn(() => ({ eq: sprintEq }))
+
+  /** Stub the precondition read. `null` status means the row was not visible. */
+  function guardReturns(status: string | null, error: unknown = null) {
+    guardSingleC.mockResolvedValue({ data: status === null ? null : { status }, error })
+  }
 
   beforeEach(() => {
     ticketsSelect.mockReset()
     ticketsNeq.mockReset().mockReturnValue({ select: ticketsSelect })
     ticketsEq.mockReset().mockReturnValue({ neq: ticketsNeq })
     ticketsUpdate.mockReset().mockReturnValue({ eq: ticketsEq })
+    guardSingleC.mockReset()
+    guardEq.mockReset().mockReturnValue({ single: guardSingleC })
+    guardSelect.mockReset().mockReturnValue({ eq: guardEq })
     sprintSingle.mockReset()
     sprintSelect.mockReset().mockReturnValue({ single: sprintSingle })
-    sprintEq.mockReset().mockReturnValue({ select: sprintSelect })
+    sprintEq.mockReset().mockReturnValue({ eq: sprintEq, select: sprintSelect })
     sprintUpdate.mockReset().mockReturnValue({ eq: sprintEq })
     vi.mocked(supabase.from).mockReset()
     vi.mocked(supabase.from).mockImplementation(
       (table: string) =>
         (table === 'tickets'
           ? { update: ticketsUpdate }
-          : { update: sprintUpdate }) as unknown as ReturnType<typeof supabase.from>,
+          : { update: sprintUpdate, select: guardSelect }) as unknown as ReturnType<
+          typeof supabase.from
+        >,
     )
   })
 
   it('moves incomplete tickets to the backlog, then flips the sprint to complete', async () => {
+    guardReturns('active')
     const moved = [ticket({ id: 't1', sprint_id: null })]
     const completed = sprint({ status: 'complete' })
     ticketsSelect.mockResolvedValue({ data: moved, error: null })
@@ -333,10 +352,13 @@ describe('completeSprint', () => {
     // Step 2: flip status.
     expect(sprintUpdate).toHaveBeenCalledWith({ status: 'complete' })
     expect(sprintEq).toHaveBeenCalledWith('id', 's1')
+    // Compare-and-swap on the flip: closes the window between the guard read and the write.
+    expect(sprintEq).toHaveBeenCalledWith('status', 'active')
     expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: moved })
   })
 
   it('does not flip the status if the ticket move fails (ordering is load-bearing)', async () => {
+    guardReturns('active')
     ticketsSelect.mockResolvedValue({ data: null, error: { message: 'offline' } })
 
     const result = await completeSprint('s1')
@@ -346,6 +368,7 @@ describe('completeSprint', () => {
   })
 
   it('maps a failed status flip to unknown', async () => {
+    guardReturns('active')
     ticketsSelect.mockResolvedValue({ data: [], error: null })
     sprintSingle.mockResolvedValue({ data: null, error: { code: 'PGRST116' } })
 
@@ -355,6 +378,7 @@ describe('completeSprint', () => {
   })
 
   it('treats a sprint with nothing to move as success (empty returnedTickets)', async () => {
+    guardReturns('active')
     const completed = sprint({ status: 'complete' })
     ticketsSelect.mockResolvedValue({ data: [], error: null })
     sprintSingle.mockResolvedValue({ data: completed, error: null })
@@ -362,5 +386,38 @@ describe('completeSprint', () => {
     const result = await completeSprint('s1')
 
     expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: [] })
+  })
+
+  it('refuses to complete a future sprint and moves NO tickets', async () => {
+    // The assertion with teeth. The ticket move runs BEFORE the status flip, so a guard that
+    // only filtered the flip would strip sprint_id from this sprint's tickets and *then*
+    // report failure — worse than no guard at all.
+    guardReturns('future')
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'stale' })
+    expect(ticketsUpdate).not.toHaveBeenCalled()
+    expect(sprintUpdate).not.toHaveBeenCalled()
+  })
+
+  it('refuses to re-complete an already-complete sprint and moves NO tickets', async () => {
+    guardReturns('complete')
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'stale' })
+    expect(ticketsUpdate).not.toHaveBeenCalled()
+    expect(sprintUpdate).not.toHaveBeenCalled()
+  })
+
+  it('maps a failed precondition read to unknown and moves NO tickets', async () => {
+    // Zero rows is a deleted sprint OR another owner's — never distinguished, never 'stale'.
+    guardReturns(null, { code: 'PGRST116' })
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+    expect(ticketsUpdate).not.toHaveBeenCalled()
   })
 })
