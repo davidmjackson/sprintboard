@@ -12,9 +12,10 @@ const START_ERRORS: Record<'already_active' | 'stale' | 'unknown', string> = {
 
 /**
  * Starts one sprint. Owns the async call, its pending state, and the error message for a
- * single row so `SprintsTab` stays a pure view. The `already_active` case (the partial
- * unique index rejecting a second active sprint) is user-correctable, so it gets a clear,
- * specific message; anything else is the generic retry copy, matching `CreateSprintDialog`.
+ * single row so `SprintsTab` stays a pure view. Two of the three failure tags are
+ * user-correctable and get their own specific message: `already_active` (the partial unique
+ * index rejecting a second active sprint) and `stale` (the view is out of date). `unknown` is
+ * the only one that falls back to the generic retry copy, matching `CreateSprintDialog`.
  *
  * `setPending(false)` runs BEFORE `onStarted`: a successful start flips the sprint out of
  * `future`, so `SprintsTab` stops rendering this button and it unmounts — no state is set

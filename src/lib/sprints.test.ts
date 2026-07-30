@@ -202,6 +202,10 @@ describe('startSprint', () => {
 
     const result = await startSprint('s1')
 
+    // The guard read itself: pins `.eq('id', ...)` against a copy-paste to `.eq('project_id',
+    // ...)`, which would still pass typecheck, lint and every other unit test — only the live
+    // suite would catch it. Within this describe `eq` is called only by the guard read.
+    expect(eq).toHaveBeenCalledWith('id', 's1')
     expect(update).toHaveBeenCalledWith({ status: 'active' })
     expect(updateEq).toHaveBeenCalledWith('id', 's1')
     // The compare-and-swap: the update itself refuses a sprint that left `future`
@@ -234,6 +238,19 @@ describe('startSprint', () => {
     // Zero rows covers BOTH a deleted sprint and another owner's sprint — RLS makes them
     // indistinguishable and they must stay so. Never 'stale', which would confirm existence.
     guardReturns(null, { code: 'PGRST116' })
+
+    const result = await startSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('maps a null data with no error to unknown and writes nothing (defensive branch)', async () => {
+    // `.single()` in practice always pairs a zero-row match with an error, so `data: null,
+    // error: null` is not reachable through Supabase today — but `requireSprintStatus` guards
+    // it anyway (`if (error || !data)`). Without the `!data` half, this response would fall
+    // through to `data.status` and throw an unhandled TypeError out of the button's `await`.
+    guardSingle.mockResolvedValue({ data: null, error: null })
 
     const result = await startSprint('s1')
 
@@ -345,6 +362,10 @@ describe('completeSprint', () => {
 
     const result = await completeSprint('s1')
 
+    // The guard read itself: pins `.eq('id', ...)` against a copy-paste to `.eq('project_id',
+    // ...)`, which would still pass typecheck, lint and every other unit test — only the live
+    // suite would catch it.
+    expect(guardEq).toHaveBeenCalledWith('id', 's1')
     // Step 1: bulk-null only the NOT-done tickets of this sprint.
     expect(ticketsUpdate).toHaveBeenCalledWith({ sprint_id: null })
     expect(ticketsEq).toHaveBeenCalledWith('sprint_id', 's1')
@@ -414,6 +435,18 @@ describe('completeSprint', () => {
   it('maps a failed precondition read to unknown and moves NO tickets', async () => {
     // Zero rows is a deleted sprint OR another owner's — never distinguished, never 'stale'.
     guardReturns(null, { code: 'PGRST116' })
+
+    const result = await completeSprint('s1')
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+    expect(ticketsUpdate).not.toHaveBeenCalled()
+  })
+
+  it('maps a null data with no error to unknown and moves NO tickets (defensive branch)', async () => {
+    // Same defensive branch as `startSprint`'s equivalent test — `requireSprintStatus` is
+    // shared by both functions. See that test for why `data: null, error: null` matters even
+    // though `.single()` cannot produce it today.
+    guardSingleC.mockResolvedValue({ data: null, error: null })
 
     const result = await completeSprint('s1')
 

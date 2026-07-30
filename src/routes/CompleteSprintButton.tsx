@@ -33,6 +33,11 @@ export function CompleteSprintButton({
       onCompleted(result.sprint, result.returnedTickets)
       return
     }
+    // A two-branch ternary, deliberately, unlike Start's exhaustiveness-checked
+    // `START_ERRORS` record: `CompleteSprintResult` only ever has two error tags today. That
+    // also means this is NOT compiler-checked the way Start's is — a future third tag on
+    // `CompleteSprintResult` would compile silently and fall through to the generic message
+    // below rather than raising a TS7053. If a third tag is ever added here, revisit this.
     setError(
       result.error === 'stale'
         ? 'This sprint is no longer active. Refresh to see its current state.'

@@ -194,11 +194,16 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * `status = 'active'` filter on the flip is a compare-and-swap for the window between the
  * read and the write; a lost race there is `unknown` and self-corrects on retry.
  *
- * RLS (`sprints_owner` / `tickets_owner`) scopes both writes through the owned project. For a
- * cross-tenant caller the bulk update filters to zero rows and returns NO error (an UPDATE
- * matching nothing is not an error), so it cannot be the gate — the status flip's `.single()`
- * on a zero-row match errors and becomes `'unknown'`, never leaking existence and never
- * mutating another owner's sprint.
+ * RLS (`sprints_owner` / `tickets_owner`) scopes both writes through the owned project, but for
+ * a cross-tenant caller neither write is what stops the mutation: `requireSprintStatus`'s
+ * precondition read is RLS-scoped too, so a cross-tenant id matches zero rows there and the
+ * function returns `'unknown'` before either write runs. (Before this guard existed, the bulk
+ * update was the thing that actually protected a cross-tenant sprint — it filtered to zero rows
+ * and returned NO error, since an UPDATE matching nothing is not an error. That mechanism is
+ * gone now: the guard is the gate, not a redundant belt-and-braces on top of it.) Never leaking
+ * existence and never mutating another owner's sprint holds exactly as before — RLS still
+ * scopes both writes underneath, in case anything upstream of this function ever calls them
+ * directly.
  */
 export type CompleteSprintResult =
   | { ok: true; sprint: Sprint; returnedTickets: Ticket[] }

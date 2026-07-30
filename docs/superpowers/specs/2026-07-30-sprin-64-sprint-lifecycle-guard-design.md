@@ -62,8 +62,9 @@ async function requireSprintStatus(id: string, expected: SprintStatus): Promise<
 Then each transition adds its own status filter to the update it already performs —
 `.eq('status', 'future')` on the start, `.eq('status', 'active')` on the complete's flip. The
 precondition read is the gate; the filter closes the window between the read and the write. A
-zero-row match on an update whose precondition just passed is a concurrent transition, so it
-also maps to `stale`.
+zero-row match on an update whose precondition just passed is a lost race — the filter's job is
+to prevent the wrong write, not to produce a nice message — so it maps to `unknown` rather than
+`stale`; a retry hits the guard fresh and reports `stale` correctly.
 
 Why the guard is expressed the same way in both functions, at the cost of one extra round trip on
 start: the read is what makes `stale` distinguishable from `unknown` **honestly**. A conditional
@@ -120,7 +121,15 @@ so the result is `unknown` and never `stale` — the guard cannot be used as an 
 This is the one property in the change worth attacking directly, so it gets both a unit test and a
 live cross-tenant test, and the reviewer is briefed to try to break it. Under the new code a
 cross-tenant `completeSprint` performs **no writes at all** (today its ticket move runs and is
-filtered to zero rows by RLS) — a strict improvement, and asserted.
+filtered to zero rows by RLS) — a strict improvement.
+
+That "no writes at all" claim is proven by the unit test `'maps a failed precondition read to
+unknown and moves NO tickets'` (`src/lib/sprints.test.ts`), which asserts `ticketsUpdate` was
+never called on a failed precondition read. The two live cross-tenant tests
+(`src/test/sprints.integration.test.ts`) assert the same outcome the pre-branch code already
+produced — the sprint stays `active`, the ticket stays attached — so they are a **positive
+control**: proof the guard's `unknown` result still leaves the database exactly where a
+cross-tenant caller found it, not evidence that distinguishes the old code from the new.
 
 ## Testing
 
@@ -132,7 +141,8 @@ not merely that the error tag came back — a tag is a claim, an un-called mock 
 - `startSprint` happy path still returns the sprint, and the update carries `('status','future')`.
 - `startSprint` `23505` → `already_active` still (AC4).
 - `startSprint` precondition read failure → `unknown`; zero-row update after a passing
-  precondition → `stale`.
+  precondition → `unknown` (a lost race, not a nice message — retry hits the guard and reports
+  `stale`).
 - `completeSprint` on `future` and on `complete` → `stale`, **and the tickets update never
   called** (AC2 — this is the assertion with teeth).
 - `completeSprint` happy path: move still runs first, flip carries `('status','active')`.

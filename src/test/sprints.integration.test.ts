@@ -308,8 +308,9 @@ describe.skipIf(!hasRlsCredentials)(
         await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
       }
 
-      // Re-read as A: the sprint is still active AND its ticket unmoved — proof the bulk update
-      // filtered to zero rows for B too, not just the sprint update.
+      // Re-read as A: the sprint is still active AND its ticket unmoved — proof that B's call
+      // left the database exactly where it found it. The bulk update never even ran for B: the
+      // precondition read is the gate now, and it matched zero rows before either write.
       const { data: s } = await a.from('sprints').select('status').eq('id', id).single()
       expect(s!.status).toBe('active')
       const { data: t } = await a.from('tickets').select('sprint_id').eq('id', todoId).single()
