@@ -35,6 +35,17 @@ export function TicketCard({
           <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] font-medium uppercase">
             {TICKET_TYPE_LABELS[ticket.type]}
           </span>
+          {/* `!= null`, not a falsy check: 0 is a real estimate, not "unestimated" — the
+              same rule the backlog row follows. The unit is real `sr-only` text rather
+              than an `aria-label`, because a <span> is `role="generic"` and ARIA 1.2
+              prohibits aria-label there; the card is a <button>, so this text joins its
+              accessible name. */}
+          {ticket.story_points != null ? (
+            <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums">
+              {ticket.story_points}
+              <span className="sr-only"> story points</span>
+            </span>
+          ) : null}
         </div>
       </div>
       <p className="text-sm">{ticket.summary}</p>
