@@ -22,3 +22,7 @@ test-results/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Subagent-driven-development scratch: ledgers, task briefs, review packages.
+# .prettierignore already described this path as gitignored; it was not.
+.superpowers/
