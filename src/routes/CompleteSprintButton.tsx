@@ -18,9 +18,8 @@ import { Button } from '@/components/ui/button'
  * so the row self-corrects instead of dead-ending: without it, the badge would keep reading
  * `active`, the button would keep offering a complete the guard will keep refusing, and the
  * ticket count would keep counting a ticket the database already returned to the backlog. The
- * error message is set FIRST, for the same unmount reason `StartSprintButton` documents: a
- * successful refetch can change this sprint's status and unmount the button, so nothing may
- * be set on it after `onRetry` runs.
+ * error message is set FIRST as a defensive measure, ensuring it displays regardless of
+ * whether the refetch unmounts this component.
  */
 export function CompleteSprintButton({
   sprint,

@@ -24,9 +24,8 @@ const START_ERRORS: Record<'already_active' | 'stale' | 'unknown', string> = {
  * A `stale` result also calls `onRetry` — the shell's `onRetry`, threaded down as a prop —
  * so the row self-corrects instead of dead-ending: without it, the badge would keep reading
  * `future` and the button would keep offering a start the guard will keep refusing. The error
- * message is set FIRST, for the same unmount reason as `setPending`/`onStarted` above: a
- * successful refetch can change this sprint's status and unmount the button, so nothing may
- * be set on it after `onRetry` runs.
+ * message is set FIRST as a defensive measure, ensuring it displays regardless of whether the
+ * refetch unmounts this component.
  */
 export function StartSprintButton({
   sprint,
