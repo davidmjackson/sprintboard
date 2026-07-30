@@ -80,6 +80,9 @@ describe('TicketCard', () => {
     render(<TicketCard ticket={{ ...ticket, story_points: 5 } as Ticket} />)
     expect(screen.getByText('5')).toBeInTheDocument()
     expect(screen.getByText(/story points/i)).toBeInTheDocument()
+    // The whole point of the `sr-only` unit over an `aria-label`: it must join the
+    // *button's* accessible name, not just exist as isolated text somewhere on the page.
+    expect(screen.getByRole('button', { name: /story points/i })).toBeInTheDocument()
   })
 
   // 0 is a real estimate. A falsy guard would hide this badge, silently turning an

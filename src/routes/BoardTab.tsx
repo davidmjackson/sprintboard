@@ -18,7 +18,8 @@ import { TicketCard } from './TicketCard'
  * understated.
  *
  * It is a separate component for two reasons. `BoardTab` sits at the T2 cyclomatic limit
- * of 10, so its two conditionals have to be somebody else's; and the arithmetic itself is
+ * of 10, so its three conditionals (the empty check, the singular/plural count, and the
+ * unestimated count) have to be somebody else's; and the arithmetic itself is
  * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
  *
  * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards

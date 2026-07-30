@@ -39,7 +39,11 @@ export function selectBlockedTickets(tickets: readonly Ticket[]): Ticket[] {
  *  `story_points` is `int` and NULLABLE, and the null case is the point of `unestimated`:
  *  a column whose total is understated by unpointed work must say so rather than quietly
  *  report a smaller number. The guard is `== null`, never a falsy check — **0 is a real
- *  estimate**, not "unestimated", and the difference is the whole signal on a Scrum board. */
+ *  estimate**, not "unestimated", and the difference is the whole signal on a Scrum board.
+ *
+ *  Exported deliberately: it is the named return type of the public `summariseColumn`
+ *  selector below. Nothing imports `ColumnSummary` by name today, but un-exporting it
+ *  would leave a public function signature referencing a private type. Keep the export. */
 export type ColumnSummary = { count: number; points: number; unestimated: number }
 
 export function summariseColumn(tickets: readonly Ticket[]): ColumnSummary {

@@ -85,11 +85,12 @@ export function summariseColumn(tickets: readonly Ticket[]): ColumnSummary
 read together, always, by the same caller, and they are three views of one pass over one list.
 Splitting them would mean three iterations, three test files' worth of setup, and a component
 doing arithmetic assembly — which is the thing AC6 exists to prevent. A single call site per
-column is also a single mutation target: change the `?? 0` and exactly one selector test should
-go red.
+column is also a single mutation target: change the `== null` branch and exactly one selector
+test should go red.
 
-`points` sums `story_points ?? 0`. `unestimated` counts `story_points == null`. Both use
-`!= null` / `== null`, **never a falsy check** — `0` is a real estimate on a Scrum board, not
+`points` sums `story_points` for every ticket where it is not `null` (an `if`/`else` over
+`story_points == null`, adding to `unestimated` on one side and to `points` on the other). Both
+use `!= null` / `== null`, **never a falsy check** — `0` is a real estimate on a Scrum board, not
 "unestimated", and treating it as absent is the exact defect S5.1 already guarded against in the
 backlog row.
 
