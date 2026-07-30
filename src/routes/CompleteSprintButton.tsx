@@ -14,21 +14,22 @@ import { Button } from '@/components/ui/button'
  * On success it hands up BOTH the completed sprint and the tickets that returned to the
  * backlog, so the shell can patch the sprint row and the ticket list in one update.
  *
- * A `stale` result also calls `onRetry` — the shell's `onRetry`, threaded down as a prop —
- * so the row self-corrects instead of dead-ending: without it, the badge would keep reading
- * `active`, the button would keep offering a complete the guard will keep refusing, and the
- * ticket count would keep counting a ticket the database already returned to the backlog. The
- * error message is set FIRST as a defensive measure, ensuring it displays regardless of
- * whether the refetch unmounts this component.
+ * A `stale` result surfaces its message only — it does NOT trigger the shell's refetch. That
+ * was tried (threading an `onRetry` prop down and calling it on `stale`) and reverted: the
+ * refetch bumps the shell's read nonce, `useTaggedRead` drops the in-flight result, and
+ * `SprintsTab` renders `sprints.length === 0` on the very next commit — unmounting this button,
+ * and the alert with it, before the user can read it. The message and an auto-refetch are
+ * mutually exclusive without a notice that outlives the row, and that notice is a UI feature
+ * with its own AC, not a fix to bolt on here. Until it exists, a stale row (and its ticket
+ * count) is stale until the user manually refreshes — cosmetic, never corrupting, and the
+ * message says so.
  */
 export function CompleteSprintButton({
   sprint,
   onCompleted,
-  onRetry,
 }: {
   sprint: Sprint
   onCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
-  onRetry: () => void
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,7 +53,6 @@ export function CompleteSprintButton({
         ? 'This sprint is no longer active. Refresh to see its current state.'
         : 'Something went wrong. Please try again.',
     )
-    if (result.error === 'stale') onRetry()
   }
 
   return (

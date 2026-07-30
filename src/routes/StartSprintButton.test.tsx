@@ -28,7 +28,7 @@ describe('StartSprintButton', () => {
     mockStart.mockResolvedValue({ ok: true, sprint: started })
     const onStarted = vi.fn()
 
-    render(<StartSprintButton sprint={sprint} onStarted={onStarted} onRetry={vi.fn()} />)
+    render(<StartSprintButton sprint={sprint} onStarted={onStarted} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     expect(mockStart).toHaveBeenCalledWith('s1')
@@ -39,7 +39,7 @@ describe('StartSprintButton', () => {
     mockStart.mockResolvedValue({ ok: false, error: 'already_active' })
     const onStarted = vi.fn()
 
-    render(<StartSprintButton sprint={sprint} onStarted={onStarted} onRetry={vi.fn()} />)
+    render(<StartSprintButton sprint={sprint} onStarted={onStarted} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -51,7 +51,7 @@ describe('StartSprintButton', () => {
   it('shows a generic message on an unknown failure', async () => {
     mockStart.mockResolvedValue({ ok: false, error: 'unknown' })
 
-    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} onRetry={vi.fn()} />)
+    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -67,7 +67,7 @@ describe('StartSprintButton', () => {
       }),
     )
 
-    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} onRetry={vi.fn()} />)
+    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     expect(screen.getByRole('button', { name: 'Starting…' })).toBeDisabled()
@@ -80,7 +80,7 @@ describe('StartSprintButton', () => {
     mockStart.mockResolvedValue({ ok: false, error: 'stale' })
     const onStarted = vi.fn()
 
-    render(<StartSprintButton sprint={sprint} onStarted={onStarted} onRetry={vi.fn()} />)
+    render(<StartSprintButton sprint={sprint} onStarted={onStarted} />)
     await userEvent.click(screen.getByRole('button', { name: 'Start' }))
 
     // The exact string, so collapsing this back into the generic copy goes red.
@@ -88,38 +88,5 @@ describe('StartSprintButton', () => {
       'This sprint is no longer waiting to start. Refresh to see its current state.',
     )
     expect(onStarted).not.toHaveBeenCalled()
-  })
-
-  it('triggers the shell refetch on a stale result, so the row self-corrects', async () => {
-    mockStart.mockResolvedValue({ ok: false, error: 'stale' })
-    const onRetry = vi.fn()
-
-    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} onRetry={onRetry} />)
-    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await screen.findByRole('alert')
-
-    expect(onRetry).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not trigger the shell refetch on an unknown failure', async () => {
-    mockStart.mockResolvedValue({ ok: false, error: 'unknown' })
-    const onRetry = vi.fn()
-
-    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} onRetry={onRetry} />)
-    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await screen.findByRole('alert')
-
-    expect(onRetry).not.toHaveBeenCalled()
-  })
-
-  it('does not trigger the shell refetch on success', async () => {
-    mockStart.mockResolvedValue({ ok: true, sprint: { ...sprint, status: 'active' } })
-    const onRetry = vi.fn()
-
-    render(<StartSprintButton sprint={sprint} onStarted={vi.fn()} onRetry={onRetry} />)
-    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
-    await screen.findByRole('button', { name: 'Start' })
-
-    expect(onRetry).not.toHaveBeenCalled()
   })
 })
