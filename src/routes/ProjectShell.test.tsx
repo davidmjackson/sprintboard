@@ -8,7 +8,8 @@ import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
-import type { Sprint, Ticket } from '@/lib/domain'
+import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
+import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
 import { listProjectStatuses } from '@/lib/project-statuses'
@@ -41,6 +42,17 @@ vi.mock('@/lib/sprints', async (orig) => ({
   completeSprint: vi.fn(),
 }))
 
+// What `seed_project_statuses()` writes for every new project, so the default mock describes
+// a project the database could actually produce. It resolved `[]` when Task 4 first wired this
+// read, which was harmless only while nothing consumed the rows; since SPRIN-76's task 5 the
+// board renders one column per row, and `[]` is a project with NO columns — a state SPRIN-80
+// exists to make impossible. Tests about the read itself still override this locally.
+const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
+  ...status,
+  id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+})) as unknown as ProjectStatus[]
+
 const mockList = vi.mocked(listTickets)
 const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
@@ -54,7 +66,7 @@ beforeEach(() => {
   vi.mocked(createSprint).mockReset()
   vi.mocked(startSprint).mockReset()
   vi.mocked(completeSprint).mockReset()
-  mockListStatuses.mockReset().mockResolvedValue([])
+  mockListStatuses.mockReset().mockResolvedValue(SEEDED_STATUSES)
 })
 
 const PROJECTS = [

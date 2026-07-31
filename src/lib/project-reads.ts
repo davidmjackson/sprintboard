@@ -128,8 +128,17 @@ function runRead<T>({ read, projectId, nonce, isActive, setResult }: RunReadArgs
  * that component, since an open `string` channel would let raw PostgREST error text render into
  * a `role="alert"`. Typing this helper to `string` would compile clean and dissolve that
  * control silently, without anyone touching `LoadFailure` itself.
+ *
+ * **`extends string` is what makes that inference actually happen — do not drop it.** It is not
+ * a tidy-up of an unconstrained parameter. Inferring to a *naked* `R` widens each object
+ * literal's `resource` to `string`, so `<R>` alone produced exactly the outcome the paragraph
+ * above warns against. Measured when `BoardTab` became the first consumer (SPRIN-76 task 5):
+ * with `<R>` the board failed to compile with `Type 'string' is not assignable to type
+ * 'LoadFailureResource'`, and with `<R extends string>` it infers the union and compiles. The
+ * failure is loud rather than silent, which is why nothing shipped broken — but the mechanism
+ * this docblock described did not work until the constraint was added.
  */
-export function firstUnready<R>(
+export function firstUnready<R extends string>(
   reads: readonly { resource: R; phase: ReadPhase }[],
 ): { resource: R; phase: 'failed' | 'loading' } | null {
   const failed = reads.find((r) => r.phase === 'failed')

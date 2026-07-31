@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import type { ProjectShellContext } from './ProjectShell'
+import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
+import type { ProjectStatus } from '@/lib/domain'
 import * as tickets from '@/lib/tickets'
 
 vi.mock('@/lib/tickets', async (orig) => ({
@@ -41,6 +43,19 @@ const TICKETS = [
   },
 ] as never
 
+// The four rows `seed_project_statuses()` writes for every new project, shaped as the board
+// receives them. Derived from the seed contract in `domain.ts` rather than retyped, so this
+// harness cannot go on describing a vocabulary the database stopped seeding.
+//
+// The `id`s are deliberately NOTHING like the slugs. `tickets.status` is a text column with a
+// composite fk to `project_statuses (project_id, slug)`, so the board must key and drop on the
+// SLUG; ids that merely resembled slugs would let a `status.id` regression pass unnoticed.
+const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
+  ...status,
+  id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+})) as unknown as ProjectStatus[]
+
 function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
   return {
     project: {} as never,
@@ -48,6 +63,8 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     ticketsPhase: 'loaded',
     sprints: [],
     sprintsPhase: 'loaded',
+    statuses: SEEDED_STATUSES,
+    statusesPhase: 'loaded',
     onRetry: vi.fn(),
     onSprintCreated: vi.fn(),
     onSprintUpdated: vi.fn(),
@@ -108,8 +125,119 @@ function boardCtx(fields: Partial<ProjectShellContext> = {}): ProjectShellContex
   return ctxWith({ tickets: SPRINT_TICKETS, sprints: [ACTIVE_SPRINT] as never, ...fields })
 }
 
+// A vocabulary this project's rows could plausibly hold once SPRIN-77 lets them be edited:
+// five statuses, and NOT in the order a hard-coded board would use. `listProjectStatuses`
+// already returns rows ordered by `position`, so the board's job is to render the list it is
+// handed — which is why the array order here deliberately disagrees with both the seeded
+// board order (To Do first) and with sorting by `slug`. A fixture that happened to agree with
+// either would prove nothing.
+const FIVE_STATUSES = [
+  { slug: 'in_progress', name: 'In Progress', category: 'in_progress', position: 2 },
+  { slug: 'todo', name: 'To Do', category: 'todo', position: 1 },
+  { slug: 'in_review', name: 'In Review', category: 'in_progress', position: 3 },
+  { slug: 'done', name: 'Done', category: 'done', position: 4 },
+  { slug: 'parked', name: 'Parked', category: 'todo', position: 5 },
+].map((status, i) => ({
+  ...status,
+  id: `5ec0dd0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+  is_initial: status.slug === 'todo',
+})) as unknown as ProjectStatus[]
+
 describe('BoardTab', () => {
   beforeEach(() => updateTicket.mockReset())
+
+  it('renders one column per status row — five rows, five columns (AC2)', () => {
+    renderTab(BoardTab, boardCtx({ statuses: FIVE_STATUSES }))
+    // Count the columns. Asserting only that "Parked" exists would still pass with the four
+    // constants in place plus a stray heading somewhere else on the page.
+    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(5)
+    expect(screen.getByRole('heading', { level: 2, name: 'Parked' })).toBeInTheDocument()
+  })
+
+  it('orders the columns by the list it is given, not by a hard-coded order', () => {
+    renderTab(BoardTab, boardCtx({ statuses: FIVE_STATUSES }))
+    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
+      'In Progress',
+      'To Do',
+      'In Review',
+      'Done',
+      'Parked',
+    ])
+  })
+
+  it('shows a statuses failure with its own Retry, not an empty board', () => {
+    // Without the status rows the board does not know what its columns ARE. Rendering the
+    // four it used to hard-code would be the S4.6 defect again: an unknown state wearing a
+    // known one's face.
+    renderTab(BoardTab, boardCtx({ statuses: [], statusesPhase: 'failed' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load statuses.')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
+  })
+
+  it('claims neither empty nor failed while the STATUSES load', () => {
+    renderTab(BoardTab, boardCtx({ statuses: [], statusesPhase: 'loading' }))
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByText('No tickets yet.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed TICKETS read over a still-loading statuses read', () => {
+    // `firstUnready`'s rule, at the board's own level: any `failed` beats any `loading`, so a
+    // known failure is never replaced by a spinner that nothing will ever resolve.
+    renderTab(
+      BoardTab,
+      boardCtx({ tickets: [], ticketsPhase: 'failed', statuses: [], statusesPhase: 'loading' }),
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load tickets.')
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+  })
+
+  it('shows a failed STATUSES read over a still-loading tickets read', () => {
+    // The mirror of the test above, so the precedence cannot be satisfied by a lucky order.
+    renderTab(
+      BoardTab,
+      boardCtx({ tickets: [], ticketsPhase: 'loading', statuses: [], statusesPhase: 'failed' }),
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load statuses.')
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
+  })
+
+  // Documented, not fixed. `tickets.status` carries a composite fk to `project_statuses
+  // (project_id, slug)`, so the database cannot hold a ticket whose status names no column;
+  // SPRIN-80 owns orphan safety in the app. This test exists so the behaviour can never
+  // become SILENT if that fk is ever relaxed.
+  it('renders no card for a ticket whose status matches no column', () => {
+    const rows = [
+      {
+        id: 'x',
+        key: 'MP-9',
+        number: 9,
+        summary: 'Orphaned status',
+        type: 'story',
+        status: 'ghost',
+        sprint_id: 's-active',
+      },
+      {
+        id: 'y',
+        key: 'MP-8',
+        number: 8,
+        summary: 'Real status',
+        type: 'story',
+        status: 'todo',
+        sprint_id: 's-active',
+      },
+    ] as never
+    renderTab(BoardTab, boardCtx({ tickets: rows }))
+    // The control, and it is what makes the assertions below mean anything: BOTH rows are in
+    // the active sprint, so the orphan's absence is about its status and nothing else. The
+    // board renders only the active sprint's tickets, so a `sprint_id: null` orphan would
+    // vanish for a completely different reason and this test would pass vacuously.
+    expect(screen.getByText('Real status')).toBeInTheDocument()
+    expect(screen.queryByText('MP-9')).not.toBeInTheDocument()
+    expect(screen.queryByText('Orphaned status')).not.toBeInTheDocument()
+  })
 
   it('renders all four columns in board order', () => {
     renderTab(BoardTab, boardCtx())
@@ -319,6 +447,45 @@ describe('BoardTab', () => {
       expect.objectContaining({ id: 't1', status: 'in_progress' }),
     )
     await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_progress' }))
+  })
+
+  // The drop target is the column's SLUG, never its row id. `tickets.status` is a `text`
+  // column with a composite fk to `project_statuses (project_id, slug)` — SPRIN-79 keyed it on
+  // the slug precisely so no ticket row is rewritten when a status is renamed. Writing
+  // `status.id` would put a uuid into that column and the fk would reject it, a failure the
+  // board would only meet in production. The fixture's ids look nothing like its slugs so this
+  // cannot pass by resemblance.
+  it("writes the dropped column's slug, not its row id (composite fk)", async () => {
+    updateTicket.mockResolvedValue({
+      ok: true,
+      ticket: { id: 't1', key: 'MP-1', status: 'in_review', updated_at: '2026-07-31T00:00:00Z' },
+    } as never)
+    renderTab(BoardTab, boardCtx({ statuses: FIVE_STATUSES }))
+
+    const card = screen.getByRole('button', { name: /do the todo/i }) // t1, status todo
+    fireEvent.dragStart(card)
+    fireEvent.drop(screen.getByRole('heading', { name: 'In Review' }).closest('section')!)
+
+    await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { status: 'in_review' }))
+    // The row id for that column, spelled out: it must never reach the status column.
+    expect(updateTicket).not.toHaveBeenCalledWith('t1', {
+      status: '5ec0dd02-0000-4000-8000-000000000000',
+    })
+  })
+
+  // The failed-move message names the column the user aimed at, and that name now comes from
+  // the status ROW rather than a constant map. With a slug the project's rows do not contain,
+  // `statusName` falls back to the slug itself (AC4) — never `undefined`.
+  it('names the target column from its status row in the move-failure message', async () => {
+    updateTicket.mockResolvedValue({ ok: false, error: 'unknown' })
+    renderTab(BoardTab, boardCtx({ statuses: FIVE_STATUSES }))
+
+    fireEvent.dragStart(screen.getByRole('button', { name: /do the todo/i }))
+    fireEvent.drop(screen.getByRole('heading', { name: 'Parked' }).closest('section')!)
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('Could not move MP-1 to Parked.'),
+    )
   })
 
   it('reverts the optimistic move and shows an error when the write fails (S7.2 AC3)', async () => {
