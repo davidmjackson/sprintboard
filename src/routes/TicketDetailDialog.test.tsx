@@ -3,7 +3,12 @@ import { useState } from 'react'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
-import type { Sprint, Ticket } from '@/lib/domain'
+import {
+  DEFAULT_PROJECT_STATUSES,
+  type ProjectStatus,
+  type Sprint,
+  type Ticket,
+} from '@/lib/domain'
 import * as tickets from '@/lib/tickets'
 import type { UpdateTicketResult } from '@/lib/tickets'
 
@@ -55,6 +60,56 @@ const base: Ticket = {
 }
 const user = { id: 'user-a', email: 'a@example.com' }
 
+// The four rows `seed_project_statuses()` writes for every new project, shaped as the dialog
+// receives them. Derived from the seed contract in `domain.ts` rather than retyped, so this
+// harness cannot go on describing a vocabulary the database stopped seeding.
+//
+// The `id`s look NOTHING like the slugs, mirroring `BoardTab.test.tsx`: `tickets.status` is a
+// text column carrying the SLUG (composite fk to `project_statuses (project_id, slug)`), so an
+// option list built from `status.id` must not be able to pass.
+const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
+  ...status,
+  id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+})) as unknown as ProjectStatus[]
+
+// A vocabulary this project's rows could plausibly hold once SPRIN-77 lets them be edited:
+// five statuses, one of them ('parked') a slug the deleted `TICKET_STATUSES` constant never
+// contained, and in an order that deliberately disagrees with both the old hard-coded board
+// order and with sorting by slug. `listProjectStatuses` already returns rows ordered by
+// `position`, so the picker's job is to render the list it is handed, unsorted.
+//
+// `in_review` is named 'In Review' — a NAME that differs visibly from its SLUG — which is what
+// makes the header test able to tell "rendered the row's name" from "rendered the raw slug".
+const FIVE_STATUSES = [
+  { slug: 'in_progress', name: 'In Progress', category: 'in_progress', position: 2 },
+  { slug: 'todo', name: 'To Do', category: 'todo', position: 1 },
+  { slug: 'in_review', name: 'In Review', category: 'in_progress', position: 3 },
+  { slug: 'done', name: 'Done', category: 'done', position: 4 },
+  { slug: 'parked', name: 'Parked', category: 'todo', position: 5 },
+].map((status, i) => ({
+  ...status,
+  id: `5ec0dd0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+  is_initial: status.slug === 'todo',
+})) as unknown as ProjectStatus[]
+
+/** The dialog's title row — uniquely named by the ticket key, so it scopes header assertions
+ *  away from the sidebar's `<option>`s, which carry the same status text. A REGEX name query,
+ *  never an exact one: this heading's accessible name is composed from several styled spans,
+ *  and under jsdom that string is not what any browser computes (see CLAUDE.md, SPRIN-67). */
+function dialogHeader() {
+  return screen.getByRole('heading', { name: /MP-1/ })
+}
+
+/** Every `<option>` belonging to the Status `<select>` specifically — the dialog renders
+ *  four other selects, so an unscoped `getAllByRole('option')` would mix them in. */
+function statusOptionsOf() {
+  return Array.from(
+    (screen.getByLabelText('status') as HTMLSelectElement).options,
+  ) as HTMLOptionElement[]
+}
+
 beforeEach(() => {
   updateTicket.mockReset()
   deleteTicket.mockReset()
@@ -69,6 +124,8 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        statuses={SEEDED_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -78,10 +135,9 @@ describe('TicketDetailDialog', () => {
     expect(screen.getByText('Wire the board')).toBeInTheDocument()
     // Scoped to the dialog's title row (the DialogTitle <h2>, uniquely named by the
     // ticket key) so this pins the header's status badge specifically — the sidebar's
-    // new Status <select> also renders the text "To Do" (as an <option>), but that
-    // node lives outside this heading entirely.
-    const titleRow = screen.getByRole('heading', { name: /MP-1/ })
-    expect(within(titleRow).getByText('To Do')).toBeInTheDocument()
+    // Status <select> also renders the text "To Do" (as an <option>), but that node
+    // lives outside this heading entirely.
+    expect(within(dialogHeader()).getByText('To Do')).toBeInTheDocument()
   })
 
   it('renders nothing interactive when ticket is null', () => {
@@ -731,6 +787,8 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={{ ...base, status: 'in_review' }}
         currentUser={user}
+        statuses={SEEDED_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -739,29 +797,79 @@ describe('TicketDetailDialog', () => {
     expect(screen.getByRole('combobox', { name: /status/i })).toHaveValue('in_review')
   })
 
-  it('offers all four board columns as status options, in board order', () => {
+  // SPRIN-76 AC2: the options are the PROJECT'S status rows, not a fixed four. The fixture
+  // holds five, includes a slug the deleted `TICKET_STATUSES` never had ('parked'), and is
+  // in an order that matches neither the old board order nor slug order — so a picker still
+  // driven by the constants, or one that re-sorts, cannot pass.
+  it('lists the project status rows as picker options, not a fixed four', () => {
     render(
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        statuses={FIVE_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
       />,
     )
-    const options = screen.getAllByRole('option').filter((o) =>
-      (o as HTMLOptionElement)
-        .closest('select')
-        ?.getAttribute('aria-label')
-        ?.match(/status/i),
-    )
-    expect(options.map((o) => o.textContent)).toEqual(['To Do', 'In Progress', 'In Review', 'Done'])
-    expect(options.map((o) => (o as HTMLOptionElement).value)).toEqual([
-      'todo',
+    expect(screen.getByRole('option', { name: 'Parked' })).toBeInTheDocument()
+    const options = statusOptionsOf()
+    expect(options.map((o) => o.textContent)).toEqual([
+      'In Progress',
+      'To Do',
+      'In Review',
+      'Done',
+      'Parked',
+    ])
+    // The VALUES are the slugs — `tickets.status` carries the slug, and the fixture's ids
+    // look nothing like them, so an option list built from `status.id` goes red here.
+    expect(options.map((o) => o.value)).toEqual([
       'in_progress',
+      'todo',
       'in_review',
       'done',
+      'parked',
     ])
+  })
+
+  // `statuses` is [] in BOTH the loading and failed phases, so an empty list never means
+  // "this project has no statuses". An enabled picker over one would render a blank value
+  // and offer nothing but the ticket's own status — one interaction could silently move it.
+  // Branch on the phase, never on statuses.length. Same rule as the sprint picker below.
+  it.each(['loading', 'failed'] as const)(
+    'disables the status picker while the status list is %s',
+    (phase) => {
+      render(
+        <TicketDetailDialog
+          ticket={base}
+          currentUser={user}
+          statuses={[]}
+          statusesPhase={phase}
+          onOpenChange={() => {}}
+          onUpdated={() => {}}
+          onDeleted={() => {}}
+        />,
+      )
+      expect(screen.getByLabelText('status')).toBeDisabled()
+    },
+  )
+
+  // The test that tells `statusesPhase` apart from `statuses.length`: gating on the length
+  // would disable this case while passing every other test in this file.
+  it('enables the status picker for a loaded read that returned no rows', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        statuses={[]}
+        statusesPhase="loaded"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.getByLabelText('status')).toBeEnabled()
   })
 
   it('keeps the status picker in the tab order and enabled, so a keyboard user can reach it', () => {
@@ -769,6 +877,8 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        statuses={SEEDED_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -777,8 +887,62 @@ describe('TicketDetailDialog', () => {
     const select = screen.getByRole('combobox', { name: /status/i })
     expect(select).toBeEnabled()
     // A negative tabindex would remove it from sequential navigation while leaving it
-    // clickable — the exact regression this story exists to prevent.
+    // clickable — the exact regression SPRIN-61 exists to prevent.
     expect(select).not.toHaveAttribute('tabindex')
+  })
+
+  // SPRIN-76 AC4, header half: an unknown slug renders as ITSELF rather than blank. Paired
+  // with the picker's own fallback test below — the two are different code paths (`statusName`
+  // in the dialog, `statusOptions` in the sidebar) and both have to hold.
+  it('renders the status NAME in the header, from the row', () => {
+    render(
+      <TicketDetailDialog
+        ticket={{ ...base, status: 'in_review' }}
+        currentUser={user}
+        statuses={FIVE_STATUSES}
+        statusesPhase="loaded"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    // The row names 'in_review' → 'In Review', a name that differs visibly from the slug,
+    // so rendering `ticket.status` raw would fail this and only this.
+    expect(within(dialogHeader()).getByText('In Review')).toBeInTheDocument()
+    expect(within(dialogHeader()).queryByText('in_review')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the slug when the header status has no row (AC4)', () => {
+    render(
+      <TicketDetailDialog
+        ticket={{ ...base, status: 'ghost' }}
+        currentUser={user}
+        statuses={FIVE_STATUSES}
+        statusesPhase="loaded"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(within(dialogHeader()).getByText('ghost')).toBeInTheDocument()
+  })
+
+  // The picker half of the same fallback. A <select> whose value matches no <option> renders
+  // blank, and the next change event would move the ticket somewhere the user never chose.
+  it('keeps the current status selectable when it has no row, so it is not silently lost', () => {
+    render(
+      <TicketDetailDialog
+        ticket={{ ...base, status: 'ghost' }}
+        currentUser={user}
+        statuses={FIVE_STATUSES}
+        statusesPhase="loaded"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.getByLabelText('status')).toHaveValue('ghost')
+    expect(statusOptionsOf().map((o) => o.value)).toContain('ghost')
   })
 
   it('commits a status change, sending status and nothing else', async () => {
@@ -787,6 +951,8 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        statuses={SEEDED_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -804,6 +970,8 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        statuses={SEEDED_STATUSES}
+        statusesPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -828,6 +996,8 @@ describe('TicketDetailDialog', () => {
         <TicketDetailDialog
           ticket={t}
           currentUser={user}
+          statuses={SEEDED_STATUSES}
+          statusesPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
             setT(next)

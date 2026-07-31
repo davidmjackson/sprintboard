@@ -2,16 +2,16 @@ import { parseStoryPoints } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
 import {
   SPRINT_STATUS_LABELS,
-  TICKET_STATUSES,
-  TICKET_STATUS_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
+  type ProjectStatus,
   type Sprint,
   type Ticket,
-  type TicketStatus,
   type TicketType,
   type TicketUpdate,
 } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
+import { statusOptions } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
 import { EditableText, FieldLabel } from './EditableText'
 import { selectClass } from './form-primitives'
@@ -24,6 +24,8 @@ export function TicketDetailSidebar({
   epics,
   sprints,
   sprintsPhase,
+  statuses,
+  statusesPhase,
   commit,
   setError,
   onEditingChange,
@@ -33,6 +35,9 @@ export function TicketDetailSidebar({
   epics: Ticket[]
   sprints: Sprint[]
   sprintsPhase: SprintsPhase
+  /** The project's status rows, in column (`position`) order — the picker's options. */
+  statuses: ProjectStatus[]
+  statusesPhase: ReadPhase
   commit: (patch: TicketUpdate) => Promise<boolean>
   setError: (ticketId: string, message: string) => void
   onEditingChange: (editing: boolean) => void
@@ -49,21 +54,35 @@ export function TicketDetailSidebar({
       {/* Status. First in the panel: it is the field the board is organised by, and the
           only one that had no keyboard or touch path at all before SPRIN-61 — drag was
           the sole way to change it, which excluded keyboard, screen-reader and touch
-          users entirely. Unlike the Sprint picker below this is never disabled: the
-          option list is a compile-time constant, so there is no loading state to be
-          honest about. Options and labels both come from the domain module, so the
-          picker and the board's four columns cannot drift apart. */}
+          users entirely.
+
+          The options are the project's own `project_statuses` rows (SPRIN-76), which is
+          the same list the board renders its columns from — so the picker and the columns
+          still cannot drift apart, but the vocabulary is now per-project rather than a
+          compile-time constant.
+
+          Because it is a fetch now, it IS disabled until it loads — the docblock here used
+          to say the opposite, and that premise is exactly what this story removed.
+          `statuses` is `[]` while loading AND after a failed read, so an enabled picker
+          over an empty list would render a blank value and offer nothing but the ticket's
+          own current status; one interaction could then silently move the ticket. Same
+          reason, same shape, as the Sprint picker immediately below.
+
+          `statusOptions` (`@/lib/project-statuses`) — not an inline map — keeps the
+          "current status stays selectable even when no row matches it" rule in the domain
+          layer, and keeps this component's cyclomatic count off the T2 ceiling. */}
       <label className="flex flex-col gap-1">
         <FieldLabel>Status</FieldLabel>
         <select
           aria-label="status"
           className={selectClass}
           value={ticket.status}
-          onChange={(e) => commit({ status: e.target.value as TicketStatus })}
+          disabled={statusesPhase !== 'loaded'}
+          onChange={(e) => commit({ status: e.target.value })}
         >
-          {TICKET_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {TICKET_STATUS_LABELS[s]}
+          {statusOptions(statuses, ticket.status).map((s) => (
+            <option key={s.slug} value={s.slug}>
+              {s.name}
             </option>
           ))}
         </select>

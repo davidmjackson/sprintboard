@@ -228,6 +228,8 @@ export function ProjectShell() {
           epics={tickets.filter((t) => t.type === 'epic')}
           sprints={sprints}
           sprintsPhase={sprintsPhase}
+          statuses={statuses}
+          statusesPhase={statusesPhase}
           currentUser={currentUser}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)

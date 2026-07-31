@@ -1,6 +1,6 @@
 import { Ban, CircleCheck, MoreHorizontal, Trash2 } from 'lucide-react'
 
-import { TICKET_STATUS_LABELS, TICKET_TYPE_LABELS, type Ticket } from '@/lib/domain'
+import { TICKET_TYPE_LABELS, type Ticket } from '@/lib/domain'
 import { DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   DropdownMenu,
@@ -10,14 +10,24 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 
-/** The dialog's title row (key, type, status) and its kebab menu (block/unblock, delete). */
+/**
+ * The dialog's title row (key, type, status) and its kebab menu (block/unblock, delete).
+ *
+ * `statusName` arrives ALREADY RESOLVED rather than as the project's status rows: this row
+ * renders exactly one status label, so handing it the whole list would give it a lookup it
+ * does not need and create a second site where the SPRIN-76 AC4 fallback (an unknown slug
+ * renders as itself) could drift from the picker's. The dialog resolves it once.
+ */
 export function TicketDetailHeader({
   ticket,
+  statusName,
   onBlock,
   onUnblock,
   onDelete,
 }: {
   ticket: Ticket
+  /** The display name of `ticket.status` — the slug itself when no row matches (AC4). */
+  statusName: string
   onBlock: () => void
   onUnblock: () => void
   onDelete: () => void
@@ -34,7 +44,7 @@ export function TicketDetailHeader({
         <span className="bg-border/60 h-3.5 w-px" aria-hidden="true" />
         <span className="text-muted-foreground inline-flex items-center gap-1.5 text-xs font-medium">
           <span className="bg-foreground/40 size-1.5 rounded-full" aria-hidden="true" />
-          {TICKET_STATUS_LABELS[ticket.status]}
+          {statusName}
         </span>
       </DialogTitle>
       <DropdownMenu>
