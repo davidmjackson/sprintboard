@@ -108,23 +108,61 @@ search."** on the backlog. The backlog gets the longer sentence because it is th
 state, standing alone in a dashed box; a column has three siblings for context and a short line to
 fit in.
 
+**Every condition that decides whether the search box renders must be computed BEFORE the filter.**
+S7.3 established that a filter control renders only where it is meaningful (`activeSprint !== null`
+for the checkbox), and that rule is right — but applied naively to a text filter it strands the
+user: hide the input when the list is empty, and a query that matches nothing removes the only
+control that could clear it. The tab becomes a dead end reachable by typing.
+
+This falls out correctly if the checks are ordered so the **unfiltered** list decides:
+
+```
+BacklogTab:  loading → failed → backlog.length === 0  ("Nothing in the backlog.")
+             → [search box] + (filtered.length === 0 ? "No tickets match your search." : rows)
+```
+
+`backlog.length === 0` tests the list *before* the query, so "Nothing in the backlog." is reachable
+only when the project truly has no unsprinted tickets — and the search box, rendered in the final
+branch, is always present whenever a query could have hidden something. The board's control is
+already gated on `activeSprint !== null`, which no query can change, so it is safe unmodified. AC5
+is therefore mostly a consequence of check ordering rather than new code, and the tests must pin
+the ordering, not the strings alone.
+
 ### The cyclomatic budget on `BoardTab` — a real constraint, decided now
 
-`BoardTab.tsx:20` records that the component **sits at the T2 cyclomatic limit of 10**, which is why
-`BoardColumnSummary` was extracted at all and why the sprint name and the filter checkbox both hang
-off a single `activeSprint !== null` test. Adding a query, a second filter application and a
-filter-aware empty string is **predicted** to exceed 10 and redden `npm run lint`, which gates
-every merge. That prediction is from the file's own comment, not from a measurement — the linter
-reports complexity only when it is violated, so the number is unobservable until it breaks. Treat
-it as a hypothesis to test, not a fact.
+`BoardTab.tsx:20` records that the component **sits at the T2 cyclomatic limit of 10**. That was a
+comment, so it was treated as a hypothesis and **measured** rather than believed:
 
-The design therefore extracts a **`BoardFilters`** component (the blocked-only checkbox plus the
-search input), and puts the empty-column text in a `BoardColumnEmpty` component alongside
-`BoardColumnSummary`, which was extracted for exactly this reason. This follows the precedent in
-the file rather than inventing one. The
-implementer must run `npm run lint` and report the actual number; if the extraction is not enough,
-that is a finding, not something to work around with an inline disable — CLAUDE.md is explicit that
-a genuine misfit is an ADR, never a disable.
+```
+npx eslint src/routes/BoardTab.tsx src/routes/BacklogTab.tsx --rule '{"complexity":["error",1]}'
+  BoardTab            10   ← at the limit, zero headroom
+  BacklogTab           4
+  BoardColumnSummary   4
+  the column .map arrow 2
+```
+
+The comment is true, and the measurement changes the design — because it shows the naive approach
+fails and a subtler one is free:
+
+- **Applying the query costs zero branches.** `visibleTickets` already flows through a
+  `blockedOnly ? … : …` ternary; wrapping that expression in `selectMatchingTickets(…, query)` adds
+  a call, not a branch. `useState` adds nothing. So the filter itself is free.
+- **Computing a filter-active flag in `BoardTab`'s body costs one branch and breaks the gate.**
+  `const filterActive = blockedOnly || query.trim() !== ''` takes the function to **11** and turns
+  `npm run lint` red. This is the trap: it is the obvious way to write it, and it is the one move
+  the budget cannot absorb.
+
+The design therefore puts that `||` inside a small **`BoardColumnEmpty`** component that takes
+`blockedOnly` and `query` and chooses its own sentence, sitting beside `BoardColumnSummary` — which
+was extracted for exactly this reason. `BoardTab`'s body stays at 10.
+
+No `BoardFilters` extraction: the search input renders inside the existing `activeSprint !== null`
+block and costs nothing, so extracting it would be ceremony the budget does not ask for.
+
+The implementer must still run `npm run lint` and report the actual number — this arithmetic is a
+prediction until the gate agrees. If it is not enough, that is a finding, not something to work
+around with an inline disable; CLAUDE.md is explicit that a genuine misfit is an ADR, never a
+disable.
 
 ### Composition, and why the totals come out right for free
 
@@ -171,8 +209,12 @@ The tests that carry the story:
 
 ## Risks
 
-- **The lint budget.** `BoardTab` is at cyclomatic 10 with no headroom. Mitigated by extracting
-  `BoardFilters`; must be measured, not assumed.
+- **The lint budget.** `BoardTab` is at cyclomatic 10 with no headroom — measured, not assumed.
+  The filter itself is free; a `filterActive` flag in the body is not. Mitigated by
+  `BoardColumnEmpty`.
+- **Stranding.** Gating the search input on the *filtered* list makes an empty result
+  unrecoverable. Mitigated by check ordering, and pinned by a test that types a non-matching
+  query and then clears it through the input that must still be there.
 - **Testing the absence of a message.** AC5's tests assert a string is *gone*. A typo in the
   asserted string makes such a test vacuously green. The tests must pair "new message present" with
   "old message absent", and the implementer must watch the absence assertion fail before the fix.
