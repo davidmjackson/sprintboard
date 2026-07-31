@@ -90,8 +90,26 @@ export function BacklogTab() {
                   `currentUser.email` falls back to '' in the shell when the session has
                   no email, so it is not safe to render bare: an assigned ticket would
                   show a blank cell, indistinguishable from a broken one. 'You' is the
-                  honest answer — we know it is theirs, we just have no name for them. */}
-              {ticket.assignee_id === currentUser.id ? currentUser.email || 'You' : 'Unassigned'}
+                  honest answer — we know it is theirs, we just have no name for them.
+
+                  The `sr-only` prefix is the SPRIN-67 fix, and the same call S5.1 made
+                  for story points: real text rather than an `aria-label`, because this
+                  is a <span> (`role="generic"`) and ARIA 1.2 prohibits aria-label there.
+                  Without it the row's accessible name ends "… 5 story points
+                  dev@example.com" — every other part of the row says what it is, and the
+                  assignee was the one bare value. It joins the name only because the row
+                  is a <button>, so `BacklogTab.test.tsx` scopes its assertion to that
+                  button; an unscoped `getByText` would stay green if it drifted outside.
+                  Only the assigned branch takes it: 'Unassigned' is already a complete
+                  statement, and prefixing it would announce "Assigned to Unassigned". */}
+              {ticket.assignee_id === currentUser.id ? (
+                <>
+                  <span className="sr-only">Assigned to </span>
+                  {currentUser.email || 'You'}
+                </>
+              ) : (
+                'Unassigned'
+              )}
             </span>
           </button>
         </li>

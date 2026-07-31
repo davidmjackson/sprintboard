@@ -201,8 +201,21 @@ Two defences, both load-bearing — do not undo either while "tidying up":
   `src/test/supabase-clients.ts`, which reads the **in-memory** session — no network call,
   nothing to rate-limit. Reintroducing a `getUser()` per `beforeAll` (there were ~14 of
   them) is exactly what caused this flake; a green suite would tempt you to add one back.
+- **There is a THIRD signature, and it is not auth at all.** `AuthRetryableFetchError: fetch
+  failed` with **`status: 0`** and `[cause]: Error: read ECONNRESET`, arriving as an assertion
+  failure **inside a test body** rather than a `beforeAll` crash. `status: 0` means no HTTP
+  response ever came back, so it is neither the credential (which returns a *named* GoTrue
+  error) nor the rate limiter (a **429**, or the bare null-`id` `TypeError`). Remedy is the
+  same cool-down-and-rerun. Classify on the *shape* — status, error class, setup-vs-body,
+  blast radius — before reaching for a remedy, and never let "neither documented flake
+  matches" become "therefore it is my diff". That inference is backwards. Seen 2026-07-29.
 - **When it still bites, it is transient — never "fix" it by weakening a suite.** Confirm
-  the failing test *is* the null-`id` setup crash (any other failure is real), wait ~2–5
+  the failing test matches **one of the three signatures above** — the null-`id` setup
+  crash, the ES256 `unrecognized JWT kid`, or the `status: 0`/`ECONNRESET` transport reset.
+  Anything else is real. (This clause used to read "the null-`id` setup crash, any other
+  failure is real", which contradicted the third signature the moment it was added: that
+  one arrives in a test *body*. Naming all three is what keeps this from being read as a
+  general licence to re-run body-level failures.) Then wait ~2–5
   minutes with no sign-ins, then re-run the failed job (`gh run rerun <id> --failed`).
   Confirm the rerun's `headSha` equals the PR head, and trust the CI result over a local
   run. Serialising CI against the shared database (the `verify` concurrency group) already
@@ -269,6 +282,76 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
   Vitest's default include glob; `vite.config.ts` excludes `e2e/**` for exactly this
   reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
   the exclude, don't rename the specs.
+
+## Accessible names under jsdom are not the names a browser computes (SPRIN-67)
+
+**Never assert an *exact* accessible name for an element whose name is composed from several
+children whose `display` comes from the stylesheet** — which, with Tailwind, is all of them. Under
+jsdom that string is not what any browser produces. Substring/regex name queries
+(`{ name: /assigned to/i }`) are fine and often the right tool; so is an exact name on an element
+whose name comes from a single text node or an `aria-label` (`{ name: 'Log in' }` — there are 181
+such queries across `src/` and `e2e/` and they are correct).
+
+Two boundaries on that carve-out, both measured:
+
+- **A `<div>`- or `<p>`-structured component is safe** — its parts are block-level without any
+  stylesheet, so both engines separate them identically. The rule is about CSS-derived layout, not
+  about having multiple children.
+- **A single text node is NOT automatically safe if `text-transform` applies.** Chrome's AX tree
+  uppercases (`Story` → `STORY`); Playwright's accname does not. Nothing in the suite currently
+  exact-name-queries such an element — `TicketDetailSidebar.tsx:45`, `EditableText.tsx:11`,
+  `BacklogTab.tsx:67` and `TicketCard.tsx:35` are the live candidates — but do not start.
+
+**The mechanism, stated precisely, because the first version of this section got it wrong.**
+`dom-accessibility-api` does *not* treat everything as inline — it reads `getComputedStyle(child)
+.display` and inserts a separator for any non-inline child (`accessible-name-and-description.js`,
+the `separator` line). The divergence has **two** causes, and both are needed:
+
+1. **The test document loads no stylesheet.** Tailwind's `flex` never enters the cascade, so every
+   `<span>` falls back to the UA default `inline` and gets no separator.
+2. **jsdom does not blockify flex children.** Even with `style="display:flex"` set inline, jsdom
+   returns the same fused name — measured. Chrome blockifies, and that is what actually separates
+   the parts: **in Chrome** `getComputedStyle` on the row's six span children returns `block` for
+   all but one (the `inline-flex` blocked badge), while **in jsdom** all six are `inline`.
+
+So they do **not** "disagree completely". They agree wherever the parts are already block-level
+(a `<div>`- or `<p>`-structured component reads the same in both) and diverge exactly where a
+`<span>` is a flex item — which is every ticket card and backlog row:
+
+| Same ticket, blocked, 5 points, assigned | jsdom | Chrome |
+|---|---|---|
+| Board card | `MP-1 BlockedStory5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
+| Backlog row | `MP-1StoryWire the boardBlocked5story pointsAssigned todev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points Assigned to dev@example.com` |
+
+Chrome measured via CDP `Accessibility.getPartialAXTree`; jsdom via `computeAccessibleName`. Both
+columns are the same ticket in the same state, post-SPRIN-67 — an earlier draft of this table paired
+an unblocked jsdom name with a blocked Chrome one, which made the row meaningless. **Chromium only**
+— Firefox and WebKit are not installed here.
+
+SPRIN-67 was opened to fix that "fusion" and the fusion does not exist for users. It cost a story to
+find out, so the rules are:
+
+- **Assert DOM text and the container it sits in.** Both are true in every engine. Scope with
+  `within(button)` — an unscoped `getByText` says the text exists and nothing about *where*.
+  SPRIN-65's points badge was moved outside its button and all 12 tests stayed green.
+- **But DOM text alone is not enough**, and this is the trap the story's own first draft fell into:
+  `getByText` ignores only `<script>`/`<style>`, so it matches an `aria-hidden` subtree happily. An
+  `aria-hidden="true"` on `sr-only` text reverts the fix entirely with every test green. Pair the
+  text assertion with a **substring name query** (`getByRole('button', { name: /assigned to/i })`),
+  which honours `aria-hidden` and is engine-independent because it is not an exact match.
+- **`toHaveClass` is a subset check.** `sr-only hidden` passes `toHaveClass('sr-only')` while the
+  element stops rendering. For a span whose entire job is to be `sr-only`, assert the exact class.
+- **`sr-only` text still works and is still right** over `aria-label` on a `<span>` (`role="generic"`,
+  where ARIA 1.2 prohibits it). Chrome renders `5 story points` from exactly that pattern.
+- **A browser is the only place an accessible name is real.** Measure there before believing a name
+  is broken — and note that `e2e.yml` is not the gate, so a Playwright assertion documents a name
+  rather than protecting it.
+
+Still open, deliberately, and **engine-specific**: Chrome's AX tree applies `text-transform:
+uppercase` when computing the name, so on the same DOM it yields `STORY` while Playwright's own
+accname implementation yields `Story`. What a screen reader then *does* with an all-caps name is
+untested here — so whether the type and blocked badges are worth changing is a real question, and
+its own story if wanted.
 
 ## Review depth is chosen by the diff, not applied by default
 
