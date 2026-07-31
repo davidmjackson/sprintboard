@@ -201,6 +201,14 @@ Two defences, both load-bearing — do not undo either while "tidying up":
   `src/test/supabase-clients.ts`, which reads the **in-memory** session — no network call,
   nothing to rate-limit. Reintroducing a `getUser()` per `beforeAll` (there were ~14 of
   them) is exactly what caused this flake; a green suite would tempt you to add one back.
+- **There is a THIRD signature, and it is not auth at all.** `AuthRetryableFetchError: fetch
+  failed` with **`status: 0`** and `[cause]: Error: read ECONNRESET`, arriving as an assertion
+  failure **inside a test body** rather than a `beforeAll` crash. `status: 0` means no HTTP
+  response ever came back, so it is neither the credential (which returns a *named* GoTrue
+  error) nor the rate limiter (a **429**, or the bare null-`id` `TypeError`). Remedy is the
+  same cool-down-and-rerun. Classify on the *shape* — status, error class, setup-vs-body,
+  blast radius — before reaching for a remedy, and never let "neither documented flake
+  matches" become "therefore it is my diff". That inference is backwards. Seen 2026-07-29.
 - **When it still bites, it is transient — never "fix" it by weakening a suite.** Confirm
   the failing test *is* the null-`id` setup crash (any other failure is real), wait ~2–5
   minutes with no sign-ins, then re-run the failed job (`gh run rerun <id> --failed`).
@@ -269,6 +277,39 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
   Vitest's default include glob; `vite.config.ts` excludes `e2e/**` for exactly this
   reason. A Vitest run that tries to load a `*.spec.ts` from `e2e/` will error — restore
   the exclude, don't rename the specs.
+
+## Accessible names under jsdom are not the names a browser computes (SPRIN-67)
+
+**Never assert an exact accessible name in a Vitest test.** `dom-accessibility-api` — the
+implementation Testing Library uses — performs **no layout**, so it treats every element as inline
+and concatenates sibling text with no separator. A browser computes the name from the rendered box
+tree, and **flex children are blockified**, so it inserts separators where jsdom cannot know to.
+Every part of a ticket card and a backlog row is a flex item, so the two disagree completely:
+
+| | jsdom | Chrome |
+|---|---|---|
+| Board card | `MP-1 Story5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
+| Backlog row | `MP-1StoryWire the boardBlocked5story pointsdev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points dev@example.com` |
+
+The mechanism was confirmed directly, not inferred: three spans under a `display:flex` button give
+`MP-1 Story Wire the board`; the same three under a default button give `MP-1StoryWire the board`.
+Chrome measured via CDP `Accessibility.getPartialAXTree`. **Chromium only** — Firefox and WebKit are
+not installed here.
+
+SPRIN-67 was opened to fix that "fusion" and the fusion does not exist for users. It cost a story to
+find out, so the rules are:
+
+- **Assert DOM text and the container it sits in**, never the composed name. Both are true in every
+  engine. Scope with `within(button)` — an unscoped `getByText` says the text exists and nothing
+  about *where*. SPRIN-65's points badge was moved outside its button and all 12 tests stayed green.
+- **`sr-only` text still works and is still right** over `aria-label` on a `<span>` (`role="generic"`,
+  where ARIA 1.2 prohibits it). Chrome renders `5 story points` from exactly that pattern.
+- **A browser is the only place an accessible name is real.** Measure there before believing a name
+  is broken — and note that `e2e.yml` is not the gate, so a Playwright assertion documents a name
+  rather than protecting it.
+
+Still open, deliberately: Chrome applies `text-transform: uppercase` when computing the name, so the
+type and blocked badges announce as `STORY` and `BLOCKED`. Its own story if wanted.
 
 ## Review depth is chosen by the diff, not applied by default
 
