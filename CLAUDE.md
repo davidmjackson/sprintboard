@@ -6,34 +6,45 @@ not the goal, and neither is anything beyond it: a tight working slice is the po
 
 ---
 
-## Locked scope: Phase 1 (Rung 1). Do not exceed.
-- Scrum only.
-- Fixed four board columns: To Do, In Progress, In Review, Done.
-- Fixed ticket schema. No custom-field editor.
-- Direct React to Supabase with owner-scoped RLS. No backend API yet.
-- Issue types: Epic, Story, Bug, Task. Epics carry a context field and a
-  deliverables list.
-- Blocked is a flag on the ticket, never a board column.
+## Where the project is: Rung 3 is IN PROGRESS
 
-## Parked. Do not build.
+**Rung 1 (Phase 1) shipped** — every epic and story Done, 2026-07-20. Scrum only, four
+fixed board columns, fixed ticket schema, direct React-to-Supabase with owner-scoped RLS.
+That is what exists today and it works.
+
+**Rung 3 was un-parked by David on 2026-07-31**, with the epic order below. This section
+used to say "Locked scope: Phase 1. Do not exceed" and to instruct any agent to refuse
+Rung 3 work. That instruction is **withdrawn** — it would now block the agreed plan.
+
+| Order | Epic | Key |
+|---|---|---|
+| 1 | Custom statuses and configurable board columns | **SPRIN-72** |
+| 2 | Kanban project type | SPRIN-73 |
+| 3 | Custom fields | SPRIN-71 |
+| 4 | Configurable sprint cadence | SPRIN-74 |
+| 5 | **Teams, roles and permissions — the security boundary** | **SPRIN-75** |
+
+**The RLS rewrite is deliberately LAST.** Epics 1–4 all assume a single owner; each needs
+re-auditing against the membership model when epic 5 lands. Budget for that rather than
+discovering it.
+
+## Still parked. Do not build.
 - **The AI layer.** A FastAPI service with AI epic decomposition and a grounded
   estimation assistant was built (Rung 2) and then **deliberately removed** in the
   2026-07-29 pivot — it sat outside the Jira core this project exists to prove.
   Story-suggestion from a well-documented epic is the one piece worth reviving, and
   it is recoverable from git history rather than rebuilt. **Do not re-add any of it
-  without being asked.**
-- **Rung 3:** editable columns, statuses and workflows, custom fields, teams, roles
-  and permissions. Wanted eventually — see the forward-compatibility rules below,
-  which exist to keep it cheap — but not now.
+  without being asked.** Un-parking Rung 3 did **not** un-park this.
 
 If a task appears to require a parked feature, stop and flag it. Do not build it.
 
-## Forward compatibility: keep the Rung 3 doors open. Do not walk through them.
+## The rules that OUTLIVE the doors being opened
 
-Rung 3 will want: Kanban *and* Scrum projects, a configurable sprint cadence, custom
-fields, custom columns, and custom statuses mapped to those columns. **None of that is
-built now.** The rules below exist so it stays *cheap* later — they are hedges already in
-the code, and each one is easy to undo by accident while thinking you are tidying up.
+These were written as forward-compatibility hedges — "keep the Rung 3 doors open, do not
+walk through them". We are now walking through them, and that changes which rules are
+spent and which still bind. **Every rule below still binds.** They are not scaffolding to
+be cleared away now the feature is being built; several become *more* load-bearing, not
+less, and each is easy to undo by accident while thinking you are tidying up.
 
 - **Never use a Postgres `ENUM`.** `ticket.status`, `ticket.type`, `sprint.status` and
   `project_type` are all `text` + a `check` constraint, deliberately. Widening a check is
@@ -41,10 +52,16 @@ the code, and each one is easy to undo by accident while thinking you are tidyin
   `create type … as enum` would look like an improvement. **It is the single most damaging
   change anyone could make to this schema.**
 - **`projects.project_type` already exists** (`check (project_type in ('scrum'))`). Kanban
-  is one line: add `'kanban'` to that check. Do not add it until Rung 3.
+  is one line: add `'kanban'` to that check — that is epic **SPRIN-73**, and the one-line
+  change is the *whole* schema part of it. The work there is behavioural.
 - **Status, type and column definitions live in `src/lib/domain.ts` and nowhere else.**
   Never inline the four column names in a component, a filter, or a badge-colour map.
-  When columns become dynamic, one module changes instead of fifteen.
+  This is the rule **SPRIN-72 is about to cash in**: because it held, columns becoming
+  dynamic changes one module instead of fifteen. As the list moves to the database,
+  `domain.ts` stops being the source of the *values* and becomes the client-side contract
+  for the *shape* — it does not stop being the single place. Do not scatter the new types.
+  **Verify the rule actually held before relying on it** — grep for the literal names
+  rather than assuming.
 - **Core ticket fields stay real columns.** `story_points`, `assignee_id`, `status` etc.
   are first-class and must remain so. Custom fields will be **additive** — new tables
   alongside, never a reshaping of `tickets`. This is what Jira itself does: system fields
@@ -53,17 +70,31 @@ the code, and each one is easy to undo by accident while thinking you are tidyin
 - **Ticket keys are already project-scoped** (`unique (project_id, number)`) and **blocked
   is a flag, not a column.** Both survive custom workflows unchanged. Preserve them.
 
-**The one genuinely deep door is RLS, and it is not on the feature list.** Every policy on
-every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions means
-rewriting *all* of them to a membership check — the security boundary of the whole app.
+**The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
+Every policy on every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions
+means rewriting *all* of them to a membership check — the security boundary of the whole app.
 The safety net is already built: the two-user isolation suite runs live against the real
-database on every PR, so a mistake in that migration goes **red**. Do not weaken it.
+database on every PR, so a mistake in that migration goes **red**. Do not weaken it — and
+note that keeping it green is not enough. **Extend it.** Owner-vs-stranger stops being the
+only case; member-vs-non-member, role-vs-role and removed-member each need coverage, or the
+suite will pass while the new boundary leaks.
 
-**Why we are not hedging further.** There is no production data and no user base, so almost
-every schema decision is reversible at near-zero cost. The real risk to this project is
-premature generalisation, not a missing abstraction: a half-built workflow engine with no
-AI on top is a *worse* portfolio piece than a tight Scrum board that works. Build the
-slice. The doors are open; leave them that way and walk through them at Rung 3.
+A known trap, recorded from SPRIN-64: `completeSprint`'s guard relies on `sprints_owner`
+being `for all`. Under a membership model where **read is broader than write**, that guard
+silently stops holding **and the isolation suite would not flag it.** Re-audit every
+app-layer guard that leans on a policy's breadth, not only the policies themselves.
+
+**Migrations are hand-applied.** The Supabase MCP is wired `read_only=true` on purpose, so
+`apply_migration` is unavailable and that is not a fault to route around. Produce the SQL,
+hand David one copy-paste command, and let him run it in the SQL editor. Run `get_advisors`
+afterwards and keep it at **zero lints**. Rung 3 is migration-heavy, so this now applies to
+most stories rather than a rare one.
+
+**Why we still are not hedging further.** There is no production data and no user base, so
+almost every schema decision is reversible at near-zero cost. The real risk remains premature
+generalisation: build the slice in front of you, not the framework behind it. The difference
+now is only *which* slice — the doors above are being walked through in a stated order, one
+epic at a time, rather than all at once.
 
 ---
 
@@ -409,9 +440,10 @@ MCP connector — there is no native Atlassian connector on this machine. The Ji
 connection persists across sessions; check `has_active_connection` before ever
 asking for a re-auth. Transition ids are per-workflow: fetch them, never hardcode.
 - **The board is the source of truth for what is left to build.** Phase 1's epics and
-  stories are all created and Done, so query it (`statusCategory != Done`) rather than a
-  document — the phase-1 backlog file that used to hold them was retired in SPRIN-69,
-  and git history has it if the original ACs are ever needed.
+  stories are all created and Done, and **Rung 3's five epics and their stories now live
+  there too**, so query it (`statusCategory != Done`) rather than a document — the phase-1
+  backlog file that used to hold them was retired in SPRIN-69, and git history has it if
+  the original ACs are ever needed.
 - Confirm the Jira workflow columns map to the four fixed statuses. If they do
   not, adjust the Jira workflow, not the app scope.
 - Move each issue as work progresses: In Progress on start, In Review on PR
