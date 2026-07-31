@@ -5,13 +5,10 @@ import {
   DEFAULT_PROJECT_STATUSES,
   SPRINT_STATUSES,
   STATUS_CATEGORIES,
-  TICKET_STATUSES,
-  TICKET_STATUS_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   isSprintStatus,
   isStatusCategory,
-  isTicketStatus,
   isTicketType,
   type ProjectType,
   type TicketInsert,
@@ -235,28 +232,6 @@ describe('domain vocabulary matches the database check constraints', () => {
     )
   })
 
-  /**
-   * The seam SPRIN-79 opens, held shut until SPRIN-76 closes it properly.
-   *
-   * `tickets_status_check` is gone, so nothing in the database constrains a ticket
-   * to the board's four columns any more — the constraint is now a foreign key to
-   * whatever rows `project_statuses` happens to hold. The board still renders from
-   * `TICKET_STATUSES`, so if the seed and that array ever disagree, a ticket lands
-   * on a status the board cannot draw and simply disappears.
-   *
-   * SPRIN-76 deletes `TICKET_STATUSES` and renders from the rows, at which point
-   * this test goes with it. Until then it is the only thing spanning the gap.
-   */
-  it('the seeded slugs are exactly the board columns the client still renders', () => {
-    expect(seededProjectStatuses().map((s) => s.slug)).toEqual([...TICKET_STATUSES])
-  })
-
-  it('the seeded names are exactly the labels the client still renders', () => {
-    expect(seededProjectStatuses().map((s) => s.name)).toEqual(
-      TICKET_STATUSES.map((s) => TICKET_STATUS_LABELS[s]),
-    )
-  })
-
   it('exactly one seeded status is the initial one, and it is tickets.status default', () => {
     const initial = seededProjectStatuses().filter((s) => s.is_initial)
     expect(initial).toHaveLength(1)
@@ -299,23 +274,6 @@ describe('domain vocabulary matches the database check constraints', () => {
   })
 })
 
-describe('board column labels', () => {
-  it('has a label for every ticket status', () => {
-    for (const status of TICKET_STATUSES) {
-      expect(TICKET_STATUS_LABELS[status]).toBeTruthy()
-    }
-  })
-
-  it('labels the four fixed columns in the expected words', () => {
-    expect(TICKET_STATUS_LABELS).toEqual({
-      todo: 'To Do',
-      in_progress: 'In Progress',
-      in_review: 'In Review',
-      done: 'Done',
-    })
-  })
-})
-
 describe('ticket type labels', () => {
   it('has a label for every ticket type', () => {
     for (const type of TICKET_TYPES) {
@@ -329,17 +287,6 @@ describe('ticket type labels', () => {
 })
 
 describe('type guards', () => {
-  it('accepts every valid ticket status and rejects anything else', () => {
-    for (const status of TICKET_STATUSES) expect(isTicketStatus(status)).toBe(true)
-    expect(isTicketStatus('blocked')).toBe(false)
-    expect(isTicketStatus('archived')).toBe(false)
-    expect(isTicketStatus('')).toBe(false)
-  })
-
-  it('does not treat blocked as a status — it is a flag on the ticket', () => {
-    expect(TICKET_STATUSES).not.toContain('blocked')
-  })
-
   it('accepts every valid ticket type and rejects anything else', () => {
     for (const type of TICKET_TYPES) expect(isTicketType(type)).toBe(true)
     expect(isTicketType('subtask')).toBe(false)

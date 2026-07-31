@@ -8,12 +8,18 @@ import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import { SprintsTab } from './SprintsTab'
 import type { ProjectsContext } from './AppLayout'
-import type { Sprint, Ticket } from '@/lib/domain'
+import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
+import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
+import { listProjectStatuses } from '@/lib/project-statuses'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
+}))
+vi.mock('@/lib/project-statuses', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-statuses')>()),
+  listProjectStatuses: vi.fn(),
 }))
 // Spread the real module so pure helpers (e.g. parseBlockReason, which the detail
 // dialog calls during render) stay real; only the network-touching functions are mocked.
@@ -36,9 +42,21 @@ vi.mock('@/lib/sprints', async (orig) => ({
   completeSprint: vi.fn(),
 }))
 
+// What `seed_project_statuses()` writes for every new project, so the default mock describes
+// a project the database could actually produce. It resolved `[]` when Task 4 first wired this
+// read, which was harmless only while nothing consumed the rows; since SPRIN-76's task 5 the
+// board renders one column per row, and `[]` is a project with NO columns — a state SPRIN-80
+// exists to make impossible. Tests about the read itself still override this locally.
+const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
+  ...status,
+  id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+})) as unknown as ProjectStatus[]
+
 const mockList = vi.mocked(listTickets)
 const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
+const mockListStatuses = vi.mocked(listProjectStatuses)
 beforeEach(() => {
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
@@ -48,6 +66,7 @@ beforeEach(() => {
   vi.mocked(createSprint).mockReset()
   vi.mocked(startSprint).mockReset()
   vi.mocked(completeSprint).mockReset()
+  mockListStatuses.mockReset().mockResolvedValue(SEEDED_STATUSES)
 })
 
 const PROJECTS = [
@@ -132,11 +151,13 @@ function SprintContextProbe() {
  * reading the context directly can pin the phase itself.
  */
 function TicketContextProbe() {
-  const { tickets, ticketsPhase, sprintsPhase, onRetry } = useOutletContext<ProjectShellContext>()
+  const { tickets, ticketsPhase, sprintsPhase, statusesPhase, onRetry } =
+    useOutletContext<ProjectShellContext>()
   return (
     <div>
       <p>tickets phase: {ticketsPhase}</p>
       <p>sprints phase: {sprintsPhase}</p>
+      <p>statuses phase: {statusesPhase}</p>
       <ul>
         {tickets.map((t) => (
           <li key={t.id}>{t.summary}</li>
@@ -517,6 +538,69 @@ describe('ProjectShell', () => {
     expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
   })
 
+  // THE SAME SEAM, one story later, for SPRIN-76's per-project statuses — through the REAL
+  // BacklogTab and the REAL TicketDetailDialog, for the identical reason: `statuses` and
+  // `statusesPhase` are optional and defaulted on the dialog, so forgetting either at the call
+  // site leaves the picker permanently disabled, or showing raw slugs, while every per-task
+  // unit test still passes. Per-task mocking is blind to this seam by construction — the
+  // dialog's own tests pass the props by hand, and the shell's tests never touched the picker.
+  //
+  // Measured, not assumed. At review of SPRIN-76 task 6 the two halves behaved differently:
+  // `sprints={[]}` at the call site was caught by the sprint test above, while `statuses={[]}`
+  // left all 668 unit tests green. This test closes that half. Deleting `statuses={statuses}`
+  // or `statusesPhase={statusesPhase}` from `<TicketDetailDialog>` must turn it red; that has
+  // been verified by doing it.
+  it("offers the project's own status rows in the detail dialog's picker (real wiring)", async () => {
+    const u = userEvent.setup()
+    // A vocabulary the seeded four cannot account for. If the dialog ever went back to a
+    // hard-coded list, or the shell stopped handing over the rows it read, 'Parked' vanishes —
+    // whereas a fixture of exactly the seeded four would agree with a hard-coded list and prove
+    // nothing.
+    const parked = {
+      ...SEEDED_STATUSES[0]!,
+      id: '5ec0dd09-0000-4000-8000-000000000000',
+      slug: 'parked',
+      name: 'Parked',
+      position: 5,
+      is_initial: false,
+    }
+    mockListStatuses.mockResolvedValue([...SEEDED_STATUSES, parked])
+    mockList.mockResolvedValue([ticketA])
+    // Echo the patch back as the server row would, so the reconcile after the optimistic
+    // update agrees with it rather than reverting the field under test.
+    vi.mocked(updateTicket).mockImplementation(async (id, patch) => ({
+      ok: true,
+      ticket: { ...ticketA, id, ...patch } as Ticket,
+    }))
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Enabled at all only because `statusesPhase` arrived: the picker is
+    // `disabled={statusesPhase !== 'loaded'}`, and its default is 'loading'.
+    const picker = await screen.findByRole('combobox', { name: 'status' })
+    expect(picker).toBeEnabled()
+    // Populated from the rows the shell READ — including one no constant ever held.
+    expect(within(picker).getByRole('option', { name: 'Parked' })).toBeInTheDocument()
+    // And by NAME, not slug: `statuses={[]}` would leave `statusOptions` appending the ticket's
+    // own status as `{ slug: 'todo', name: 'todo' }`, so 'To Do' is unreachable without the rows.
+    expect(within(picker).getByRole('option', { name: 'To Do' })).toBeInTheDocument()
+
+    // The header's label runs through the OTHER consumer of the same rows — `statusName` in the
+    // dialog — so it fails independently of the picker. Scoped to the title row (a regex name
+    // query: the heading's accessible name is composed from styled spans, see CLAUDE.md).
+    expect(
+      within(screen.getByRole('heading', { name: /APP-1/ })).getByText('To Do'),
+    ).toBeInTheDocument()
+
+    // And the seam is live, not merely rendered: a status only this project's rows contain is
+    // selectable and commits.
+    await u.selectOptions(picker, 'parked')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { status: 'parked' }),
+    )
+  })
+
   // S4.6: the ticket read is three-state, like the sprint read beside it. Before this, the
   // shell's `.catch()` *resolved* the load with an empty list, so a rejected `listTickets`
   // looked finished AND successful — which is why a paused database claimed the backlog was
@@ -661,6 +745,50 @@ describe('ProjectShell', () => {
       expect(await screen.findByText('tickets phase: loading')).toBeVisible()
       expect(screen.queryByText('tickets phase: failed')).not.toBeInTheDocument()
       expect(await screen.findByText('sprints phase: loading')).toBeVisible()
+    })
+  })
+
+  // SPRIN-76 Task 4: the shell's third project-scoped read, wired the same way as tickets
+  // and sprints — same reloadNonce, so Retry covers it too.
+  describe('the project statuses read', () => {
+    it('reads the project statuses for the active project', async () => {
+      renderShell('/projects/p1')
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledWith('p1'))
+    })
+
+    // The one that matters: a statuses read wired to its OWN nonce instead of the shared
+    // `reloadNonce` would pass the test above and still leave Retry silently partial — the
+    // user clicks Retry, tickets and sprints reload, statuses never do, and nothing is red.
+    it('Retry reloads the statuses too, not only tickets and sprints', async () => {
+      const u = userEvent.setup()
+      mockListStatuses.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([])
+      renderShell('/projects/p1/ticket-probe')
+
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledTimes(1))
+
+      await u.click(await screen.findByRole('button', { name: 'probe retry' }))
+
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledTimes(2))
+    })
+
+    // Fix round 1 (Critical): the two tests above only assert the read was CALLED, never
+    // what phase it produced — a regression that swapped `statusesPhase`'s source (e.g. for
+    // `sprintRead.phase`) would call `listProjectStatuses` correctly and still ship a
+    // permanently wrong phase, undetected. These pin the phase itself, through both
+    // transitions, the same way the ticket/sprint phase tests below already do.
+    it("publishes 'loaded' with statusesPhase once the read lands", async () => {
+      mockListStatuses.mockResolvedValue([])
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('statuses phase: loaded')).toBeVisible()
+    })
+
+    it("publishes 'failed' on statusesPhase when listProjectStatuses rejects, never 'loaded'", async () => {
+      mockListStatuses.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('statuses phase: failed')).toBeVisible()
+      expect(screen.queryByText('statuses phase: loaded')).not.toBeInTheDocument()
     })
   })
 

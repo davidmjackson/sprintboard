@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { useTaggedRead } from './project-reads'
+import { firstUnready, useTaggedRead } from './project-reads'
 
 type Row = { id: string }
 
@@ -189,4 +189,66 @@ describe('useTaggedRead', () => {
   // The `active` cleanup is genuinely covered, by the two project-switch tests above: the
   // cleanup function runs on a dependency change exactly as it does on unmount, and those
   // tests DO go red when it is removed — on both the resolve and the reject path.
+})
+
+describe('firstUnready', () => {
+  it('returns null when every read has loaded', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loaded' },
+        { resource: 'sprints', phase: 'loaded' },
+      ]),
+    ).toBeNull()
+  })
+
+  it('reports a failed read', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loaded' },
+        { resource: 'sprints', phase: 'failed' },
+      ]),
+    ).toEqual({ resource: 'sprints', phase: 'failed' })
+  })
+
+  it('reports a loading read when nothing has failed', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loaded' },
+        { resource: 'sprints', phase: 'loading' },
+      ]),
+    ).toEqual({ resource: 'sprints', phase: 'loading' })
+  })
+
+  // THE test. A single ordered scan returns the LOADING one here and silently changes
+  // what the board shows: an error replaced by a spinner that never resolves.
+  it('prefers a failure that comes AFTER a loading read in the list', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loading' },
+        { resource: 'sprints', phase: 'failed' },
+      ]),
+    ).toEqual({ resource: 'sprints', phase: 'failed' })
+  })
+
+  it('reports the first of several failures, in source order', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'failed' },
+        { resource: 'sprints', phase: 'failed' },
+      ]),
+    ).toEqual({ resource: 'tickets', phase: 'failed' })
+  })
+
+  it('reports the first of several loading reads, in source order', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loading' },
+        { resource: 'sprints', phase: 'loading' },
+      ]),
+    ).toEqual({ resource: 'tickets', phase: 'loading' })
+  })
+
+  it('returns null for an empty list', () => {
+    expect(firstUnready([])).toBeNull()
+  })
 })

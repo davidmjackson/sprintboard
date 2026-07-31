@@ -3,7 +3,9 @@ import { useRef, useState } from 'react'
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDeliverables } from '@/lib/ticket-deliverables'
-import type { Sprint, Ticket } from '@/lib/domain'
+import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
+import { statusName } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
 import { TicketDetailHeader, TicketBlockedBanner } from './TicketDetailHeader'
 import { TicketBlockDialog, TicketDeleteDialog } from './TicketActionDialogs'
@@ -31,6 +33,8 @@ export function TicketDetailDialog({
   epics = [],
   sprints = [],
   sprintsPhase = 'loading',
+  statuses = [],
+  statusesPhase = 'loading',
   onOpenChange,
   onUpdated,
   onDeleted,
@@ -45,6 +49,13 @@ export function TicketDetailDialog({
   /** Whether that list is trustworthy yet. Defaults to 'loading' — i.e. unknown, so the
    *  picker is disabled — which is the honest default for a standalone render. */
   sprintsPhase?: SprintsPhase
+  /** The project's status rows, in column (`position`) order (SPRIN-76). The sidebar's
+   *  status picker offers them; the header shows the one this ticket is on. Optional and
+   *  defaulted for the same reason as `sprints`. */
+  statuses?: ProjectStatus[]
+  /** Whether that list is trustworthy yet. Defaults to 'loading' — i.e. unknown, so the
+   *  status picker is disabled — which is the honest default for a standalone render. */
+  statusesPhase?: ReadPhase
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
@@ -106,8 +117,12 @@ export function TicketDetailDialog({
           }
         }}
       >
+        {/* The header takes the RESOLVED name, not the rows: it renders one label, and a
+            second lookup site would be a second place the AC4 slug fallback could drift
+            from the picker's. Resolved once, here. */}
         <TicketDetailHeader
           ticket={ticket}
+          statusName={statusName(statuses, ticket.status)}
           onBlock={blockFlow.open}
           onUnblock={() => void blockFlow.unblock()}
           onDelete={() => deleteFlow.setConfirming(true)}
@@ -145,6 +160,8 @@ export function TicketDetailDialog({
             epics={epics}
             sprints={sprints}
             sprintsPhase={sprintsPhase}
+            statuses={statuses}
+            statusesPhase={statusesPhase}
             commit={commit}
             setError={setError}
             onEditingChange={handleEditingChange}

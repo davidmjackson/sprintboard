@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
-import { TICKET_STATUSES, TICKET_STATUS_LABELS } from '@/lib/domain'
 import type { Ticket, TicketStatus } from '@/lib/domain'
 import { selectActiveSprint, selectBlockedTickets, summariseColumn } from '@/lib/board'
 import { selectSprintTickets } from '@/lib/backlog'
+import { firstUnready } from '@/lib/project-reads'
+import { statusName } from '@/lib/project-statuses'
 import { isSearchActive, selectMatchingTickets } from '@/lib/ticket-search'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
@@ -19,10 +20,16 @@ import { TicketSearchInput } from './TicketSearchInput'
  * when there are any — how many cards carry no estimate, so a total is never silently
  * understated.
  *
- * It is a separate component for two reasons. `BoardTab` sits at the T2 cyclomatic limit
- * of 10, so its three conditionals (the empty check, the singular/plural count, and the
- * unestimated count) have to be somebody else's; and the arithmetic itself is
+ * It is a separate component for two reasons. When it was written `BoardTab` measured exactly
+ * 10 — the T2 cyclomatic limit — so its three conditionals (the empty check, the singular/plural
+ * count, and the unestimated count) HAD to be somebody else's; and the arithmetic itself is
  * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
+ *
+ * The first reason is no longer a constraint: SPRIN-76's `firstUnready` refactor bought two
+ * branches back and `BoardTab` measures **9 of 10** as of that story (`npx eslint
+ * src/routes/BoardTab.tsx --rule '{"complexity":["error",1]}'` — re-measure rather than trust
+ * this line). The split stays because it is the right shape and hoisting three conditionals
+ * would spend the whole margin; the second reason never depended on the count at all.
  *
  * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards
  * actually on screen — the blocked-only filter and the SPRIN-68 search filter both change
@@ -53,10 +60,13 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  * the board already had it before this story: with blocked-only on, a column holding no
  * blocked cards has always said "No tickets yet."
  *
- * The `||` lives HERE rather than in `BoardTab` for a measured reason: `BoardTab`'s body sits
- * at the T2 cyclomatic limit of exactly 10, so computing a filter-active flag up there takes
- * it to 11 and reddens `npm run lint`. Deciding the sentence in its own component costs
- * `BoardTab` nothing.
+ * The `||` lives HERE rather than in `BoardTab` for a reason that was measured when it was
+ * written: `BoardTab`'s body then sat at the T2 cyclomatic limit of exactly 10, so computing a
+ * filter-active flag up there took it to 11 and reddened `npm run lint`. That is no longer
+ * true — SPRIN-76's `firstUnready` refactor left `BoardTab` at **9 of 10** — so this is now a
+ * preference, not a forced move. It stays a preference worth keeping: deciding the sentence in
+ * its own component costs `BoardTab` nothing, and the remaining margin is better spent on a
+ * state the board cannot otherwise tell apart than on inlining a `||`.
  */
 function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
   const filtering = blockedOnly || isSearchActive(query)
@@ -72,20 +82,34 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
 }
 
 /**
- * The board: the four fixed columns, in board order (from the domain module — never inlined).
+ * The board: one column per row in this project's `project_statuses` table, in the order the
+ * rows arrive. That order IS `position` — `listProjectStatuses` sorts by it, and SPRIN-76 kept
+ * the sort there rather than re-applying it here so exactly one place decides where a column
+ * sits. Before SPRIN-76 the columns were the four fixed constants in `domain.ts`; they are the
+ * project's own vocabulary now, and a project with five statuses gets five columns.
+ *
+ * A ticket whose `status` matches no column renders NOWHERE — no fallback column, no silent
+ * reassignment. That is safe rather than lax: `tickets.status` carries a composite foreign key
+ * to `project_statuses (project_id, slug)`, so the database cannot hold such a row. SPRIN-80
+ * owns orphan safety in the app (the `is_initial` default, and "a project has at least one
+ * status"); a test here pins the drop so the behaviour can never become silent meanwhile.
+ * Everything the board keys and writes is the row's SLUG, never its id — the fk is keyed on the
+ * slug precisely so renaming a status rewrites no ticket row.
+ *
  * It renders the ACTIVE sprint's tickets (S7.1), each in its status column; an empty column
  * says so. The active-sprint rule lives in `selectActiveSprint`; the membership rule in
  * `selectSprintTickets` — the board only composes them.
  *
- * The board depends on BOTH reads. Tickets tell it what exists; sprints tell it which sprint is
- * active — without that it cannot know what belongs on the board. So a failed or still-loading
- * SPRINTS read is handled exactly like the tickets read: it must not render a confident empty
- * board, which would be the S4.6 defect of a distinct state wearing the empty state's face.
- * Ticket failure is shown first when both fail — one alert, one Retry, and `onRetry` reloads
- * both reads together.
+ * The board depends on ALL THREE reads. Tickets tell it what exists; sprints tell it which
+ * sprint is active; statuses tell it what its columns ARE — without any one of them it cannot
+ * render an honest board. So a failed or still-loading statuses read is handled exactly like
+ * the other two: it must not render a confident empty board, which would be the S4.6 defect of
+ * a distinct state wearing the empty state's face. `firstUnready` decides which read speaks —
+ * any `failed` beats any `loading`, then source order — so one alert and one Retry are shown
+ * however many reads are unready, and `onRetry` reloads all three together.
  *
  * "No active sprint" (sprints loaded, none active) is its own honest state: a caption above the
- * grid, so four empty columns are never mistaken for "you have no tickets".
+ * grid, so a row of empty columns is never mistaken for "you have no tickets".
  *
  * S7.2 makes the board writable: dragging a card to another column changes its `status`. The
  * move is optimistic and rolls back on failure — see `moveTicket`.
@@ -95,8 +119,17 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
  * together via `selectMatchingTickets`.
  */
 export function BoardTab() {
-  const { tickets, ticketsPhase, sprints, sprintsPhase, onRetry, onOpenTicket, onTicketUpdated } =
-    useOutletContext<ProjectShellContext>()
+  const {
+    tickets,
+    ticketsPhase,
+    sprints,
+    sprintsPhase,
+    statuses,
+    statusesPhase,
+    onRetry,
+    onOpenTicket,
+    onTicketUpdated,
+  } = useOutletContext<ProjectShellContext>()
 
   // The freshest ticket list, readable from inside an in-flight `moveTicket` async closure.
   // Writing a ref during render is forbidden by the project's react-hooks/refs rule, so the
@@ -134,7 +167,7 @@ export function BoardTab() {
     if (!result.ok) {
       onTicketUpdated({ ...latest, status: fromStatus }) // revert only status, onto latest
       setMoveError(
-        `Could not move ${ticket.key} to ${TICKET_STATUS_LABELS[toStatus]}. Please try again.`,
+        `Could not move ${ticket.key} to ${statusName(statuses, toStatus)}. Please try again.`,
       )
       return
     }
@@ -159,14 +192,49 @@ export function BoardTab() {
     if (id) void moveTicket(id, toStatus)
   }
 
-  if (ticketsPhase === 'failed') {
-    return <LoadFailure resource="tickets" onRetry={onRetry} />
+  // The three-read gate. `firstUnready`'s array order is the tie-break WITHIN a kind, so
+  // tickets still speak first when several reads fail together — the S7.1 behaviour, unchanged.
+  // The literal `resource` strings are what keep `LoadFailure`'s closed union closed: `R`
+  // infers `'tickets' | 'sprints' | 'statuses'` here and flows in unwidened.
+  const unready = firstUnready([
+    { resource: 'tickets', phase: ticketsPhase },
+    { resource: 'sprints', phase: sprintsPhase },
+    { resource: 'statuses', phase: statusesPhase },
+  ])
+  if (unready) {
+    return unready.phase === 'failed' ? (
+      <LoadFailure resource={unready.resource} onRetry={onRetry} />
+    ) : (
+      <p className="text-muted-foreground text-sm">Loading…</p>
+    )
   }
-  if (sprintsPhase === 'failed') {
-    return <LoadFailure resource="sprints" onRetry={onRetry} />
-  }
-  if (ticketsPhase === 'loading' || sprintsPhase === 'loading') {
-    return <p className="text-muted-foreground text-sm">Loading…</p>
+
+  // A SUCCESSFUL statuses read that returned no rows. Without it, execution fell through to
+  // `statuses.map([])` and painted a columnless `<div class="grid">` under the sprint name and
+  // the filters — every card in the sprint gone, nothing announced, the chrome above implying a
+  // healthy board. That is the S4.6 defect once more: a distinct state wearing another's face.
+  //
+  // It is unreachable today (the seed trigger guarantees four rows and `activeProjectId` comes
+  // from the owner-scoped project list) and deliberately handled anyway, because RLS FILTERS
+  // rather than raises: a policy that denies the read returns `{data: [], error: null}`, which
+  // arrives here as exactly `phase: 'loaded'` with `items: []`. SPRIN-77/80 (status deletion,
+  // with nothing yet enforcing "a project has at least one status") and SPRIN-75 (every policy
+  // rewritten to a membership check, where a `project_statuses` policy narrower than the
+  // `projects` one hands a member a blank board) both make it reachable.
+  //
+  // `role="status"`, not `role="alert"`, and no Retry: the read SUCCEEDED. `role="alert"` and
+  // `LoadFailure` stay reserved for actual failures. The sentence names COLUMNS and STATUSES so
+  // it cannot be misread as either neighbour — "No active sprint — start one from the Sprints
+  // tab." or a column's own "No tickets yet." / "No matches." It promises no settings screen,
+  // because managing statuses does not exist until SPRIN-77. Returning early is the point: the
+  // empty grid, the sprint caption and the filters must not sit above this.
+  if (statuses.length === 0) {
+    return (
+      <p role="status" className="text-muted-foreground text-sm">
+        This board has no columns — this project has no statuses, so none of its tickets can be
+        shown.
+      </p>
+    )
   }
 
   const activeSprint = selectActiveSprint(sprints)
@@ -191,8 +259,11 @@ export function BoardTab() {
       {activeSprint !== null ? (
         <>
           {/* The board never said WHICH sprint it was showing. Both children hang off the
-              ONE `activeSprint !== null` test on purpose: `BoardTab` sits at the T2
-              cyclomatic limit of 10, so a second conditional here reddens the lint gate. */}
+              ONE `activeSprint !== null` test on purpose: when this was written `BoardTab`
+              measured exactly 10 — the T2 limit — and a second test here reddened the lint
+              gate. It measures 9 of 10 now, so grouping them is a preference rather than a
+              constraint; it is still one test for one question, and splitting it would buy
+              nothing. */}
           <p className="flex flex-wrap items-baseline gap-2 text-sm">
             <span className="font-medium">{activeSprint.name}</span>
             <SprintDates sprint={activeSprint} />
@@ -210,17 +281,17 @@ export function BoardTab() {
         </>
       ) : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {TICKET_STATUSES.map((status) => {
-          const column = visibleTickets.filter((ticket) => ticket.status === status)
+        {statuses.map((status) => {
+          const column = visibleTickets.filter((ticket) => ticket.status === status.slug)
           return (
             <section
-              key={status}
+              key={status.slug}
               onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleDrop(status)}
+              onDrop={() => handleDrop(status.slug)}
               className="bg-muted/30 flex flex-col gap-3 rounded-lg border p-3"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-x-2">
-                <h2 className="text-sm font-medium">{TICKET_STATUS_LABELS[status]}</h2>
+                <h2 className="text-sm font-medium">{status.name}</h2>
                 <BoardColumnSummary tickets={column} />
               </div>
               {column.length === 0 ? (

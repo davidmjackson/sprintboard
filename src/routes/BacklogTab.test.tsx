@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { BacklogTab } from './BacklogTab'
 import type { ProjectShellContext } from './ProjectShell'
+import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
+import type { ProjectStatus } from '@/lib/domain'
 
 // SPRIN-61 AC6: "the same control works from the Backlog" — reaching the ticket detail
 // dialog (and its keyboard-operable status picker) from a backlog row depends entirely on
@@ -31,6 +33,15 @@ const TICKETS = [
 // Harness copied from `BoardTab.test.tsx` (`ctxWith` / `renderTab`) rather than
 // reinvented, so both files exercise BacklogTab through the same router + outlet-context
 // shape the real app renders it in.
+// The four seeded rows, as `BoardTab.test.tsx` builds them. The backlog does not render
+// columns, so these exist only to keep the context shape identical to the one `ProjectShell`
+// publishes — a harness that omitted them would be a different shell from the real one.
+const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
+  ...status,
+  id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
+  project_id: 'p1',
+})) as unknown as ProjectStatus[]
+
 function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
   return {
     project: {} as never,
@@ -38,6 +49,8 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     ticketsPhase: 'loaded',
     sprints: [],
     sprintsPhase: 'loaded',
+    statuses: SEEDED_STATUSES,
+    statusesPhase: 'loaded',
     onRetry: vi.fn(),
     onSprintCreated: vi.fn(),
     onSprintUpdated: vi.fn(),

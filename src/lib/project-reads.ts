@@ -109,6 +109,44 @@ function runRead<T>({ read, projectId, nonce, isActive, setResult }: RunReadArgs
     })
 }
 
+/**
+ * Which of several tagged reads should gate rendering, and why.
+ *
+ * The rule is two passes, not one: *any* `failed` beats *any* `loading`, then source order
+ * within each kind. A board with three reads (tickets, sprints, statuses) must keep showing
+ * an already-known failure even while another read is still in flight — collapsing this to a
+ * single ordered scan (`reads.find((r) => r.phase !== 'loaded')`) would let a `loading` read
+ * that merely appears earlier in the list mask a real failure later in it, replacing an error
+ * with a spinner that never resolves, because nothing ever retries a `loading` phase on its
+ * own. `BoardTab` already has this precedence today, hand-written as three `if`s over two
+ * reads; this is that rule, extracted once so a third read costs one array entry rather than
+ * another `if`.
+ *
+ * `R` is generic rather than fixed to `string` so it infers the caller's own resource union
+ * (e.g. `'tickets' | 'sprints' | 'statuses'`) at the call site. `resource` flows straight into
+ * `LoadFailure`, whose prop is a deliberately closed union — a security control documented on
+ * that component, since an open `string` channel would let raw PostgREST error text render into
+ * a `role="alert"`. Typing this helper to `string` would compile clean and dissolve that
+ * control silently, without anyone touching `LoadFailure` itself.
+ *
+ * **`extends string` is what makes that inference actually happen — do not drop it.** It is not
+ * a tidy-up of an unconstrained parameter. Inferring to a *naked* `R` widens each object
+ * literal's `resource` to `string`, so `<R>` alone produced exactly the outcome the paragraph
+ * above warns against. Measured when `BoardTab` became the first consumer (SPRIN-76 task 5):
+ * with `<R>` the board failed to compile with `Type 'string' is not assignable to type
+ * 'LoadFailureResource'`, and with `<R extends string>` it infers the union and compiles. The
+ * failure is loud rather than silent, which is why nothing shipped broken — but the mechanism
+ * this docblock described did not work until the constraint was added.
+ */
+export function firstUnready<R extends string>(
+  reads: readonly { resource: R; phase: ReadPhase }[],
+): { resource: R; phase: 'failed' | 'loading' } | null {
+  const failed = reads.find((r) => r.phase === 'failed')
+  if (failed) return { resource: failed.resource, phase: 'failed' }
+  const loading = reads.find((r) => r.phase === 'loading')
+  return loading ? { resource: loading.resource, phase: 'loading' } : null
+}
+
 /** What `useTaggedRead` hands back: the derived view, plus a guarded local mutator. */
 export type TaggedRead<T> = {
   phase: ReadPhase

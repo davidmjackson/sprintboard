@@ -2,18 +2,19 @@ import { useState } from 'react'
 import { Navigate, Outlet, useLocation, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
-import type { Project, Sprint, Ticket } from '@/lib/domain'
+import type { Project, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
+import { listProjectStatuses } from '@/lib/project-statuses'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
 import { TicketDetailDialog } from './TicketDetailDialog'
 
 /**
- * Both of this shell's reads are three-state, and symmetrically so (S4.6).
+ * All three of this shell's reads are three-state, and symmetrically so (S4.6).
  *
  * The ticket read used to be the odd one out: its `.catch()` *resolved* the load with an
  * empty list, so "loading" — derived purely from project-id tagging — was false on failure
@@ -40,8 +41,15 @@ export type ProjectShellContext = {
    *  always read `sprintsPhase` before treating an empty list as "no sprints". */
   sprints: Sprint[]
   sprintsPhase: SprintsPhase
-  /** Re-runs BOTH reads for this project. Manual only — there is no automatic retry,
-   *  backoff or polling — and it returns both phases to `loading` immediately, so a click
+  /** The project's statuses, in column (`position`) order. `[]` while loading and when the
+   *  read failed — always read `statusesPhase` before treating an empty list as "no
+   *  statuses". Shared for the same reason as sprints: the board's columns and the detail
+   *  dialog's status picker (both later tasks of this same story, SPRIN-76) both need the
+   *  same rows. */
+  statuses: ProjectStatus[]
+  statusesPhase: ReadPhase
+  /** Re-runs ALL THREE reads for this project. Manual only — there is no automatic retry,
+   *  backoff or polling — and it returns every phase to `loading` immediately, so a click
    *  is never mistaken for a no-op. */
   onRetry: () => void
   onSprintCreated: (sprint: Sprint) => void
@@ -71,6 +79,10 @@ export type ProjectShellContext = {
  *
  * It owns the sprint list for the same reason (S6.2): the Sprints tab renders it, and the
  * detail dialog's sprint picker — rendered here, not in a tab — needs the same options.
+ *
+ * It owns the project's status list for the same reason again (SPRIN-76): the board's
+ * columns and the detail dialog's status picker both need the same rows, so it is fetched
+ * once here rather than by each consumer.
  */
 export function ProjectShell() {
   const { projects, loading } = useOutletContext<ProjectsContext>()
@@ -90,10 +102,12 @@ export function ProjectShell() {
   const [reloadNonce, setReloadNonce] = useState(0)
   const onRetry = () => setReloadNonce((n) => n + 1)
 
-  // Two reads, one implementation. `listTickets`/`listSprints` are module-level functions,
-  // so the references are stable and the effects do not re-run every render.
+  // Three reads, one implementation. `listTickets`/`listSprints`/`listProjectStatuses` are
+  // module-level functions, so the references are stable and the effects do not re-run
+  // every render. All three share `reloadNonce`, so Retry covers all three.
   const ticketRead = useTaggedRead(activeProjectId, reloadNonce, listTickets)
   const sprintRead = useTaggedRead(activeProjectId, reloadNonce, listSprints)
+  const statusRead = useTaggedRead(activeProjectId, reloadNonce, listProjectStatuses)
 
   if (loading) {
     return (
@@ -107,6 +121,7 @@ export function ProjectShell() {
 
   const { phase: ticketsPhase, items: tickets } = ticketRead
   const { phase: sprintsPhase, items: sprints } = sprintRead
+  const { phase: statusesPhase, items: statuses } = statusRead
 
   const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
 
@@ -193,6 +208,8 @@ export function ProjectShell() {
                 ticketsPhase,
                 sprints,
                 sprintsPhase,
+                statuses,
+                statusesPhase,
                 onRetry,
                 onSprintCreated,
                 onSprintUpdated,
@@ -211,6 +228,8 @@ export function ProjectShell() {
           epics={tickets.filter((t) => t.type === 'epic')}
           sprints={sprints}
           sprintsPhase={sprintsPhase}
+          statuses={statuses}
+          statusesPhase={statusesPhase}
           currentUser={currentUser}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)
