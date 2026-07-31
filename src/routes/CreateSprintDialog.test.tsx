@@ -104,6 +104,18 @@ describe('CreateSprintDialog', () => {
     expect(createSprint).not.toHaveBeenCalled()
   })
 
+  it('closes the dialog on a successful create', async () => {
+    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={vi.fn()} />)
+    const user = await open()
+
+    await user.click(screen.getByRole('button', { name: 'Create sprint' }))
+
+    // Asserted here rather than only through ProjectShell: its two sibling create dialogs
+    // both pin their own close, and removing `close()` from this one used to go red only
+    // in ProjectShell.test.tsx — a failure that names the wrong component.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
   it('keeps the dialog open and reports a failed create', async () => {
     vi.mocked(createSprint).mockResolvedValue({ ok: false, error: 'unknown' })
     const onCreated = vi.fn()

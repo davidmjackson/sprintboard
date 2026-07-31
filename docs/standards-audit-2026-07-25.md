@@ -408,6 +408,41 @@ These are stated, not fixed: fixing them would mean touching one of the frozen t
 files or the behaviour those files pin, which this fix wave's scope explicitly
 excludes.
 
+> **CLOSED OUT BY SPRIN-70, 2026-07-31.** The list above is the 2026-07-27 record and is
+> left unedited — but it had gone stale, and re-measuring it by mutation before writing any
+> code changed the picture three ways. Do not read the eight bullets as a live to-do list;
+> read this block.
+>
+> **Two were already closed** by later stories, and the record never caught up:
+>
+> | Gap | Killed by |
+> |---|---|
+> | Blank story points submitting `0` | `sends undefined story points when the field is left blank` (+ a `ProjectShell` case) |
+> | `description`/`acceptanceCriteria` transposed | `does not transpose description and acceptance criteria` |
+>
+> **Five were real and are now pinned**, each verified by re-running its own mutation and
+> confirming RED: the two `navigate('/', { replace: true })` calls (`replaces the login/signup
+> entry, so Back does not return to the form`), `min={0}` (`floors the story-points input at
+> zero`), `shouldValidate` in **both** directions (`stays quiet about a derived key until the
+> user has tried to submit` and `clears the key error live once the name derives a valid key
+> after a failed submit`), and `CreateSprintDialog`'s close (`closes the dialog on a
+> successful create`).
+>
+> **One was misclassified and is not a coverage gap at all.** `displayName` losing its
+> `.trim()` in `SignupPage` is *unobservable*: `SignupSchema` already declares
+> `z.string().trim()` and `zodResolver` passes `onSubmit` the parsed values, so the second
+> `.trim()` is redundant and its removal changes no behaviour. It belongs in **"On guards
+> that no test can observe"** below, not here. `SignupPage.tsx` now carries a comment saying
+> so. A test *was* added for the trimming contract itself — it passes with or without that
+> line, because the schema is what enforces it.
+>
+> **`noValidate` and Fragment-vs-`<div>` remain untested and untestable in jsdom**, exactly
+> as originally stated. Unchanged.
+>
+> The lesson worth keeping: **a written gap list decays.** Two of eight were fixed without
+> anyone updating this file, and a third was wrong from the start. Re-measure before
+> planning work off a record like this one.
+
 ### On guards that no test can observe
 
 Two of these slices surfaced a guard whose removal is invisible to the whole suite —
