@@ -2,8 +2,12 @@ import { useFormState } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 
-/** Input-styled class for a native <select>. Native beats radix Select for a fixed enum:
- *  it needs no jsdom pointer mocks and tests cleanly with userEvent.selectOptions. */
+/** Input-styled class for a native <select>. Native beats radix Select for a short list of
+ *  plain options: it needs no jsdom pointer mocks and tests cleanly with
+ *  userEvent.selectOptions. This used to say "for a fixed enum", which SPRIN-76 made wrong —
+ *  the status picker's options are now the project's own `project_statuses` rows, read from
+ *  the database and different per project. The reason to stay native is the testability, not
+ *  the list being fixed. */
 export const selectClass =
   'border-input focus-visible:border-ring focus-visible:ring-ring/50 h-8 w-full rounded-lg border bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:ring-3 md:text-sm'
 

@@ -538,6 +538,69 @@ describe('ProjectShell', () => {
     expect(await screen.findByRole('button', { name: /Alpha summary/i })).toBeVisible()
   })
 
+  // THE SAME SEAM, one story later, for SPRIN-76's per-project statuses — through the REAL
+  // BacklogTab and the REAL TicketDetailDialog, for the identical reason: `statuses` and
+  // `statusesPhase` are optional and defaulted on the dialog, so forgetting either at the call
+  // site leaves the picker permanently disabled, or showing raw slugs, while every per-task
+  // unit test still passes. Per-task mocking is blind to this seam by construction — the
+  // dialog's own tests pass the props by hand, and the shell's tests never touched the picker.
+  //
+  // Measured, not assumed. At review of SPRIN-76 task 6 the two halves behaved differently:
+  // `sprints={[]}` at the call site was caught by the sprint test above, while `statuses={[]}`
+  // left all 668 unit tests green. This test closes that half. Deleting `statuses={statuses}`
+  // or `statusesPhase={statusesPhase}` from `<TicketDetailDialog>` must turn it red; that has
+  // been verified by doing it.
+  it("offers the project's own status rows in the detail dialog's picker (real wiring)", async () => {
+    const u = userEvent.setup()
+    // A vocabulary the seeded four cannot account for. If the dialog ever went back to a
+    // hard-coded list, or the shell stopped handing over the rows it read, 'Parked' vanishes —
+    // whereas a fixture of exactly the seeded four would agree with a hard-coded list and prove
+    // nothing.
+    const parked = {
+      ...SEEDED_STATUSES[0]!,
+      id: '5ec0dd09-0000-4000-8000-000000000000',
+      slug: 'parked',
+      name: 'Parked',
+      position: 5,
+      is_initial: false,
+    }
+    mockListStatuses.mockResolvedValue([...SEEDED_STATUSES, parked])
+    mockList.mockResolvedValue([ticketA])
+    // Echo the patch back as the server row would, so the reconcile after the optimistic
+    // update agrees with it rather than reverting the field under test.
+    vi.mocked(updateTicket).mockImplementation(async (id, patch) => ({
+      ok: true,
+      ticket: { ...ticketA, id, ...patch } as Ticket,
+    }))
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Enabled at all only because `statusesPhase` arrived: the picker is
+    // `disabled={statusesPhase !== 'loaded'}`, and its default is 'loading'.
+    const picker = await screen.findByRole('combobox', { name: 'status' })
+    expect(picker).toBeEnabled()
+    // Populated from the rows the shell READ — including one no constant ever held.
+    expect(within(picker).getByRole('option', { name: 'Parked' })).toBeInTheDocument()
+    // And by NAME, not slug: `statuses={[]}` would leave `statusOptions` appending the ticket's
+    // own status as `{ slug: 'todo', name: 'todo' }`, so 'To Do' is unreachable without the rows.
+    expect(within(picker).getByRole('option', { name: 'To Do' })).toBeInTheDocument()
+
+    // The header's label runs through the OTHER consumer of the same rows — `statusName` in the
+    // dialog — so it fails independently of the picker. Scoped to the title row (a regex name
+    // query: the heading's accessible name is composed from styled spans, see CLAUDE.md).
+    expect(
+      within(screen.getByRole('heading', { name: /APP-1/ })).getByText('To Do'),
+    ).toBeInTheDocument()
+
+    // And the seam is live, not merely rendered: a status only this project's rows contain is
+    // selectable and commits.
+    await u.selectOptions(picker, 'parked')
+    await waitFor(() =>
+      expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { status: 'parked' }),
+    )
+  })
+
   // S4.6: the ticket read is three-state, like the sprint read beside it. Before this, the
   // shell's `.catch()` *resolved* the load with an empty list, so a rejected `listTickets`
   // looked finished AND successful — which is why a paused database claimed the backlog was

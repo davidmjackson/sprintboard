@@ -74,8 +74,8 @@ const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
 })) as unknown as ProjectStatus[]
 
 // A vocabulary this project's rows could plausibly hold once SPRIN-77 lets them be edited:
-// five statuses, one of them ('parked') a slug the deleted `TICKET_STATUSES` constant never
-// contained, and in an order that deliberately disagrees with both the old hard-coded board
+// five statuses, one of them ('parked') a slug the `TICKET_STATUSES` constant this story goes on
+// to remove never contained, and in an order that deliberately disagrees with the hard-coded board
 // order and with sorting by slug. `listProjectStatuses` already returns rows ordered by
 // `position`, so the picker's job is to render the list it is handed, unsorted.
 //
@@ -798,7 +798,7 @@ describe('TicketDetailDialog', () => {
   })
 
   // SPRIN-76 AC2: the options are the PROJECT'S status rows, not a fixed four. The fixture
-  // holds five, includes a slug the deleted `TICKET_STATUSES` never had ('parked'), and is
+  // holds five, includes a slug `TICKET_STATUSES` never had ('parked'), and is
   // in an order that matches neither the old board order nor slug order — so a picker still
   // driven by the constants, or one that re-sorts, cannot pass.
   it('lists the project status rows as picker options, not a fixed four', () => {
@@ -854,6 +854,27 @@ describe('TicketDetailDialog', () => {
       expect(screen.getByLabelText('status')).toBeDisabled()
     },
   )
+
+  // The `statusesPhase = 'loading'` DEFAULT, pinned — the prop is optional, so nothing else in
+  // this file exercises the value the component picks when a caller says nothing. That default
+  // is the whole of the "a standalone render stays honest" claim, and it is one of the two
+  // branches that put this component on the T2 cyclomatic ceiling, so it should cost something
+  // to remove. Note the deliberate shape: rows ARE supplied and the phase is NOT, so a picker
+  // that offered them anyway could only be defaulting the phase to 'loaded' — which is exactly
+  // the mutation this kills. Nothing else in the suite goes red on it.
+  it('defaults statusesPhase to loading, keeping the picker disabled until a caller says otherwise', () => {
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        statuses={SEEDED_STATUSES}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+    expect(screen.getByLabelText('status')).toBeDisabled()
+  })
 
   // The test that tells `statusesPhase` apart from `statuses.length`: gating on the length
   // would disable this case while passing every other test in this file.
