@@ -66,8 +66,11 @@ function renderTab(Tab: ComponentType, ctx: ProjectShellContext = ctxWith()) {
 }
 
 describe('BacklogTab keyboard reachability (SPRIN-61 AC6)', () => {
+  // SPRIN-68 put the search box ahead of the list in DOM order, so it is now the first real
+  // tab stop — a second `Tab` is what reaches the row, not a change in reachability itself.
   it('is reachable by Tab', async () => {
     renderTab(BacklogTab)
+    await userEvent.tab()
     await userEvent.tab()
     expect(screen.getByRole('button', { name: /do the todo/i })).toHaveFocus()
   })
@@ -75,6 +78,7 @@ describe('BacklogTab keyboard reachability (SPRIN-61 AC6)', () => {
   it('opens the ticket on Enter, from the keyboard alone', async () => {
     const onOpenTicket = vi.fn()
     renderTab(BacklogTab, ctxWith({ onOpenTicket }))
+    await userEvent.tab()
     await userEvent.tab()
     expect(screen.getByRole('button', { name: /do the todo/i })).toHaveFocus()
     await userEvent.keyboard('{Enter}')
@@ -215,5 +219,90 @@ describe('BacklogTab says who a ticket is assigned to (SPRIN-67)', () => {
     expect(within(row).queryByText(/assigned to/i)).not.toBeInTheDocument()
     expect(within(row).queryByText(USER.email)).not.toBeInTheDocument()
     expect(within(row).getByText('Unassigned')).toBeInTheDocument()
+  })
+})
+
+const SEARCH_TICKETS = [
+  {
+    id: 't1',
+    key: 'MP-1',
+    number: 1,
+    summary: 'Wire the board',
+    type: 'story',
+    status: 'todo',
+    sprint_id: null,
+    is_blocked: false,
+    story_points: null,
+    assignee_id: null,
+    labels: [],
+  },
+  {
+    id: 't2',
+    key: 'MP-2',
+    number: 2,
+    summary: 'Fix the login redirect',
+    type: 'bug',
+    status: 'todo',
+    sprint_id: null,
+    is_blocked: false,
+    story_points: null,
+    assignee_id: null,
+    labels: [],
+  },
+] as never
+
+describe('BacklogTab search (SPRIN-68)', () => {
+  it('filters rows by summary as you type', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+  })
+
+  it('filters rows by ticket key', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'MP-2')
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+  })
+
+  it('shows everything again when the query is cleared (AC4)', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'login')
+    await userEvent.clear(box)
+    expect(screen.getByRole('button', { name: /wire the board/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+  })
+
+  // AC5. The negative assertion is the point: a filtered-empty backlog must NOT claim the
+  // project has no backlog. Asserting only the new message would stay green if both rendered.
+  it('says no matches, and does not claim the backlog is empty', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
+    expect(screen.getByText(/no tickets match your search/i)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing in the backlog/i)).not.toBeInTheDocument()
+  })
+
+  // The positive control for the test above: the real empty backlog still says the real thing.
+  it('still says the backlog is empty when it genuinely is', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: [] as never }))
+    expect(screen.getByText(/nothing in the backlog/i)).toBeInTheDocument()
+  })
+
+  // The stranding guard: the box that got you here must still be there to get you out.
+  it('keeps the search box rendered when the query matches nothing', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'zzz')
+    expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
+    await userEvent.clear(box)
+    expect(screen.getByRole('button', { name: /wire the board/i })).toBeInTheDocument()
+  })
+
+  // A search box over an empty backlog is furniture with nothing to do.
+  it('does not render the search box when the backlog is genuinely empty', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: [] as never }))
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
   })
 })
