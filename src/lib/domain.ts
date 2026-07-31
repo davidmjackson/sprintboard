@@ -2,16 +2,27 @@
  * The domain vocabulary the database cannot express, and the guards that keep it
  * honest.
  *
- * `status`, `type` and `project_type` are text columns with check constraints
- * rather than Postgres enums, so the generated `database.types.ts` types them as
- * bare `string`. These unions restore the narrowing on the client — at the cost
- * of being a second source of truth, which is exactly the thing that rots.
+ * `type`, `project_type` and `sprint.status` are text columns with check
+ * constraints rather than Postgres enums, so the generated `database.types.ts`
+ * types them as bare `string`. These unions restore the narrowing on the client —
+ * at the cost of being a second source of truth, which is exactly the thing that
+ * rots.
+ *
+ * `ticket.status` is no longer one of them. SPRIN-79 made the vocabulary
+ * per-project, so its check constraint became a composite foreign key to
+ * `project_statuses` — a constraint no regex can read off a column definition.
+ * Its link to the schema now runs through `DEFAULT_PROJECT_STATUSES` and the
+ * seeding trigger instead, which is why that constant exists.
  *
  * Three links hold the chain together, and each is checked somewhere different:
  *
  *   union  ≡  runtime array   — `Exact<>` below, at compile time
- *   array  ≡  check constraint — domain.test.ts, by parsing the DDL
- *   column ≡  the live database — regenerating database.types.ts
+ *   array  ≡  the schema file  — domain.test.ts, by parsing the DDL: a check
+ *                                constraint for most, the trigger's VALUES list
+ *                                for statuses
+ *   column ≡  the live database — regenerating database.types.ts, and for
+ *                                statuses, rls.integration.test.ts reading the
+ *                                rows the database actually seeded
  *
  * The middle link is the one that matters and the one a compiler cannot see, so
  * it is a test. `Assignable<>` alone is NOT sufficient: the generated column type
@@ -36,7 +47,16 @@ export type TicketStatus = 'todo' | 'in_progress' | 'in_review' | 'done'
 export type SprintStatus = 'future' | 'active' | 'complete'
 export type ProjectType = 'scrum'
 
-/** The four fixed board columns, in board order. Editable columns are Rung 3. */
+/**
+ * The four board columns the client still renders, in board order.
+ *
+ * As of SPRIN-79 the database no longer constrains `tickets.status` to this list —
+ * `project_statuses` does, per project. This array survives only until SPRIN-76
+ * switches the board to render from those rows, at which point it is deleted.
+ * `domain.test.ts` asserts it still equals `DEFAULT_PROJECT_STATUSES`; that
+ * assertion is what keeps the two halves of the change from drifting apart in the
+ * window between them.
+ */
 export const TICKET_STATUSES = [
   'todo',
   'in_progress',
@@ -83,7 +103,13 @@ export const STATUS_CATEGORIES = [
  */
 export const DEFAULT_PROJECT_STATUSES = [
   { slug: 'todo', name: 'To Do', category: 'todo', position: 1, is_initial: true },
-  { slug: 'in_progress', name: 'In Progress', category: 'in_progress', position: 2, is_initial: false },
+  {
+    slug: 'in_progress',
+    name: 'In Progress',
+    category: 'in_progress',
+    position: 2,
+    is_initial: false,
+  },
   { slug: 'in_review', name: 'In Review', category: 'in_progress', position: 3, is_initial: false },
   { slug: 'done', name: 'Done', category: 'done', position: 4, is_initial: false },
 ] as const satisfies readonly {

@@ -20,6 +20,48 @@
 -->
 # SPRIN-79 — per-project statuses and board columns
 
+> ## SCOPE CORRECTION, 2026-07-31 — read before the rest of this document
+>
+> **Open question 1 below is answered, and not the way this document proposed. SPRIN-79
+> is the DATABASE half only.** The board keeps rendering from `TICKET_STATUSES`; switching
+> it to read `project_statuses` rows is **SPRIN-76**, which already existed on the board
+> when this document was written.
+>
+> The 13-agent workflow read the code exhaustively but never read the sibling backlog
+> items, so it specced this story to swallow the next one whole. SPRIN-76's description
+> gives the reason for the split in its own words:
+>
+> > *"WHY THIS IS ITS OWN STORY: doing it together with the schema change would make a red
+> > test ambiguous between 'the migration is wrong' and 'the rendering is wrong'.
+> > Separating them keeps each diff diagnosable."*
+>
+> CLAUDE.md makes the board the source of truth for what is left to build, so that
+> settles it. **Everything in "What the code has to change" from `src/routes/` onward
+> belongs to SPRIN-76**, along with the `listProjectStatuses` read, the two
+> `project-reads.ts` helpers, the ~40 `TicketDetailDialog` renders, the three
+> `ProjectShellContext` fixtures and both E2E edits. Adversarial findings 6, 18, 19, 20,
+> 21 and 22 are all SPRIN-76's to answer — they are not dropped, they move.
+>
+> What SPRIN-79 kept: the migration exactly as designed, the schema-doc edit, the
+> regenerated types, the `domain.ts` contract additions, the `domain.test.ts` rework, and
+> every isolation-suite case. `domain.ts` **keeps** `TICKET_STATUSES` and
+> `TICKET_STATUS_LABELS` one story longer — SPRIN-76 deletes them.
+>
+> One thing this document did not anticipate, which the narrower scope forces: with
+> `tickets_status_check` dropped and the board still rendering constants, **nothing
+> connects the two halves**. `domain.test.ts` therefore gained two assertions that do not
+> appear anywhere below — the seeded slugs and the seeded names must equal what the board
+> renders. They are deliberately temporary and SPRIN-76 removes them.
+>
+> **David's answers to the other open questions**, given 2026-07-31:
+> - **Q2 — SELECT-only policy + `security definer` trigger: CONFIRMED.** Taken as designed.
+> - **Q5 — sequencing: build first, hand over one paste command.** Done.
+> - **Q3 (`category` ships unread) and Q4 (SPRIN-77's prerequisite):** decided under
+>   autopilot rather than asked. `category` stays, on the design's own reasoning — a
+>   custom status added at SPRIN-77 has no inferable category, so backfilling later means
+>   asking the user. The SPRIN-77 prerequisite stays enforced by the write-refusal tests,
+>   which go red the day the policy widens.
+
 ## The decision
 
 **Design 3 (`project_statuses` with a composite slug FK) wins.** Both judges reached it independently, on the same two grounds, and I agree with both. What follows is the argument, then what I grafted from the losers, then where I overruled all three designs because the adversarial pass proved them wrong.

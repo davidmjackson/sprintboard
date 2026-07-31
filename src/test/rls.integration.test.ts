@@ -2,7 +2,16 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
-import { assertCredentialsOrExplain, hasRlsCredentials, signIn, userId } from './supabase-clients'
+import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
+import {
+  adminClient,
+  anonClient,
+  assertCredentialsOrExplain,
+  hasRlsCredentials,
+  hasServiceRoleKey,
+  signIn,
+  userId,
+} from './supabase-clients'
 
 assertCredentialsOrExplain()
 
@@ -23,6 +32,18 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   let ticketA: string
   let keyA: string
   let ticketAKey: string
+  /**
+   * B owns a project purely so the status-correlation tests are not vacuous.
+   *
+   * `statuses_owner_read` reaches project_statuses INDIRECTLY, through an EXISTS on
+   * projects. Delete the correlating clause — `p.id = project_statuses.project_id` —
+   * and what remains is "does this user own ANY project", which still deparses
+   * plausibly and still filters B out entirely, because B owned nothing. Every
+   * B-sees-none assertion would keep passing against a policy that leaks every
+   * status in the database to anyone with a project. Giving B one closes that.
+   */
+  let projectB: string
+  let statusA: string
 
   beforeAll(async () => {
     a = await signIn('A')
@@ -56,11 +77,51 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     if (tErr) throw new Error(`Fixture: could not create A's ticket: ${tErr.message}`)
     ticketA = ticket.id
     ticketAKey = ticket.key
+
+    // B is already signed in above, so this costs no extra sign-in — which matters,
+    // because sign-ins are the fuel for the documented GoTrue rate-limit flake.
+    const { data: projB, error: pbErr } = await b
+      .from('projects')
+      .insert({ owner_id: userBId, name: "B's project", key: runKey() })
+      .select()
+      .single()
+    if (pbErr) throw new Error(`Fixture: could not create B's project: ${pbErr.message}`)
+    projectB = projB.id
+
+    const { data: statuses, error: stErr } = await a
+      .from('project_statuses')
+      .select('id, slug')
+      .eq('project_id', projectA)
+      .order('position')
+    if (stErr) throw new Error(`Fixture: could not read A's seeded statuses: ${stErr.message}`)
+    // A plural read returns `{ data: [], error: null }` when the policy filters
+    // everything, so `statuses[0].id` would throw a bare
+    // `TypeError: Cannot read properties of undefined` — which is very close to the
+    // signature CLAUDE.md documents for the auth rate limiter, and would send whoever
+    // sees it to a five-minute cooldown for what is actually a security defect.
+    if (!statuses || statuses.length !== 4) {
+      throw new Error(
+        `Fixture: expected 4 seeded statuses for A's project, got ${statuses?.length ?? 0}. ` +
+          'This is on_project_created_statuses or statuses_owner_read, NOT the auth rate ' +
+          'limiter — do not re-run it.',
+      )
+    }
+    statusA = statuses[0]!.id
   }, 30_000)
 
   afterAll(async () => {
     if (!hasRlsCredentials) return
     try {
+      // Positive control, taken BEFORE the delete. It has to be, and it has to use
+      // a role that can tell "gone" from "hidden": once the projects row is deleted,
+      // statuses_owner_read's EXISTS is false for every RLS-subject role, so a
+      // post-teardown read as A returns [] whether the statuses cascaded away or
+      // were stranded. adminClient() bypasses RLS, so it can see the difference.
+      const before = hasServiceRoleKey
+        ? await adminClient().from('project_statuses').select('id').eq('project_id', projectA)
+        : null
+      if (before) expect(before.data).toHaveLength(4)
+
       // Owner-scoped RLS means each client can only delete its own rows — which
       // is exactly the guarantee under test, so cleanup is also a final
       // assertion. A silent zero-row delete here would leak a project + sprint +
@@ -68,6 +129,22 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const { data, error } = await a.from('projects').delete().eq('id', projectA).select()
       expect(error).toBeNull()
       expect(data).toHaveLength(1)
+
+      // The deferred fk did not block the cascade, and nothing was left behind.
+      if (hasServiceRoleKey) {
+        const orphans = await adminClient()
+          .from('project_statuses')
+          .select('id')
+          .eq('project_id', projectA)
+        expect(orphans.error).toBeNull()
+        expect(orphans.data).toEqual([])
+      }
+
+      if (projectB) {
+        const bGone = await b.from('projects').delete().eq('id', projectB).select()
+        expect(bGone.error).toBeNull()
+        expect(bGone.data).toHaveLength(1)
+      }
     } finally {
       // Sign-outs must still happen even if the assertions above throw, and
       // must not mask whatever failure happened earlier in the suite.
@@ -123,6 +200,52 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(data![0]!.last_number).toBe(1)
     })
 
+    /**
+     * The primary guard on the four-column guarantee. domain.test.ts asserts that
+     * the SCHEMA FILE agrees with DEFAULT_PROJECT_STATUSES, but the schema file is
+     * not the database — migrations are applied by hand in the SQL editor, so a
+     * value can reach production without the file ever changing. This reads what
+     * actually got seeded.
+     *
+     * Scoped to the fixture project for the same reason the counter test above is:
+     * statuses_owner_read returns every project A owns, so an unfiltered select
+     * would flake against leftovers from an earlier run.
+     */
+    it('on_project_created_statuses seeded exactly the four board columns, in order', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .select('slug, name, category, position, is_initial')
+        .eq('project_id', projectA)
+        .order('position')
+      expect(error).toBeNull()
+      expect(data).toEqual(
+        DEFAULT_PROJECT_STATUSES.map((s) => ({
+          slug: s.slug,
+          name: s.name,
+          category: s.category,
+          position: s.position,
+          is_initial: s.is_initial,
+        })),
+      )
+      // Where new tickets land must equal tickets.status's column default, or
+      // ticket creation and the board disagree about the starting column.
+      expect(data!.find((s) => s.is_initial)!.slug).toBe('todo')
+    })
+
+    /**
+     * Deliberately reads the fixture ticket rather than inserting another one:
+     * the "B cannot INSERT a ticket" test below counts A's tickets as its
+     * did-nothing-land control, so an extra insert here would break it from a
+     * distance. That coupling is why this asserts rather than creates.
+     */
+    it('the fixture ticket took its status from the is_initial row, not a check', async () => {
+      const { data, error } = await a.from('tickets').select('status').eq('id', ticketA).single()
+      expect(error).toBeNull()
+      // Still 'todo', but for a NEW reason: it now resolves against a
+      // project_statuses row through tickets_status_fk, not a check constraint.
+      expect(data!.status).toBe('todo')
+    })
+
     it('assign_ticket_key increments — the second ticket is KEY-2, not KEY-1', async () => {
       const { data, error } = await a
         .from('tickets')
@@ -161,10 +284,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const project = await b.from('projects').select('id').eq('id', projectA)
       const sprint = await b.from('sprints').select('id').eq('id', sprintA)
       const ticket = await b.from('tickets').select('id').eq('id', ticketA)
+      const status = await b.from('project_statuses').select('id').eq('id', statusA)
 
       expect(project.data).toEqual([])
       expect(sprint.data).toEqual([])
       expect(ticket.data).toEqual([])
+      expect(status.data).toEqual([])
 
       // Positive control: A can. Without this, the three assertions above also
       // pass when the fixture was never created.
@@ -205,10 +330,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const ticket = await b.from('tickets').delete().eq('id', ticketA).select()
       const sprint = await b.from('sprints').delete().eq('id', sprintA).select()
       const project = await b.from('projects').delete().eq('id', projectA).select()
+      const status = await b.from('project_statuses').delete().eq('id', statusA).select()
 
       expect(ticket.data).toEqual([])
       expect(sprint.data).toEqual([])
       expect(project.data).toEqual([])
+      expect(status.data).toEqual([])
 
       // Positive control: it is all still there, seen by its owner.
       const stillThere = await a.from('tickets').select('id').eq('id', ticketA)
@@ -252,6 +379,141 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // And nothing landed.
       const asA = await a.from('sprints').select('id').eq('project_id', projectA)
       expect(asA.data!.length).toBe(1) // only the fixture sprint
+    })
+  })
+
+  describe('the status vocabulary is server-owned (SPRIN-79)', () => {
+    /**
+     * These two are the tests that kill the mutation none of the others do.
+     *
+     * statuses_owner_read reaches project_statuses through an EXISTS on projects.
+     * Delete its correlating clause and the predicate becomes "does this caller own
+     * any project at all" — which compiles, deparses plausibly, and leaks every
+     * status row in the database to every user who owns a project. Because both
+     * users now own one, an UNFILTERED read in each direction catches it; a
+     * `.eq('id', statusA)` read would not, and neither would either test alone.
+     *
+     * Each carries its positive control inside the same read, so neither can pass
+     * because the fixture failed to create anything.
+     */
+    it("A sees only A's own project statuses, never B's", async () => {
+      const { data, error } = await a.from('project_statuses').select('project_id')
+      expect(error).toBeNull()
+      expect(data!.filter((r) => r.project_id === projectB)).toEqual([])
+      expect(data!.filter((r) => r.project_id === projectA)).toHaveLength(4)
+    })
+
+    it("B sees only B's own project statuses, never A's", async () => {
+      const { data, error } = await b.from('project_statuses').select('project_id')
+      expect(error).toBeNull()
+      expect(data!.filter((r) => r.project_id === projectA)).toEqual([])
+      // Doubles as the data-plane identity control for the new table, and proves
+      // the seeding trigger fired for B's project too — not just A's.
+      expect(data!.filter((r) => r.project_id === projectB)).toHaveLength(4)
+    })
+
+    /**
+     * The tests that pin the SELECT-only decision, and they are EXPECTED to be
+     * changed by SPRIN-77 — consciously, together with the policy and the
+     * migration's own `cmd = 'SELECT'` post-condition.
+     *
+     * Until then this is what actually replaces tickets_status_check. The fk cannot
+     * do it: the fk only says a status must EXIST for the project, so a client that
+     * can add rows to its own vocabulary can satisfy the fk with anything it likes.
+     * The board still renders four hard-coded columns, so such a ticket would render
+     * in no column and vanish. The policy is the only thing standing there.
+     */
+    it('even the owner cannot INSERT a status: the vocabulary is not client-writable', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .insert({ project_id: projectA, slug: 'planted', name: 'Planted', position: 9 })
+        .select()
+      expect(data).toBeNull()
+      // OBSERVED against the live database: statuses_owner_read is FOR SELECT, so no
+      // INSERT policy exists and RLS denies by default with 42501. INSERT has no
+      // USING clause to filter against, which is why this raises rather than
+      // silently affecting zero rows the way the UPDATE and DELETE cases do.
+      expect(error!.code).toBe('42501')
+
+      const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
+      expect(asA.data).toHaveLength(4) // nothing landed
+    })
+
+    it("B cannot INSERT a status into A's project either", async () => {
+      const { data, error } = await b
+        .from('project_statuses')
+        .insert({ project_id: projectA, slug: 'planted', name: 'Planted', position: 9 })
+        .select()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501')
+
+      const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
+      expect(asA.data).toHaveLength(4)
+    })
+
+    it('even the owner cannot rename or delete a status', async () => {
+      // No UPDATE or DELETE policy exists, so unlike INSERT these do not raise —
+      // there IS a USING clause to evaluate and it is absent, so the rows are simply
+      // invisible to the command. Counting rows is the only honest assertion.
+      const renamed = await a
+        .from('project_statuses')
+        .update({ name: 'Renamed' })
+        .eq('id', statusA)
+        .select()
+      const deleted = await a.from('project_statuses').delete().eq('id', statusA).select()
+      expect(renamed.data).toEqual([])
+      expect(deleted.data).toEqual([])
+
+      // Positive control: the row is untouched, and still called what it was.
+      const asA = await a.from('project_statuses').select('name').eq('id', statusA)
+      expect(asA.data).toEqual([{ name: 'To Do' }])
+    })
+
+    /**
+     * anonClient() performs no sign-in, so this costs the GoTrue rate limiter
+     * nothing. It matters because ALTER DEFAULT PRIVILEGES grants `anon` full DML on
+     * every new table in `public` — verified against pg_default_acl, not assumed —
+     * so RLS is the only thing emptying this result.
+     */
+    it('an anonymous caller sees no statuses at all', async () => {
+      const { data, error } = await anonClient().from('project_statuses').select('id')
+      expect(error).toBeNull()
+      expect(data).toEqual([])
+
+      const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
+      expect(asA.data).toHaveLength(4) // positive control: the rows do exist
+    })
+
+    /**
+     * The property `deferrable initially deferred` was chosen for, tested rather
+     * than reasoned about.
+     *
+     * `delete from projects` fires one cascade per referencing fk, and each cascade
+     * runs its own inner DELETE whose immediate checks fire at the end of THAT
+     * statement. A non-deferrable tickets_status_fk would therefore only survive if
+     * the tickets cascade happened to run before the project_statuses one — RI
+     * trigger name order, i.e. luck. Deferring the check to COMMIT makes the two
+     * orders equivalent. Without this test that safety property is covered only by
+     * a smoke test that ran once, by hand, on one machine.
+     */
+    it('deleting a project cascades away its tickets and statuses together', async () => {
+      const { data: proj, error: pErr } = await a
+        .from('projects')
+        .insert({ owner_id: userAId, name: 'Cascade order', key: runKey() })
+        .select()
+        .single()
+      expect(pErr).toBeNull()
+
+      const { error: tErr } = await a
+        .from('tickets')
+        .insert({ project_id: proj!.id, summary: 'rides the cascade' })
+      expect(tErr).toBeNull()
+
+      // The ticket references a status row that is about to be deleted by the same
+      // statement. Non-deferrable, this is where 23503 would appear.
+      const gone = await a.from('projects').delete().eq('id', proj!.id).select()
+      expect(gone.error).toBeNull()
+      expect(gone.data).toHaveLength(1)
     })
   })
 })
