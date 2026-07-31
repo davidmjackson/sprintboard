@@ -33,6 +33,11 @@ export function SignupPage() {
   })
 
   async function onSubmit(values: SignupValues) {
+    // Redundant with `SignupSchema`'s own `.trim()`: zodResolver hands us the *parsed*
+    // values, so this is already trimmed. Kept as a backstop if that schema rule ever
+    // moves, but NO TEST CAN PROVE IT — removing it leaves the whole suite green
+    // (verified by mutation, SPRIN-70). The trimming contract itself is pinned by
+    // SignupPage.test.tsx, one level up, where the schema enforces it.
     const displayName = values.displayName?.trim()
     const result = await supabase.auth.signUp({
       email: values.email,
