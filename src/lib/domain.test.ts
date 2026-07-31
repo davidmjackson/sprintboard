@@ -75,9 +75,24 @@ function seededProjectStatuses(): {
   }
   const rows = [
     ...fn[1].matchAll(
-      /\(new\.id,\s*'([^']+)',\s*'([^']+)',\s*'([^']+)',\s*(\d+),\s*(true|false)\)/g,
+      /\(\s*new\.id,\s*'([^']+)',\s*'([^']+)',\s*'([^']+)',\s*(\d+),\s*(true|false)\)/gi,
     ),
   ]
+
+  // Counted independently and loosely, because "parsed nothing" is the easy failure
+  // and "parsed SOME" is the dangerous one: the assertion downstream compares the
+  // parsed rows to DEFAULT_PROJECT_STATUSES, so four parsed rows match four constants
+  // no matter what else the trigger inserts. A fifth seeded status the board cannot
+  // render would otherwise be invisible here — which is precisely the disappearing
+  // ticket the bridging assertions exist to prevent.
+  const tuples = (fn[1].match(/\(\s*new\.id\b/gi) ?? []).length
+  if (rows.length !== tuples) {
+    throw new Error(
+      `seed_project_statuses() inserts ${tuples} row(s) but this parser could only read ` +
+        `${rows.length} of them. The VALUES shape changed; teach the parser the new one ` +
+        'rather than deleting the assertions that depend on it.',
+    )
+  }
   if (rows.length === 0) {
     throw new Error(
       'Found seed_project_statuses() but parsed no VALUES rows out of it. The insert ' +
@@ -170,14 +185,28 @@ describe('the schema parser can still see the whole truth', () => {
    * checking nothing at all.
    */
   it('every table in the schema has RLS enabled and at least one policy', () => {
-    const tables = [...SCHEMA.matchAll(/^create table (\w+) \(/gim)].flatMap((m) =>
-      m[1] === undefined ? [] : [m[1]],
-    )
+    // Tolerant of the spellings a migration is likely to be mirrored in. The
+    // hand-pasted migration under docs/migrations/ writes `create table
+    // public.project_statuses (`, so carrying that prefix across is the single most
+    // likely way a new table arrives here — and a table this regex cannot see is a
+    // table this test silently stops guarding.
+    const tables = [
+      ...SCHEMA.matchAll(/^create table (?:if not exists )?(?:public\.)?(\w+)\s*\(/gim),
+    ].flatMap((m) => (m[1] === undefined ? [] : [m[1]]))
+
+    // The real guard on the guard, and it must be an EQUALITY, not a floor. A floor
+    // only catches the regex breaking for tables that already exist; it cannot catch
+    // a NEW table spelled in a way the regex misses, which is the entire case this
+    // test was written for. Counting `create table` loosely and demanding the strict
+    // pattern match all of them turns any unrecognised spelling into a failure.
+    const declared = (SCHEMA.match(/^create table /gim) ?? []).length
     expect(
       tables.length,
-      'The `create table` regex matched fewer tables than the schema has. This test ' +
-        'would pass vacuously — fix the regex, do not lower this number.',
-    ).toBeGreaterThanOrEqual(6)
+      `Found ${declared} "create table" statements but could only parse ${tables.length} ` +
+        'table names out of them. A table is declared in a spelling this test cannot ' +
+        'read, so it is NOT being checked for RLS — widen the regex, do not delete this.',
+    ).toBe(declared)
+    expect(declared).toBeGreaterThanOrEqual(6)
 
     for (const table of tables) {
       expect(
@@ -239,6 +268,21 @@ describe('domain vocabulary matches the database check constraints', () => {
 
   it('status categories match the schema', () => {
     expect(checkConstraintValues('project_statuses', 'category')).toEqual([...STATUS_CATEGORIES])
+  })
+
+  /**
+   * The function is parsed above; without this, nothing checks that anything FIRES it.
+   *
+   * Deleting the trigger block leaves a schema whose own comment claims "a project
+   * with no statuses is not a reachable state" while a fresh apply produces exactly
+   * that — and the first ticket insert then fails 23503, because `tickets.status`
+   * defaults to the bare literal 'todo' and that row would no longer exist. Other
+   * triggers in this file have the same gap; this one is newly load-bearing.
+   */
+  it('the seeding trigger is wired to projects, not merely defined', () => {
+    expect(SCHEMA).toMatch(
+      /create trigger on_project_created_statuses\s+after insert on projects\s+for each row execute function seed_project_statuses\(\)/i,
+    )
   })
 
   it('ticket types match the schema', () => {

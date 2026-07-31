@@ -237,8 +237,15 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * the "B cannot INSERT a ticket" test below counts A's tickets as its
      * did-nothing-land control, so an extra insert here would break it from a
      * distance. That coupling is why this asserts rather than creates.
+     *
+     * NOTE what this does NOT prove. `tickets.status`'s default is the bare literal
+     * 'todo', not a lookup on `is_initial`, so this would still pass if `is_initial`
+     * were seeded on `done`. The genuine is_initial coverage is the seeding test
+     * above (which asserts the flag lands on `todo`) and `domain.test.ts`'s
+     * agreement check against the column default. Reuniting the two is SPRIN-80's
+     * job, in the story that lets a status be deleted.
      */
-    it('the fixture ticket took its status from the is_initial row, not a check', async () => {
+    it('a ticket still defaults to todo now the check constraint is gone', async () => {
       const { data, error } = await a.from('tickets').select('status').eq('id', ticketA).single()
       expect(error).toBeNull()
       // Still 'todo', but for a NEW reason: it now resolves against a
@@ -485,16 +492,23 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
-     * The property `deferrable initially deferred` was chosen for, tested rather
-     * than reasoned about.
+     * Proves the cascade COMPLETES and strands nothing. It does NOT prove
+     * `deferrable initially deferred`, and an earlier version of this comment
+     * claimed that it did.
      *
-     * `delete from projects` fires one cascade per referencing fk, and each cascade
-     * runs its own inner DELETE whose immediate checks fire at the end of THAT
-     * statement. A non-deferrable tickets_status_fk would therefore only survive if
-     * the tickets cascade happened to run before the project_statuses one — RI
-     * trigger name order, i.e. luck. Deferring the check to COMMIT makes the two
-     * orders equivalent. Without this test that safety property is covered only by
-     * a smoke test that ran once, by hand, on one machine.
+     * `delete from projects` fires one cascade per referencing fk, each running its
+     * own inner DELETE whose immediate checks fire at the end of THAT statement. So
+     * a non-deferrable fk survives whenever the tickets cascade happens to run
+     * first — which is RI trigger OID order. Measured on this database:
+     * `tickets_project_id_fkey` is 17704 and `project_statuses_project_id_fkey` is
+     * 17912, so tickets go first and a NON-deferrable fk would pass this test too.
+     *
+     * The order only inverts on a fresh apply of docs/sprintboard_phase1_schema.sql,
+     * where project_statuses must be created before tickets — and nothing in CI ever
+     * does a fresh apply. Deferrability itself is asserted where it can be: the
+     * migration's step-12 post-condition checks `condeferrable and condeferred` and
+     * aborts the transaction otherwise. PostgREST cannot reach pg_catalog, so no
+     * test in this suite can re-check it; do not add one that pretends to.
      */
     it('deleting a project cascades away its tickets and statuses together', async () => {
       const { data: proj, error: pErr } = await a

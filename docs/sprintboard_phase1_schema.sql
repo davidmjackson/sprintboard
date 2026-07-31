@@ -482,6 +482,13 @@ create policy counters_owner on project_counters
 --
 -- Write access arrives with SPRIN-77, which is the story that also builds the UI to
 -- render a changed vocabulary. Widening this is a story, not a tweak.
+--
+-- DO NOT add `force row level security` to this table. It reads as hardening and is
+-- the opposite: the seeding trigger is SECURITY DEFINER and runs as the table's owner
+-- (postgres), which is exempt from RLS only while FORCE is off. Turn it on and there
+-- is no INSERT policy for the trigger to satisfy, so EVERY project creation fails at
+-- insert time, for every user. The same trap applies to the other tables here whose
+-- triggers are definer-owned.
 create policy statuses_owner_read on project_statuses
   for select
   using (exists (select 1 from projects p
