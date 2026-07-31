@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
@@ -104,5 +104,59 @@ describe('BacklogTab does not paint an unconfirmed list while the read is in fli
 
     expect(screen.getByText('Loading…')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /do the todo/i })).not.toBeInTheDocument()
+  })
+})
+
+// SPRIN-67. Every other part of a backlog row says what it is — the key looks like a key,
+// the type is a word, the points badge carries its unit via S5.1's `sr-only` text. The
+// assignee was the one bare value, so the row's accessible name ended
+// "… 5 story points dev@example.com" with nothing naming it.
+//
+// These tests deliberately do NOT assert an exact accessible name, and that is the whole
+// design. Under jsdom `dom-accessibility-api` performs no layout, so it cannot see that a
+// row's flex children are blockified and it concatenates them with no separator — a string
+// no browser ever produces. Asserting it would pin a fiction. What is asserted here is DOM
+// text and the container it sits in: both are true in every engine. See CLAUDE.md.
+const ASSIGNED_TICKETS = [
+  {
+    id: 't1',
+    key: 'MP-1',
+    number: 1,
+    summary: 'Do the todo',
+    type: 'story',
+    status: 'todo',
+    sprint_id: null,
+    assignee_id: USER.id,
+  },
+] as never
+
+describe('BacklogTab says who a ticket is assigned to (SPRIN-67)', () => {
+  // Scoped to the row's <button> ON PURPOSE, and that scoping is the test. The entire
+  // `sr-only`-over-`aria-label` decision rests on the text joining the BUTTON's accessible
+  // name, so an unscoped `screen.getByText` would sit green with the prefix rendered
+  // outside the button — exactly how SPRIN-65's points badge escaped all 12 of its tests.
+  it('prefixes the assignee with a screen-reader-only label, inside the row button', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: ASSIGNED_TICKETS }))
+
+    const row = screen.getByRole('button', { name: /do the todo/i })
+    const prefix = within(row).getByText(/assigned to/i)
+
+    expect(prefix).toBeInTheDocument()
+    // The only control available for "carries no visible weight": jsdom applies no real
+    // stylesheet, so `sr-only` cannot be observed as invisibility, only as the class that
+    // Tailwind hides. Without this a plainly visible "Assigned to" would ship green.
+    expect(prefix).toHaveClass('sr-only')
+    expect(within(row).getByText(USER.email)).toBeInTheDocument()
+  })
+
+  // The negative half. Its positive control is the test above — on its own this would pass
+  // just as happily if the prefix were never rendered anywhere at all.
+  it('does not say "assigned to" on an unassigned row', () => {
+    renderTab(BacklogTab)
+
+    const row = screen.getByRole('button', { name: /do the todo/i })
+
+    expect(within(row).queryByText(/assigned to/i)).not.toBeInTheDocument()
+    expect(within(row).getByText('Unassigned')).toBeInTheDocument()
   })
 })
