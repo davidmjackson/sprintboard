@@ -22,6 +22,10 @@ export function selectActiveSprint(sprints: readonly Sprint[]): Sprint | null {
  * Kept here beside `selectActiveSprint` rather than inlined in `BoardTab`, so "which tickets
  * are visible" stays a named, tested selector (CLAUDE.md forbids inlining domain rules in
  * components). Blocked is a flag, never a column — this narrows the set, it never moves a card.
+ *
+ * SPRIN-68 adds a second, independent narrowing alongside this one — the text filter in
+ * `ticket-search.ts` — which `BoardTab` composes with this selector's output rather than
+ * folding into it; the two AND together.
  */
 export function selectBlockedTickets(tickets: readonly Ticket[]): Ticket[] {
   return tickets.filter((t) => t.is_blocked)
