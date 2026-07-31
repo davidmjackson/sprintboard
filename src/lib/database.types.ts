@@ -4,10 +4,19 @@
  * Produced from the live database (project xcnmyhozmcopcpxlagrk) via the
  * Supabase MCP `generate_typescript_types`. Regenerate after any migration.
  *
- * The schema stores `status` / `type` as text + check constraints rather than
- * Postgres enums, so those columns arrive here as plain `string`. The narrowed
- * domain unions live in `domain.ts`, which is hand-owned precisely so that
- * regenerating this file cannot clobber them.
+ * The schema stores `type` / `project_type` / `sprints.status` as text + check
+ * constraints rather than Postgres enums, so those columns arrive here as plain
+ * `string`. `tickets.status` is text too, but as of SPRIN-79 it is constrained by
+ * a COMPOSITE FOREIGN KEY to `project_statuses (project_id, slug)` — the status
+ * vocabulary is per-project, and a check constraint cannot express that.
+ *
+ * Either way the column still arrives as `string`, so nothing in the type system
+ * forces this file to be regenerated after a status migration. That is precisely
+ * how it gets forgotten: `.from('project_statuses')` failing to type-check is the
+ * only symptom.
+ *
+ * The narrowed domain unions live in `domain.ts`, which is hand-owned precisely so
+ * that regenerating this file cannot clobber them.
  */
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
@@ -56,6 +65,47 @@ export type Database = {
             foreignKeyName: 'project_counters_project_id_fkey'
             columns: ['project_id']
             isOneToOne: true
+            referencedRelation: 'projects'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      project_statuses: {
+        Row: {
+          category: string
+          created_at: string
+          id: string
+          is_initial: boolean
+          name: string
+          position: number
+          project_id: string
+          slug: string
+        }
+        Insert: {
+          category?: string
+          created_at?: string
+          id?: string
+          is_initial?: boolean
+          name: string
+          position: number
+          project_id: string
+          slug: string
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          id?: string
+          is_initial?: boolean
+          name?: string
+          position?: number
+          project_id?: string
+          slug?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'project_statuses_project_id_fkey'
+            columns: ['project_id']
+            isOneToOne: false
             referencedRelation: 'projects'
             referencedColumns: ['id']
           },
@@ -220,6 +270,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: 'sprints'
             referencedColumns: ['id', 'project_id']
+          },
+          {
+            foreignKeyName: 'tickets_status_fk'
+            columns: ['project_id', 'status']
+            isOneToOne: false
+            referencedRelation: 'project_statuses'
+            referencedColumns: ['project_id', 'slug']
           },
         ]
       }
