@@ -6,11 +6,13 @@ import { TICKET_STATUSES, TICKET_STATUS_LABELS } from '@/lib/domain'
 import type { Ticket, TicketStatus } from '@/lib/domain'
 import { selectActiveSprint, selectBlockedTickets, summariseColumn } from '@/lib/board'
 import { selectSprintTickets } from '@/lib/backlog'
+import { isSearchActive, selectMatchingTickets } from '@/lib/ticket-search'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
 import { LoadFailure } from './LoadFailure'
 import { SprintDates } from './SprintDates'
 import { TicketCard } from './TicketCard'
+import { TicketSearchInput } from './TicketSearchInput'
 
 /**
  * What a column is worth, under its heading: how many cards, how many points, and — only
@@ -23,11 +25,13 @@ import { TicketCard } from './TicketCard'
  * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
  *
  * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards
- * actually on screen — the blocked-only filter changes them. A total that disagreed with
- * the cards under it would be a distinct state wearing another state's face.
+ * actually on screen — the blocked-only filter and the SPRIN-68 search filter both change
+ * them. A total that disagreed with the cards under it would be a distinct state wearing
+ * another state's face.
  *
- * Nothing is rendered for an empty column: "No tickets yet." is already there and says it
- * better than "0 cards · 0 points" would.
+ * Nothing is rendered for an empty column: `BoardColumnEmpty` already says something —
+ * "No tickets yet." or, since SPRIN-68, "No matches." when a filter is active — and either
+ * one says it better than "0 cards · 0 points" would.
  */
 function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
   const { count, points, unestimated } = summariseColumn(tickets)
@@ -37,6 +41,33 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
       {count === 1 ? '1 card' : `${count} cards`} · {points} points
       {unestimated > 0 ? ` · ${unestimated} unestimated` : ''}
     </span>
+  )
+}
+
+/**
+ * What an empty column says — and it is not always the same thing.
+ *
+ * "No tickets yet." is a claim about the SPRINT. When a filter is on, the column may be empty
+ * only because the filter hid its cards, and that claim becomes false. This is the same
+ * failure `BacklogTab` guards against ("a distinct state wearing another state's face"), and
+ * the board already had it before this story: with blocked-only on, a column holding no
+ * blocked cards has always said "No tickets yet."
+ *
+ * The `||` lives HERE rather than in `BoardTab` for a measured reason: `BoardTab`'s body sits
+ * at the T2 cyclomatic limit of exactly 10, so computing a filter-active flag up there takes
+ * it to 11 and reddens `npm run lint`. Deciding the sentence in its own component costs
+ * `BoardTab` nothing.
+ */
+function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
+  const filtering = blockedOnly || isSearchActive(query)
+  // `role="status"`, not `role="alert"`: this appears in direct response to typing or
+  // toggling a filter, the same informational case `TicketDetailHeader.tsx` announces with
+  // `role="status"`. `role="alert"` stays reserved for actual failures (`LoadFailure`,
+  // `ErrorBoundary`, `moveError` above) — a filter narrowing a column to nothing is not one.
+  return (
+    <p role="status" className="text-muted-foreground text-xs">
+      {filtering ? 'No matches.' : 'No tickets yet.'}
+    </p>
   )
 }
 
@@ -58,6 +89,10 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  *
  * S7.2 makes the board writable: dragging a card to another column changes its `status`. The
  * move is optimistic and rolls back on failure — see `moveTicket`.
+ *
+ * SPRIN-68 adds a text filter alongside the blocked-only one: `TicketSearchInput` narrows the
+ * visible cards to those whose key or summary matches the query, and the two filters AND
+ * together via `selectMatchingTickets`.
  */
 export function BoardTab() {
   const { tickets, ticketsPhase, sprints, sprintsPhase, onRetry, onOpenTicket, onTicketUpdated } =
@@ -79,6 +114,9 @@ export function BoardTab() {
   const [moveError, setMoveError] = useState<string | null>(null)
   // S7.3 AC2: the blocked-only board filter, off by default.
   const [blockedOnly, setBlockedOnly] = useState(false)
+  // S7.3's blocked-only filter and this one are both local ephemeral view state — not
+  // context, not the URL. See `TicketSearchInput` for why the query is not hoisted.
+  const [query, setQuery] = useState('')
 
   // Optimistic status change with rollback — the board's first write. Mirrors
   // `commit()` in `src/lib/ticket-commit.ts`: apply optimistically, persist, then reconcile the
@@ -133,7 +171,10 @@ export function BoardTab() {
 
   const activeSprint = selectActiveSprint(sprints)
   const boardTickets = activeSprint ? selectSprintTickets(tickets, activeSprint.id) : []
-  const visibleTickets = blockedOnly ? selectBlockedTickets(boardTickets) : boardTickets
+  const visibleTickets = selectMatchingTickets(
+    blockedOnly ? selectBlockedTickets(boardTickets) : boardTickets,
+    query,
+  )
 
   return (
     <div className="flex flex-col gap-4">
@@ -165,6 +206,7 @@ export function BoardTab() {
             />
             Blocked only
           </label>
+          <TicketSearchInput value={query} onChange={setQuery} />
         </>
       ) : null}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -182,7 +224,7 @@ export function BoardTab() {
                 <BoardColumnSummary tickets={column} />
               </div>
               {column.length === 0 ? (
-                <p className="text-muted-foreground text-xs">No tickets yet.</p>
+                <BoardColumnEmpty blockedOnly={blockedOnly} query={query} />
               ) : (
                 column.map((ticket) => (
                   <TicketCard

@@ -541,6 +541,183 @@ describe('BoardTab', () => {
   })
 })
 
+const S = { id: 's1', name: 'Sprint 1', status: 'active' }
+
+const BOARD_TICKETS = [
+  {
+    id: 't1',
+    key: 'MP-1',
+    number: 1,
+    summary: 'Wire the board',
+    type: 'story',
+    status: 'todo',
+    sprint_id: 's1',
+    is_blocked: false,
+    story_points: 3,
+    assignee_id: null,
+    labels: [],
+  },
+  {
+    id: 't2',
+    key: 'MP-2',
+    number: 2,
+    summary: 'Fix the login redirect',
+    type: 'bug',
+    status: 'todo',
+    sprint_id: 's1',
+    is_blocked: true,
+    story_points: 5,
+    assignee_id: null,
+    labels: [],
+  },
+  // A ticket that matches the same query as MP-2 but is NOT in the active sprint (mirrors
+  // BacklogTab.test.tsx's MP-3 "Login help center article"). Without this ticket, every row
+  // in this fixture has `sprint_id: 's1'`, so `boardTickets` (active-sprint tickets) and
+  // `tickets` (the whole project) are identical under test and a regression that widened the
+  // board's search source from the former to the latter would ship green.
+  {
+    id: 't3',
+    key: 'MP-3',
+    number: 3,
+    summary: 'Login onboarding guide',
+    type: 'task',
+    status: 'todo',
+    sprint_id: null,
+    is_blocked: false,
+    story_points: null,
+    assignee_id: null,
+    labels: [],
+  },
+] as never
+
+function renderBoard(extra: Partial<ProjectShellContext> = {}) {
+  return renderTab(BoardTab, ctxWith({ tickets: BOARD_TICKETS, sprints: [S] as never, ...extra }))
+}
+
+describe('BoardTab search (SPRIN-68)', () => {
+  it('narrows the cards to matches (AC2)', async () => {
+    renderBoard()
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'login')
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+    // The control on the other side: MP-3 also matches "login" by summary, but it is NOT in
+    // the active sprint, so it must never appear here — the board searches the active
+    // sprint's tickets, not the project's whole ticket list.
+    expect(
+      screen.queryByRole('button', { name: /login onboarding guide/i }),
+    ).not.toBeInTheDocument()
+    // Pins the box's own displayed value, not just its filtering effect — a hardcoded or
+    // disconnected `value` prop can still filter correctly by coincidence of which key the
+    // React state happens to hold (see the SPRIN-68 fix-round-1 review finding).
+    expect(box).toHaveValue('login')
+  })
+
+  // Mirrors the existing "does NOT offer the filter when there is no active sprint" control
+  // for the blocked-only checkbox below. Without this, rendering the search box OUTSIDE the
+  // `activeSprint !== null` guard — over a board with nothing to search — ships undetected.
+  it('does NOT offer the search box when there is no active sprint (negative control)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
+    expect(screen.queryByRole('searchbox', { name: /search/i })).not.toBeInTheDocument()
+  })
+
+  // M5 (SPRIN-68 post-merge review): the negative control above sets BOTH `tickets: []` and
+  // `sprints: []` at once, so it cannot tell "hidden because there is no active sprint" apart
+  // from "hidden because there are no tickets" — gating the box on `boardTickets.length > 0`
+  // instead of `activeSprint !== null` would pass it just as happily. This is the other half:
+  // an ACTIVE sprint with a genuinely empty ticket list must still show the box, because the
+  // gate is the sprint, not the list.
+  it('DOES offer the search box over an active sprint with no tickets yet (positive control)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [] }))
+    expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
+  })
+
+  // AC2's second half, and the reason the totals are worth a test rather than an assertion in
+  // the spec: they must describe what is on screen. `summariseColumn` is not changed by this
+  // story, so this test guards the COMPOSITION — that the query is applied before the column
+  // split, not inside the render.
+  it('column totals describe only the visible cards (AC2)', async () => {
+    renderBoard()
+    expect(screen.getByText(/2 cards · 8 points/i)).toBeInTheDocument()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
+    expect(screen.getByText(/1 card · 5 points/i)).toBeInTheDocument()
+    expect(screen.queryByText(/8 points/i)).not.toBeInTheDocument()
+  })
+
+  // AC3: both filters narrow, ANDed. 'Wire the board' matches the query but is NOT blocked,
+  // so with both on, nothing survives — which also exercises the AC5 message.
+  it('composes with the blocked-only filter (AC3)', async () => {
+    renderBoard()
+    await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+    await userEvent.clear(screen.getByRole('searchbox', { name: /search/i }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'wire')
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+  })
+
+  // AC5. Note this ALSO covers a defect that exists on main today, before this story: with
+  // blocked-only on, a column with no blocked cards already says "No tickets yet." — a claim
+  // about the sprint made by a filter.
+  it('an emptied column says No matches, not No tickets yet (AC5)', async () => {
+    renderBoard()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
+    expect(screen.getAllByText(/no matches/i).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/no tickets yet/i)).not.toBeInTheDocument()
+  })
+
+  // The pre-existing defect, pinned in its own right.
+  it('an emptied column says No matches under the blocked filter alone (AC5)', async () => {
+    renderBoard()
+    await userEvent.click(screen.getByRole('checkbox', { name: /blocked only/i }))
+    // 'In Progress'/'In Review'/'Done' hold nothing; To Do still holds the blocked bug.
+    expect(screen.getAllByText(/no matches/i).length).toBeGreaterThan(0)
+  })
+
+  // The positive control: with no filter at all, the honest message is the original one.
+  it('says No tickets yet when nothing is filtered', () => {
+    renderBoard()
+    expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
+  })
+
+  // M4 (SPRIN-68 post-merge review): the column's empty message ("No matches." here, or "No
+  // tickets yet." on an unfiltered column) was a plain <p>. `getByRole('status', ...)` resolves
+  // ONLY an element carrying that role, so this fails if the attribute is dropped. Scoped to one
+  // column since several columns can say "No matches." at once.
+  it('announces a filtered-empty column to screen readers (M4)', async () => {
+    renderBoard()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
+    const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!
+    expect(within(inProgress).getByRole('status')).toHaveTextContent(/no matches/i)
+  })
+
+  // I1 (SPRIN-68 post-merge review): the Backlog's mirror test (`BacklogTab.test.tsx`, "keeps
+  // the search box rendered when the query matches nothing") had no Board equivalent. Gating
+  // `<TicketSearchInput>` on the FILTERED list (e.g. `visibleTickets.length > 0`) is lint-clean,
+  // build-clean and passed every OTHER test in this file — nothing pinned that the box itself
+  // must survive a no-match query. Without this test, typing a non-matching query would unmount
+  // the only control that could clear it, leaving four "No matches." columns with no way back.
+  it('keeps the search box rendered when the query matches nothing', async () => {
+    renderBoard()
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'zzz')
+    expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
+    await userEvent.clear(box)
+    expect(screen.getByRole('button', { name: /wire the board/i })).toBeInTheDocument()
+  })
+
+  // A whitespace-only query is not a filter — `selectMatchingTickets`'s own documented
+  // contract returns the list unchanged for one. A genuinely empty column must still say
+  // "No tickets yet.", not "No matches.", when the box holds only spaces.
+  it('treats a whitespace-only query as no filter at all (AC5)', async () => {
+    renderBoard()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), '   ')
+    expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
+  })
+})
+
 describe('BacklogTab', () => {
   it('lists tickets with key, type and summary', () => {
     renderTab(BacklogTab)
