@@ -142,8 +142,14 @@ export const DEFAULT_PROJECT_STATUSES = [
 /**
  * Human-readable board-column labels, keyed by status. This is the single home for
  * the four column names — CLAUDE.md forbids inlining them in a component, filter, or
- * badge-colour map. The `Record<TicketStatus, string>` type makes it exhaustive by
- * construction: a new status cannot be added without giving it a label here.
+ * badge-colour map.
+ *
+ * Since `TicketStatus` was widened to `string` (Task 3 of SPRIN-76), `Record<TicketStatus,
+ * string>` is `Record<string, string>` — an index signature, not an exhaustive record.
+ * Nothing here stops an entry being removed, or a status existing with no label: measured
+ * by deleting two of the four entries below and confirming `npm run build` still passes.
+ * This constant is deleted in Task 7 of this story, once the board reads names from
+ * `project_statuses` rows instead of this map.
  */
 export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
   todo: 'To Do',
@@ -188,7 +194,7 @@ type Assignable<Narrow extends Wide, Wide> = Narrow
 
 /** The union and the runtime array must be the SAME SET, in both directions.
  *  Without this, adding a value to a union and forgetting the array compiles
- *  fine — and `isTicketStatus` then rejects a value the type system calls valid.
+ *  fine — and `isTicketType` then rejects a value the type system calls valid.
  *  There is no such guard for `TicketStatus`: it was widened to `string` in Task 3
  *  of SPRIN-76 (the vocabulary is per-project), so `Exact<string, ...>` would be
  *  `false` and the guard would fail to compile while asserting nothing real. */
