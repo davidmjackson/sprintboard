@@ -2,16 +2,27 @@
  * The domain vocabulary the database cannot express, and the guards that keep it
  * honest.
  *
- * `status`, `type` and `project_type` are text columns with check constraints
- * rather than Postgres enums, so the generated `database.types.ts` types them as
- * bare `string`. These unions restore the narrowing on the client — at the cost
- * of being a second source of truth, which is exactly the thing that rots.
+ * `type`, `project_type` and `sprint.status` are text columns with check
+ * constraints rather than Postgres enums, so the generated `database.types.ts`
+ * types them as bare `string`. These unions restore the narrowing on the client —
+ * at the cost of being a second source of truth, which is exactly the thing that
+ * rots.
+ *
+ * `ticket.status` is no longer one of them. SPRIN-79 made the vocabulary
+ * per-project, so its check constraint became a composite foreign key to
+ * `project_statuses` — a constraint no regex can read off a column definition.
+ * Its link to the schema now runs through `DEFAULT_PROJECT_STATUSES` and the
+ * seeding trigger instead, which is why that constant exists.
  *
  * Three links hold the chain together, and each is checked somewhere different:
  *
  *   union  ≡  runtime array   — `Exact<>` below, at compile time
- *   array  ≡  check constraint — domain.test.ts, by parsing the DDL
- *   column ≡  the live database — regenerating database.types.ts
+ *   array  ≡  the schema file  — domain.test.ts, by parsing the DDL: a check
+ *                                constraint for most, the trigger's VALUES list
+ *                                for statuses
+ *   column ≡  the live database — regenerating database.types.ts, and for
+ *                                statuses, rls.integration.test.ts reading the
+ *                                rows the database actually seeded
  *
  * The middle link is the one that matters and the one a compiler cannot see, so
  * it is a test. `Assignable<>` alone is NOT sufficient: the generated column type
@@ -22,11 +33,30 @@
 import type { Tables, TablesInsert, TablesUpdate } from './database.types'
 
 export type TicketType = 'epic' | 'story' | 'bug' | 'task'
+
+/**
+ * Jira's status category — the bucket a status belongs to regardless of its name.
+ * This is where the "done is terminal" rule eventually lives; right now nothing
+ * reads it, because the four seeded statuses make `'done'` unambiguous. SPRIN-77
+ * must move `src/lib/sprints.ts`'s `.neq('status','done')` and
+ * `src/routes/ProjectShell.tsx`'s `t.status !== 'done'` onto this column — BOTH of
+ * them, together — before it opens write access to `project_statuses`.
+ */
+export type StatusCategory = 'todo' | 'in_progress' | 'done'
 export type TicketStatus = 'todo' | 'in_progress' | 'in_review' | 'done'
 export type SprintStatus = 'future' | 'active' | 'complete'
 export type ProjectType = 'scrum'
 
-/** The four fixed board columns, in board order. Editable columns are Rung 3. */
+/**
+ * The four board columns the client still renders, in board order.
+ *
+ * As of SPRIN-79 the database no longer constrains `tickets.status` to this list —
+ * `project_statuses` does, per project. This array survives only until SPRIN-76
+ * switches the board to render from those rows, at which point it is deleted.
+ * `domain.test.ts` asserts it still equals `DEFAULT_PROJECT_STATUSES`; that
+ * assertion is what keeps the two halves of the change from drifting apart in the
+ * window between them.
+ */
 export const TICKET_STATUSES = [
   'todo',
   'in_progress',
@@ -46,6 +76,49 @@ export const SPRINT_STATUSES = [
   'active',
   'complete',
 ] as const satisfies readonly SprintStatus[]
+
+export const STATUS_CATEGORIES = [
+  'todo',
+  'in_progress',
+  'done',
+] as const satisfies readonly StatusCategory[]
+
+/**
+ * What `seed_project_statuses()` writes for every new project — the client half of
+ * the seed contract, and the reason the four column names still live in exactly one
+ * TypeScript file now that the database owns the list.
+ *
+ * Two tests hold this honest, and they check different things:
+ *   - `domain.test.ts` parses the trigger's VALUES list out of the schema doc and
+ *     asserts it equals this. That catches the schema file drifting.
+ *   - `rls.integration.test.ts` reads the rows the LIVE database actually seeded
+ *     and asserts they equal this. That is the primary guard, because the schema
+ *     file is not the database — a migration is applied by hand.
+ *
+ * This is also what keeps the four-column guarantee intact across SPRIN-79's seam:
+ * `tickets_status_check` is gone, so the only thing still tying the board's
+ * `TICKET_STATUSES` to the database is the assertion in `domain.test.ts` that these
+ * slugs and that array are the same list. SPRIN-76 removes `TICKET_STATUSES` and
+ * renders from these rows instead; until then, do not let the two diverge.
+ */
+export const DEFAULT_PROJECT_STATUSES = [
+  { slug: 'todo', name: 'To Do', category: 'todo', position: 1, is_initial: true },
+  {
+    slug: 'in_progress',
+    name: 'In Progress',
+    category: 'in_progress',
+    position: 2,
+    is_initial: false,
+  },
+  { slug: 'in_review', name: 'In Review', category: 'in_progress', position: 3, is_initial: false },
+  { slug: 'done', name: 'Done', category: 'done', position: 4, is_initial: false },
+] as const satisfies readonly {
+  slug: string
+  name: string
+  category: StatusCategory
+  position: number
+  is_initial: boolean
+}[]
 
 /**
  * Human-readable board-column labels, keyed by status. This is the single home for
@@ -105,10 +178,18 @@ export type AssertSprintStatusesExhaustive = Expect<
   Exact<SprintStatus, (typeof SPRINT_STATUSES)[number]>
 >
 
+export type AssertStatusCategoriesExhaustive = Expect<
+  Exact<StatusCategory, (typeof STATUS_CATEGORIES)[number]>
+>
+
 export type AssertTicketTypeColumn = Assignable<TicketType, Tables<'tickets'>['type']>
 export type AssertTicketStatusColumn = Assignable<TicketStatus, Tables<'tickets'>['status']>
 export type AssertSprintStatusColumn = Assignable<SprintStatus, Tables<'sprints'>['status']>
 export type AssertProjectTypeColumn = Assignable<ProjectType, Tables<'projects'>['project_type']>
+export type AssertStatusCategoryColumn = Assignable<
+  StatusCategory,
+  Tables<'project_statuses'>['category']
+>
 
 /* ------------------------------------------------------------------ *
  * Row types, with the text columns narrowed to the domain unions.
@@ -117,6 +198,18 @@ export type AssertProjectTypeColumn = Assignable<ProjectType, Tables<'projects'>
 export type Profile = Tables<'profiles'>
 export type Project = Omit<Tables<'projects'>, 'project_type'> & { project_type: ProjectType }
 export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus }
+
+/**
+ * One project's status row. A board column IS one of these, ordered by `position` —
+ * there is deliberately no separate board-columns table while the mapping is 1:1.
+ *
+ * Read-only to every client in this slice: `statuses_owner_read` is a SELECT-only
+ * policy, so there is no Insert or Update counterpart to this type on purpose.
+ * SPRIN-77 adds them together with the write policy.
+ */
+export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
+  category: StatusCategory
+}
 export type Ticket = Omit<Tables<'tickets'>, 'status' | 'type'> & {
   status: TicketStatus
   type: TicketType
@@ -204,4 +297,8 @@ export function isTicketType(value: string): value is TicketType {
 
 export function isSprintStatus(value: string): value is SprintStatus {
   return (SPRINT_STATUSES as readonly string[]).includes(value)
+}
+
+export function isStatusCategory(value: string): value is StatusCategory {
+  return (STATUS_CATEGORIES as readonly string[]).includes(value)
 }

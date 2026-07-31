@@ -46,11 +46,15 @@ spent and which still bind. **Every rule below still binds.** They are not scaff
 be cleared away now the feature is being built; several become *more* load-bearing, not
 less, and each is easy to undo by accident while thinking you are tidying up.
 
-- **Never use a Postgres `ENUM`.** `ticket.status`, `ticket.type`, `sprint.status` and
-  `project_type` are all `text` + a `check` constraint, deliberately. Widening a check is
-  one line; altering an enum type is a painful migration. Converting these to a
-  `create type … as enum` would look like an improvement. **It is the single most damaging
-  change anyone could make to this schema.**
+- **Never use a Postgres `ENUM`.** `ticket.type`, `sprint.status` and `project_type` are
+  `text` + a `check` constraint, deliberately. Widening a check is one line; altering an
+  enum type is a painful migration. Converting these to a `create type … as enum` would
+  look like an improvement. **It is the single most damaging change anyone could make to
+  this schema.** `ticket.status` is `text` too, but SPRIN-79 replaced its check with a
+  composite foreign key to `project_statuses (project_id, slug)` — because the vocabulary
+  is now per-project, and a CHECK body may not contain a subquery. It stays `text`: the
+  fk is keyed on the slug rather than a surrogate id precisely so no ticket row is ever
+  rewritten when the vocabulary changes.
 - **`projects.project_type` already exists** (`check (project_type in ('scrum'))`). Kanban
   is one line: add `'kanban'` to that check — that is epic **SPRIN-73**, and the one-line
   change is the *whole* schema part of it. The work there is behavioural.
@@ -61,7 +65,14 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   `domain.ts` stops being the source of the *values* and becomes the client-side contract
   for the *shape* — it does not stop being the single place. Do not scatter the new types.
   **Verify the rule actually held before relying on it** — grep for the literal names
-  rather than assuming.
+  rather than assuming. (Verified at SPRIN-79: exactly five files referenced the status
+  constants, four of them UI. The rule held.) **SPRIN-79 moved the database half only.**
+  `domain.ts` now holds both `TICKET_STATUSES` (what the board still renders) and
+  `DEFAULT_PROJECT_STATUSES` (what the trigger seeds), and `domain.test.ts` asserts they
+  are the same list — that assertion is the *only* thing left tying the board to the
+  database now `tickets_status_check` is gone. **SPRIN-76 deletes `TICKET_STATUSES` and
+  renders from the rows**, and takes that bridging test with it. Until then, do not let
+  the two lists diverge.
 - **Core ticket fields stay real columns.** `story_points`, `assignee_id`, `status` etc.
   are first-class and must remain so. Custom fields will be **additive** — new tables
   alongside, never a reshaping of `tickets`. This is what Jira itself does: system fields

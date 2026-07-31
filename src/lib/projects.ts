@@ -10,6 +10,12 @@ import type { Project } from './domain'
  * user-correctable outcome (the `projects_owner_key_unique` constraint), not an
  * exception. Postgres raises `23505` on any unique violation; the only unique
  * constraint reachable here is per-owner key, so that code maps to `duplicate_key`.
+ *
+ * The project's four board statuses are seeded by the `on_project_created_statuses`
+ * trigger, in this insert's own transaction. Deliberately not done here: the raw
+ * fixture inserts across the integration suites and the Playwright E2E all create
+ * projects without going through this function, and a client-side seed would leave
+ * every one of them with a statusless project. Do not add one.
  */
 export type CreateProjectResult =
   { ok: true; project: Project } | { ok: false; error: 'duplicate_key' | 'unknown' }

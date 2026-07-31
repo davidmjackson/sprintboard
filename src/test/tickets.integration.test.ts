@@ -4,8 +4,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import { selectBacklogTickets } from '@/lib/backlog'
 import {
+  adminClient,
   assertCredentialsOrExplain,
   hasRlsCredentials,
+  hasServiceRoleKey,
   RLS_USERS,
   signIn,
   userId,
@@ -531,6 +533,88 @@ describe.skipIf(!hasRlsCredentials)(
       expect(row!.id).toBe(child!.id) // child still exists
       expect(row!.parent_epic_id).toBeNull() // parent reference cleared
     }, 30_000)
+
+    /**
+     * SPRIN-79's tickets_status_fk, and the only tests that prove it is COMPOSITE
+     * rather than a plain reference to a slug.
+     *
+     * RLS cannot catch this one: p1 and p2 are both owned by A, so every policy
+     * passes on both sides and the fk is the only thing left that can object. That
+     * is exactly why it carries project_id — without it, an owner of two projects
+     * could park a ticket on the other project's status, and the board would drop
+     * it silently.
+     *
+     * The second case needs adminClient() to set up: under the SELECT-only policy
+     * every project has an identical vocabulary, so "a slug that exists ONLY in p2"
+     * is not reachable through any client. Service-role is the sanctioned test-side
+     * privileged client, and it performs no sign-in.
+     */
+    it('rejects a status slug that exists in no project (the fk exists at all)', async () => {
+      const { data, error } = await a
+        .from('tickets')
+        .update({ status: 'nonexistent_status' })
+        .eq('id', story1)
+        .select()
+
+      expect(data).toBeNull()
+      // OBSERVED against the live database. tickets_status_fk is DEFERRABLE
+      // INITIALLY DEFERRED, so the check runs at COMMIT rather than at statement
+      // time — but PostgREST wraps the request in one transaction, so the client
+      // still sees the failure on this same call.
+      expect(error!.code).toBe('23503')
+
+      const { data: row } = await a.from('tickets').select('status').eq('id', story1).single()
+      expect(row!.status).toBe('todo') // unchanged
+    }, 30_000)
+
+    it.skipIf(!hasServiceRoleKey)(
+      "rejects another project's status slug, proving the fk is composite",
+      async () => {
+        // Plant a status that exists ONLY in p2. Both projects are A's, so this is
+        // not a tenancy question — it is purely about the fk carrying project_id.
+        const planted = await adminClient()
+          .from('project_statuses')
+          .insert({
+            project_id: p2,
+            slug: 'qa_review',
+            name: 'QA Review',
+            category: 'in_progress',
+            position: 5,
+          })
+          .select()
+          .single()
+        expect(planted.error).toBeNull()
+
+        try {
+          // story1 lives in p1. 'qa_review' is a perfectly real slug — just not here.
+          const { data, error } = await a
+            .from('tickets')
+            .update({ status: 'qa_review' })
+            .eq('id', story1)
+            .select()
+
+          expect(data).toBeNull()
+          expect(error!.code).toBe('23503')
+
+          // Positive control: the SAME update against a ticket in p2 succeeds, so
+          // the rejection above is about the project pairing and not about the slug
+          // being unusable everywhere.
+          const inP2 = await a
+            .from('tickets')
+            .update({ status: 'qa_review' })
+            .eq('id', epic2)
+            .select()
+            .single()
+          expect(inP2.error).toBeNull()
+          expect(inP2.data!.status).toBe('qa_review')
+        } finally {
+          // Put epic2 back before the planted row is removed, or the fk blocks it.
+          await a.from('tickets').update({ status: 'todo' }).eq('id', epic2)
+          await adminClient().from('project_statuses').delete().eq('id', planted.data!.id)
+        }
+      },
+      30_000,
+    )
   },
 )
 

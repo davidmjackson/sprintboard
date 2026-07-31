@@ -6,7 +6,11 @@ import type { Ticket, TicketBlockUpdate, TicketInsert, TicketType, TicketUpdate 
  *
  * The `key` and `number` are assigned by the `assign_ticket_key` BEFORE INSERT
  * trigger, atomically and race-safely — so we never send them (the `TicketInsert`
- * type forbids it). `status` is left to the DB default `'todo'`. `tickets` has no
+ * type forbids it). `status` is still left to the DB default `'todo'`, and needs no
+ * code change now that statuses are per-project rows: the default resolves against
+ * this project's `project_statuses` row through the composite `tickets_status_fk`
+ * rather than against a global check constraint. That is the whole point of keying
+ * the fk on the slug — no ticket row, and no insert path, had to change. `tickets` has no
  * `owner_id`; the `tickets_owner` RLS policy scopes writes through the project, so a
  * cross-tenant insert is rejected by the database, not by this function. A failure is
  * not user-correctable (no per-field unique constraint reachable here), so the error
