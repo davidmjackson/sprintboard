@@ -21,9 +21,20 @@ import type { Ticket } from './domain'
  * one code path. Note the consequence, which is intended: `MP-1` also matches `MP-13`.
  */
 export function selectMatchingTickets(tickets: readonly Ticket[], query: string): Ticket[] {
+  if (!isSearchActive(query)) return [...tickets]
   const needle = query.trim().toLowerCase()
-  if (needle === '') return [...tickets]
   return tickets.filter(
     (t) => t.key.toLowerCase().includes(needle) || t.summary.toLowerCase().includes(needle),
   )
+}
+
+/**
+ * Whether a query counts as an active filter — the one rule `selectMatchingTickets` and
+ * `BoardTab`'s `BoardColumnEmpty` must never implement separately. A trimmed-empty query is
+ * not a filter (see `selectMatchingTickets`'s own docblock); exporting the check rather than
+ * inlining `query.trim() !== ''` a second time in a component is what keeps the two from
+ * silently diverging if this threshold ever changes.
+ */
+export function isSearchActive(query: string): boolean {
+  return query.trim() !== ''
 }

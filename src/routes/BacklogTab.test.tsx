@@ -289,6 +289,24 @@ describe('BacklogTab search (SPRIN-68)', () => {
     expect(box).toHaveValue('login')
   })
 
+  // I4 (SPRIN-68 final review): every query used elsewhere in this suite is a single token.
+  // A query containing a SPACE is the feature's headline use case ("login redirect") and
+  // nothing had ever typed one — `onChange(e.target.value.trim())` in `TicketSearchInput`
+  // eats interior spaces too (`.trim()` only strips the ends, but this mutation applies it
+  // on every keystroke, so by the time "login redirect" is fully typed the trailing " r" of
+  // "login r" would have been trimmed mid-type and the final value corrupted), turning
+  // "login redirect" into a query that matches nothing. This test also pins the placeholder,
+  // which nothing else in the suite asserts.
+  it('matches on a multi-word query, including the interior space (I4)', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    expect(box).toHaveAttribute('placeholder', 'Key or summary')
+    await userEvent.type(box, 'login redirect')
+    expect(box).toHaveValue('login redirect')
+    expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+  })
+
   it('filters rows by ticket key', async () => {
     renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
     await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'MP-2')

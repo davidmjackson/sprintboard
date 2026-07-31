@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { selectMatchingTickets } from './ticket-search'
+import { isSearchActive, selectMatchingTickets } from './ticket-search'
 import type { Ticket } from './domain'
 
 function ticket(fields: Partial<Ticket>): Ticket {
@@ -56,5 +56,25 @@ describe('selectMatchingTickets', () => {
     const found = selectMatchingTickets(input, 'MP')
     expect(found.map((t) => t.key)).toEqual(['MP-1', 'MP-2', 'MP-13'])
     expect(input).toHaveLength(3)
+  })
+})
+
+describe('isSearchActive', () => {
+  // The one rule this module and `BoardTab`'s `BoardColumnEmpty` must never implement
+  // separately (SPRIN-68 review finding I3) — a trimmed-empty query is not a filter.
+  it('is false for an empty query', () => {
+    expect(isSearchActive('')).toBe(false)
+  })
+
+  it('is false for a whitespace-only query', () => {
+    expect(isSearchActive('   ')).toBe(false)
+  })
+
+  it('is true for a query with non-whitespace content', () => {
+    expect(isSearchActive('login')).toBe(true)
+  })
+
+  it('is true for a query with surrounding whitespace around real content', () => {
+    expect(isSearchActive('  login  ')).toBe(true)
   })
 })

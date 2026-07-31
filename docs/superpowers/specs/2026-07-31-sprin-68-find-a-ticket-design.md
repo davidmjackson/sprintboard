@@ -85,7 +85,11 @@ cannot drift between the two surfaces. It is controlled: `value` and `onChange` 
 **State lives in each tab, not in the shell.** `blockedOnly` is already local to `BoardTab`, and
 hoisting a filter into `ProjectShellContext` would be a behaviour decision no AC asks for: it
 would make the Backlog's query follow you to the Board. Local state also means the query resets on
-tab switch, because the tab unmounts (the shell's `ErrorBoundary` is keyed on `location.pathname`).
+tab switch, because the tab unmounts: switching tabs is a route change, and the `<Outlet>` swaps in
+a different route's component (`BoardTab` for `BacklogTab` or back), which unmounts the previous
+one and discards its local state. (`ErrorBoundary` is also keyed on `location.pathname`, so it
+remounts on every navigation too — but that key is for crash recovery between tabs, not what
+causes the tab component itself to swap; the route change alone would unmount it regardless.)
 That is the honest default — a filter you cannot see the box for is a filter that will confuse
 someone.
 
@@ -171,8 +175,19 @@ column to `BoardColumnSummary`, whose docblock states that the numbers describe 
 on screen. Applying the query in the same place — `selectMatchingTickets(selectBlockedTickets(...))`
 or the reverse, both are pure filters so the order is irrelevant to the result — means the column
 totals follow the query with no change to `summariseColumn` at all. AC2's "totals describe what is
-on screen" is a property to **test**, not code to write, and a test that pins it is the guard
-against someone later filtering at render time inside the `.map`.
+on screen" is a property to **test**, not code to write.
+
+**Correction (SPRIN-68 final review):** an earlier draft of this section claimed a test here
+guards "against someone later filtering at render time inside the `.map`" — moving the query
+filter into the per-column `.filter` alongside the status split. No test can guard against that
+move, because filtering commutes with splitting-by-status: applying the query before or after the
+per-status split produces the same visible cards either way, so relocating it is
+behaviour-preserving and there is nothing for a test to catch. Two reviewers independently
+confirmed this by making the move and watching the suite stay green. What IS pinned, and is the
+thing actually worth guarding, is that the cards and the column totals cannot **disagree** — i.e.
+rendering the filtered cards while still passing the *unfiltered* column to `BoardColumnSummary`.
+That is caught, by the AC2 totals test above and independently by the pre-existing S7.3 recount
+test.
 
 ## Testing
 

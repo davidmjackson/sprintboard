@@ -6,7 +6,7 @@ import { TICKET_STATUSES, TICKET_STATUS_LABELS } from '@/lib/domain'
 import type { Ticket, TicketStatus } from '@/lib/domain'
 import { selectActiveSprint, selectBlockedTickets, summariseColumn } from '@/lib/board'
 import { selectSprintTickets } from '@/lib/backlog'
-import { selectMatchingTickets } from '@/lib/ticket-search'
+import { isSearchActive, selectMatchingTickets } from '@/lib/ticket-search'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
 import { LoadFailure } from './LoadFailure'
@@ -29,8 +29,9 @@ import { TicketSearchInput } from './TicketSearchInput'
  * them. A total that disagreed with the cards under it would be a distinct state wearing
  * another state's face.
  *
- * Nothing is rendered for an empty column: "No tickets yet." is already there and says it
- * better than "0 cards · 0 points" would.
+ * Nothing is rendered for an empty column: `BoardColumnEmpty` already says something —
+ * "No tickets yet." or, since SPRIN-68, "No matches." when a filter is active — and either
+ * one says it better than "0 cards · 0 points" would.
  */
 function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
   const { count, points, unestimated } = summariseColumn(tickets)
@@ -58,7 +59,7 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  * `BoardTab` nothing.
  */
 function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
-  const filtering = blockedOnly || query.trim() !== ''
+  const filtering = blockedOnly || isSearchActive(query)
   return (
     <p className="text-muted-foreground text-xs">{filtering ? 'No matches.' : 'No tickets yet.'}</p>
   )

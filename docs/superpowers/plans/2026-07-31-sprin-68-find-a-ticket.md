@@ -502,8 +502,10 @@ describe('BoardTab search (SPRIN-68)', () => {
 
   // AC2's second half, and the reason the totals are worth a test rather than an assertion in
   // the spec: they must describe what is on screen. `summariseColumn` is not changed by this
-  // story, so this test guards the COMPOSITION — that the query is applied before the column
-  // split, not inside the render.
+  // story, so this test guards the COMPOSITION — not WHERE the query is applied (filtering
+  // commutes with the per-status split, so that is not test-catchable — see Step 6's
+  // correction below) but that the cards on screen and the totals over them never disagree:
+  // the filtered cards must never be paired with an unfiltered column.
   it('column totals describe only the visible cards (AC2)', async () => {
     renderBoard()
     expect(screen.getByText(/2 cards · 8 points/i)).toBeInTheDocument()
@@ -640,9 +642,19 @@ Then confirm the trap is real, so the constraint is documented by evidence and n
 temporarily add `const filterActive = blockedOnly || query.trim() !== ''` to `BoardTab`'s body, re-run
 the same command, and report the number it becomes. Remove it.
 
-Finally, prove the totals test pins the composition: move the query filter from `visibleTickets`
-into the per-column `.filter(...)` inside the `.map`, re-run, and report which tests go red.
-Restore.
+Finally, attempt to prove the totals test pins the composition: move the query filter from
+`visibleTickets` into the per-column `.filter(...)` inside the `.map`, re-run, and report which
+tests go red. Restore.
+
+**Correction (SPRIN-68 final review):** this step's premise was wrong, and dispatch C's honest
+negative plus two independent reviewers confirmed it — running the move above produces **zero**
+red tests. Filtering commutes with splitting-by-status, so relocating the query filter into the
+per-column `.filter` is behaviour-preserving; there is nothing for any test to catch, and expecting
+red here was asking the mutation to prove something it structurally cannot. What the totals test
+DOES pin, and the property actually worth guarding, is that the filtered cards and the column
+totals never disagree — i.e. rendering filtered cards while still passing the *unfiltered* column
+to `BoardColumnSummary`. That mutation IS caught, by this test and independently by the
+pre-existing S7.3 recount test.
 
 - [ ] **Step 7: Format, verify, commit**
 

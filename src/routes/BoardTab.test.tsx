@@ -570,6 +570,24 @@ const BOARD_TICKETS = [
     assignee_id: null,
     labels: [],
   },
+  // A ticket that matches the same query as MP-2 but is NOT in the active sprint (mirrors
+  // BacklogTab.test.tsx's MP-3 "Login help center article"). Without this ticket, every row
+  // in this fixture has `sprint_id: 's1'`, so `boardTickets` (active-sprint tickets) and
+  // `tickets` (the whole project) are identical under test and a regression that widened the
+  // board's search source from the former to the latter would ship green.
+  {
+    id: 't3',
+    key: 'MP-3',
+    number: 3,
+    summary: 'Login onboarding guide',
+    type: 'task',
+    status: 'todo',
+    sprint_id: null,
+    is_blocked: false,
+    story_points: null,
+    assignee_id: null,
+    labels: [],
+  },
 ] as never
 
 function renderBoard(extra: Partial<ProjectShellContext> = {}) {
@@ -583,6 +601,12 @@ describe('BoardTab search (SPRIN-68)', () => {
     await userEvent.type(box, 'login')
     expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+    // The control on the other side: MP-3 also matches "login" by summary, but it is NOT in
+    // the active sprint, so it must never appear here — the board searches the active
+    // sprint's tickets, not the project's whole ticket list.
+    expect(
+      screen.queryByRole('button', { name: /login onboarding guide/i }),
+    ).not.toBeInTheDocument()
     // Pins the box's own displayed value, not just its filtering effect — a hardcoded or
     // disconnected `value` prop can still filter correctly by coincidence of which key the
     // React state happens to hold (see the SPRIN-68 fix-round-1 review finding).
