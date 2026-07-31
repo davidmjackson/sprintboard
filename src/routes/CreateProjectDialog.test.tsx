@@ -46,6 +46,28 @@ describe('CreateProjectDialog', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
+  it('stays quiet about a derived key until the user has tried to submit', async () => {
+    const user = await openDialog()
+    await user.type(screen.getByLabelText('Name'), 'X') // derives "X" — 1 char, invalid
+
+    // `shouldValidate: form.formState.isSubmitted` is false here, so the auto-derived
+    // key must not shout at a user who has typed one character of a name. Inverting the
+    // flag surfaces the error mid-keystroke and passes every other test.
+    expect(screen.queryByText(/Key must be/)).not.toBeInTheDocument()
+  })
+
+  it('clears the key error live once the name derives a valid key after a failed submit', async () => {
+    const user = await openDialog()
+    await user.type(screen.getByLabelText('Name'), 'X')
+    await user.click(screen.getByRole('button', { name: 'Create project' }))
+    expect(await screen.findByText(/Key must be/)).toBeInTheDocument()
+
+    // Now `isSubmitted` is true, so re-deriving the key must re-validate it — otherwise a
+    // stale error sits under a field the user has already corrected.
+    await user.type(screen.getByLabelText('Name'), 'ray') // "Xray" derives "XRA" — valid
+    await waitFor(() => expect(screen.queryByText(/Key must be/)).not.toBeInTheDocument())
+  })
+
   it('requires a name', async () => {
     const user = await openDialog()
     await user.type(screen.getByLabelText('Key'), 'ABC')

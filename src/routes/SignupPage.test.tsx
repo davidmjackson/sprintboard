@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SignupPage } from './SignupPage'
@@ -124,6 +124,51 @@ describe('SignupPage', () => {
       password: 'password123',
       options: { data: { display_name: 'Ada' } },
     })
+  })
+
+  it('trims a padded display name before storing it as user metadata', async () => {
+    signUp.mockResolvedValue(ok())
+    const user = userEvent.setup()
+    renderSignup()
+
+    await user.type(screen.getByLabelText('Email'), 'new@example.com')
+    await user.type(screen.getByLabelText('Password'), 'password123')
+    await user.type(screen.getByLabelText('Display name'), '  Ada  ')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+
+    expect(await screen.findByText('AUTHED HOME')).toBeInTheDocument()
+    // The padding must not survive into user metadata — it would render everywhere the
+    // display name is shown. Dropping `.trim()` in SignupPage passes every other test.
+    expect(signUp).toHaveBeenCalledWith({
+      email: 'new@example.com',
+      password: 'password123',
+      options: { data: { display_name: 'Ada' } },
+    })
+  })
+
+  it('replaces the signup entry, so Back does not return to the form', async () => {
+    signUp.mockResolvedValue(ok())
+    const user = userEvent.setup()
+    const router = createMemoryRouter(
+      [
+        { path: '/signup', element: <SignupPage /> },
+        { path: '/', element: <div>AUTHED HOME</div> },
+      ],
+      { initialEntries: ['/', '/signup'], initialIndex: 1 },
+    )
+    render(<RouterProvider router={router} />)
+
+    await user.type(screen.getByLabelText('Email'), 'new@example.com')
+    await user.type(screen.getByLabelText('Password'), 'password123')
+    await user.click(screen.getByRole('button', { name: 'Create account' }))
+    expect(await screen.findByText('AUTHED HOME')).toBeInTheDocument()
+
+    // With `{ replace: true }` the /signup entry is gone, so going back lands on the
+    // home entry that preceded it. Without it, back returns to a signup form for an
+    // account that already exists.
+    await act(() => router.navigate(-1))
+    expect(router.state.location.pathname).toBe('/')
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
   })
 
   it('shows a clear message when the email is already registered (error form)', async () => {

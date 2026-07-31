@@ -28,6 +28,14 @@ describe('CreateTicketDialog', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
+  it('floors the story-points input at zero', async () => {
+    await openDialog()
+
+    // The zod regex rejects a typed "-1", but the spinner and a browser's own numeric
+    // stepper bypass the keyboard entirely — `min` is what stops them going negative.
+    expect(screen.getByLabelText('Story points')).toHaveAttribute('min', '0')
+  })
+
   it('creates a ticket with parsed fields and closes on success', async () => {
     mockCreate.mockResolvedValue({ ok: true, ticket: { id: 't1' } as never })
     const user = await openDialog()

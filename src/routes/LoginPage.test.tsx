@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LoginPage } from './LoginPage'
@@ -42,6 +42,33 @@ describe('LoginPage', () => {
 
     expect(await screen.findByText('AUTHED HOME')).toBeInTheDocument()
     expect(signIn).toHaveBeenCalledWith({ email: 'a@example.com', password: 'password123' })
+  })
+
+  it('replaces the login entry, so Back does not return to the form', async () => {
+    signIn.mockResolvedValue({
+      data: { user: { id: 'u1' }, session: { access_token: 't' } },
+      error: null,
+    } as unknown as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>)
+    const user = userEvent.setup()
+    const router = createMemoryRouter(
+      [
+        { path: '/login', element: <LoginPage /> },
+        { path: '/', element: <div>AUTHED HOME</div> },
+      ],
+      { initialEntries: ['/', '/login'], initialIndex: 1 },
+    )
+    render(<RouterProvider router={router} />)
+
+    await user.type(screen.getByLabelText('Email'), 'a@example.com')
+    await user.type(screen.getByLabelText('Password'), 'password123')
+    await user.click(screen.getByRole('button', { name: 'Log in' }))
+    expect(await screen.findByText('AUTHED HOME')).toBeInTheDocument()
+
+    // With `{ replace: true }` the /login entry is gone, so back lands on the home entry
+    // that preceded it. Without it, back returns a signed-in user to the login form.
+    await act(() => router.navigate(-1))
+    expect(router.state.location.pathname).toBe('/')
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument()
   })
 
   it('shows one generic message on invalid credentials, revealing nothing', async () => {
