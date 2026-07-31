@@ -11,9 +11,14 @@ import type { ProjectsContext } from './AppLayout'
 import type { Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
+import { listProjectStatuses } from '@/lib/project-statuses'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
+}))
+vi.mock('@/lib/project-statuses', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-statuses')>()),
+  listProjectStatuses: vi.fn(),
 }))
 // Spread the real module so pure helpers (e.g. parseBlockReason, which the detail
 // dialog calls during render) stay real; only the network-touching functions are mocked.
@@ -39,6 +44,7 @@ vi.mock('@/lib/sprints', async (orig) => ({
 const mockList = vi.mocked(listTickets)
 const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
+const mockListStatuses = vi.mocked(listProjectStatuses)
 beforeEach(() => {
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
@@ -48,6 +54,7 @@ beforeEach(() => {
   vi.mocked(createSprint).mockReset()
   vi.mocked(startSprint).mockReset()
   vi.mocked(completeSprint).mockReset()
+  mockListStatuses.mockReset().mockResolvedValue([])
 })
 
 const PROJECTS = [
@@ -661,6 +668,30 @@ describe('ProjectShell', () => {
       expect(await screen.findByText('tickets phase: loading')).toBeVisible()
       expect(screen.queryByText('tickets phase: failed')).not.toBeInTheDocument()
       expect(await screen.findByText('sprints phase: loading')).toBeVisible()
+    })
+  })
+
+  // SPRIN-76 Task 4: the shell's third project-scoped read, wired the same way as tickets
+  // and sprints — same reloadNonce, so Retry covers it too.
+  describe('the project statuses read', () => {
+    it('reads the project statuses for the active project', async () => {
+      renderShell('/projects/p1')
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledWith('p1'))
+    })
+
+    // The one that matters: a statuses read wired to its OWN nonce instead of the shared
+    // `reloadNonce` would pass the test above and still leave Retry silently partial — the
+    // user clicks Retry, tickets and sprints reload, statuses never do, and nothing is red.
+    it('Retry reloads the statuses too, not only tickets and sprints', async () => {
+      const u = userEvent.setup()
+      mockListStatuses.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([])
+      renderShell('/projects/p1/ticket-probe')
+
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledTimes(1))
+
+      await u.click(await screen.findByRole('button', { name: 'probe retry' }))
+
+      await waitFor(() => expect(mockListStatuses).toHaveBeenCalledTimes(2))
     })
   })
 
