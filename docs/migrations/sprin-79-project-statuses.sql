@@ -144,7 +144,7 @@ comment on table public.project_statuses is
   'Per-project ticket statuses. One row = one board column (1:1 at Rung 3 slice 1). '
   'SERVER-OWNED: clients may SELECT only; the seeding trigger is the sole writer. '
   'SPRIN-77 opens writes and MUST first move the terminal-status rule off the literal '
-  ''''done'''' at src/lib/sprints.ts and src/routes/ProjectShell.tsx onto category.';
+  '"done" at src/lib/sprints.ts and src/routes/ProjectShell.tsx onto category.';
 
 -- At most one initial status per project. Same idiom as sprints_one_active_per_project,
 -- and the same limitation: it prevents two, not zero.
