@@ -9,17 +9,23 @@ function ticket(fields: Partial<Ticket>): Ticket {
 
 const TICKETS = [
   ticket({ key: 'MP-1', summary: 'Wire the board' }),
-  ticket({ key: 'MP-2', summary: 'Fix the login redirect' }),
+  ticket({ key: 'MP-2', summary: 'Fix the LOGIN redirect' }),
   ticket({ key: 'MP-13', summary: 'Add sprint burndown' }),
 ]
 
 describe('selectMatchingTickets', () => {
   it('returns everything for an empty query', () => {
-    expect(selectMatchingTickets(TICKETS, '')).toHaveLength(3)
+    const result = selectMatchingTickets(TICKETS, '')
+    expect(result).toHaveLength(3)
+    expect(result.map((t) => t.key)).toEqual(['MP-1', 'MP-2', 'MP-13'])
+    expect(result).not.toBe(TICKETS)
   })
 
   it('returns everything for a whitespace-only query', () => {
-    expect(selectMatchingTickets(TICKETS, '   ')).toHaveLength(3)
+    const result = selectMatchingTickets(TICKETS, '   ')
+    expect(result).toHaveLength(3)
+    expect(result.map((t) => t.key)).toEqual(['MP-1', 'MP-2', 'MP-13'])
+    expect(result).not.toBe(TICKETS)
   })
 
   it('matches the summary case-insensitively', () => {
