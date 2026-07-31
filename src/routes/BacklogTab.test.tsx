@@ -249,6 +249,25 @@ const SEARCH_TICKETS = [
     assignee_id: null,
     labels: [],
   },
+  // A ticket that matches the same query as MP-2 but is IN A SPRINT — the Backlog must
+  // search the backlog, not every ticket in the project. Without this ticket, `backlog`
+  // and `tickets` are the same array under test (every fixture ticket has `sprint_id:
+  // null`), so `selectMatchingTickets(tickets, query)` and `selectMatchingTickets(backlog,
+  // query)` cannot be told apart and a regression that widened the search to all tickets
+  // would ship green.
+  {
+    id: 't3',
+    key: 'MP-3',
+    number: 3,
+    summary: 'Login help center article',
+    type: 'task',
+    status: 'in_progress',
+    sprint_id: 's1',
+    is_blocked: false,
+    story_points: null,
+    assignee_id: null,
+    labels: [],
+  },
 ] as never
 
 describe('BacklogTab search (SPRIN-68)', () => {
@@ -257,6 +276,12 @@ describe('BacklogTab search (SPRIN-68)', () => {
     await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
     expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+    // The control on the other side: MP-3 also matches "login" by summary, but it is IN A
+    // SPRINT, so it must never appear here — the Backlog searches the backlog, not the
+    // project's whole ticket list.
+    expect(
+      screen.queryByRole('button', { name: /login help center article/i }),
+    ).not.toBeInTheDocument()
   })
 
   it('filters rows by ticket key', async () => {
@@ -270,6 +295,10 @@ describe('BacklogTab search (SPRIN-68)', () => {
     renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
     const box = screen.getByRole('searchbox', { name: /search/i })
     await userEvent.type(box, 'login')
+    // Proves the list was actually narrowed BEFORE the clear — without this, the end state
+    // asserted below is also the start state, and a fully disconnected `onChange` would
+    // stay green (nothing was ever filtered, so nothing needed to come back).
+    expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
     await userEvent.clear(box)
     expect(screen.getByRole('button', { name: /wire the board/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
