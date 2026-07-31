@@ -64,25 +64,6 @@ export type TicketStatus = string
 export type SprintStatus = 'future' | 'active' | 'complete'
 export type ProjectType = 'scrum'
 
-/**
- * The four board columns the client still renders, in board order.
- *
- * As of SPRIN-79 the database no longer constrains `tickets.status` to this list —
- * `project_statuses` does, per project. `TicketStatus` was widened to `string` in
- * Task 3 of SPRIN-76, so this array is no longer what the type system checks
- * against; it is deleted in Task 7 of this same story, once the board renders from
- * `project_statuses` rows directly and no consumer of this constant is left.
- * `domain.test.ts` asserts it still equals `DEFAULT_PROJECT_STATUSES`; that
- * assertion is what keeps the two halves of the change from drifting apart in the
- * window between them.
- */
-export const TICKET_STATUSES = [
-  'todo',
-  'in_progress',
-  'in_review',
-  'done',
-] as const satisfies readonly TicketStatus[]
-
 export const TICKET_TYPES = [
   'epic',
   'story',
@@ -114,11 +95,12 @@ export const STATUS_CATEGORIES = [
  *     and asserts they equal this. That is the primary guard, because the schema
  *     file is not the database — a migration is applied by hand.
  *
- * This is also what keeps the four-column guarantee intact across SPRIN-79's seam:
- * `tickets_status_check` is gone, so the only thing still tying the board's
- * `TICKET_STATUSES` to the database is the assertion in `domain.test.ts` that these
- * slugs and that array are the same list. SPRIN-76 removes `TICKET_STATUSES` and
- * renders from these rows instead; until then, do not let the two diverge.
+ * This is also what keeps the four-column guarantee intact now that `tickets_status_check`
+ * is gone (SPRIN-79): nothing in the database constrains a ticket to any particular set of
+ * statuses any more, so this constant — checked against the schema doc by `domain.test.ts`
+ * and against the live database by `rls.integration.test.ts` — is the only thing that still
+ * pins "a new project gets exactly these four statuses". The board itself no longer reads
+ * this constant; it renders `project_statuses` rows directly (SPRIN-76).
  */
 export const DEFAULT_PROJECT_STATUSES = [
   { slug: 'todo', name: 'To Do', category: 'todo', position: 1, is_initial: true },
@@ -140,28 +122,11 @@ export const DEFAULT_PROJECT_STATUSES = [
 }[]
 
 /**
- * Human-readable board-column labels, keyed by status. This is the single home for
- * the four column names — CLAUDE.md forbids inlining them in a component, filter, or
- * badge-colour map.
- *
- * Since `TicketStatus` was widened to `string` (Task 3 of SPRIN-76), `Record<TicketStatus,
- * string>` is `Record<string, string>` — an index signature, not an exhaustive record.
- * Nothing here stops an entry being removed, or a status existing with no label: measured
- * by deleting two of the four entries below and confirming `npm run build` still passes.
- * This constant is deleted in Task 7 of this story, once the board reads names from
- * `project_statuses` rows instead of this map.
- */
-export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
-  todo: 'To Do',
-  in_progress: 'In Progress',
-  in_review: 'In Review',
-  done: 'Done',
-}
-
-/**
- * Human-readable ticket-type labels, keyed by type. Same rule as
- * `TICKET_STATUS_LABELS`: type display names live only here (CLAUDE.md). Typed as an
- * exhaustive `Record<TicketType, string>` so a new type cannot ship without a label.
+ * Human-readable ticket-type labels, keyed by type. Type display names live only
+ * here (CLAUDE.md). Typed as an exhaustive `Record<TicketType, string>` so a new
+ * type cannot ship without a label. Status labels have no equivalent here any more:
+ * a status's name is a column on its `project_statuses` row (SPRIN-76), not a map
+ * keyed by slug.
  */
 export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   epic: 'Epic',
@@ -313,10 +278,6 @@ export type SprintCreateInsert = Omit<SprintInsert, 'status'>
 export type SprintStatusUpdate = Pick<TablesUpdate<'sprints'>, 'status'>
 
 /* ------------------------------------------------------------------ */
-
-export function isTicketStatus(value: string): value is TicketStatus {
-  return (TICKET_STATUSES as readonly string[]).includes(value)
-}
 
 export function isTicketType(value: string): value is TicketType {
   return (TICKET_TYPES as readonly string[]).includes(value)
