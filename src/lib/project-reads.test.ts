@@ -239,6 +239,15 @@ describe('firstUnready', () => {
     ).toEqual({ resource: 'tickets', phase: 'failed' })
   })
 
+  it('reports the first of several loading reads, in source order', () => {
+    expect(
+      firstUnready([
+        { resource: 'tickets', phase: 'loading' },
+        { resource: 'sprints', phase: 'loading' },
+      ]),
+    ).toEqual({ resource: 'tickets', phase: 'loading' })
+  })
+
   it('returns null for an empty list', () => {
     expect(firstUnready([])).toBeNull()
   })
