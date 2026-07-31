@@ -273,7 +273,8 @@ const SEARCH_TICKETS = [
 describe('BacklogTab search (SPRIN-68)', () => {
   it('filters rows by summary as you type', async () => {
     renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
-    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'login')
     expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
     // The control on the other side: MP-3 also matches "login" by summary, but it is IN A
@@ -282,6 +283,10 @@ describe('BacklogTab search (SPRIN-68)', () => {
     expect(
       screen.queryByRole('button', { name: /login help center article/i }),
     ).not.toBeInTheDocument()
+    // Pins the box's own displayed value, not just its filtering effect — a hardcoded or
+    // disconnected `value` prop can still filter correctly by coincidence of which key the
+    // React state happens to hold (SPRIN-68 fix-round-1 review finding).
+    expect(box).toHaveValue('login')
   })
 
   it('filters rows by ticket key', async () => {

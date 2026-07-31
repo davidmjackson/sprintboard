@@ -579,9 +579,22 @@ function renderBoard(extra: Partial<ProjectShellContext> = {}) {
 describe('BoardTab search (SPRIN-68)', () => {
   it('narrows the cards to matches (AC2)', async () => {
     renderBoard()
-    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'login')
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'login')
     expect(screen.getByRole('button', { name: /fix the login redirect/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /wire the board/i })).not.toBeInTheDocument()
+    // Pins the box's own displayed value, not just its filtering effect — a hardcoded or
+    // disconnected `value` prop can still filter correctly by coincidence of which key the
+    // React state happens to hold (see the SPRIN-68 fix-round-1 review finding).
+    expect(box).toHaveValue('login')
+  })
+
+  // Mirrors the existing "does NOT offer the filter when there is no active sprint" control
+  // for the blocked-only checkbox below. Without this, rendering the search box OUTSIDE the
+  // `activeSprint !== null` guard — over a board with nothing to search — ships undetected.
+  it('does NOT offer the search box when there is no active sprint (negative control)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
+    expect(screen.queryByRole('searchbox', { name: /search/i })).not.toBeInTheDocument()
   })
 
   // AC2's second half, and the reason the totals are worth a test rather than an assertion in
@@ -629,6 +642,16 @@ describe('BoardTab search (SPRIN-68)', () => {
   // The positive control: with no filter at all, the honest message is the original one.
   it('says No tickets yet when nothing is filtered', () => {
     renderBoard()
+    expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
+  })
+
+  // A whitespace-only query is not a filter — `selectMatchingTickets`'s own documented
+  // contract returns the list unchanged for one. A genuinely empty column must still say
+  // "No tickets yet.", not "No matches.", when the box holds only spaces.
+  it('treats a whitespace-only query as no filter at all (AC5)', async () => {
+    renderBoard()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), '   ')
     expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
     expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
   })
