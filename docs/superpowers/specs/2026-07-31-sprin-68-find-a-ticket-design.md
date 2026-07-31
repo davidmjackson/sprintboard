@@ -40,6 +40,19 @@ already entitled to see cannot widen access.
 - **AC6** The matching rule lives in one module and is used by both tabs — no domain rule inlined
   in a component.
 
+**Correction (SPRIN-68 post-merge review) on what AC6's shared `isSearchActive()` predicate
+actually guards.** Fix round 2 replaced a second, inlined `query.trim() !== ''` in `BoardColumnEmpty`
+with a call to the module's own `isSearchActive()`. An earlier draft of this claim (repeated in the
+PR description) said sharing the predicate "turns tests red in both suites" and thereby enforces
+AC6's no-duplicated-rule requirement. That overstates it. What is true: **removing the duplication
+means a *threshold change* — e.g. requiring a 2-character query — is caught in both
+`ticket-search.test.ts` and `BoardTab.test.tsx` from one edit, because both now call the same
+function.** What is NOT true: nothing stops someone from re-inlining an identical copy of
+`query.trim() !== ''` verbatim into `BoardColumnEmpty` again later. That re-duplication is
+behaviour-identical to calling `isSearchActive()`, so the full suite stays 613/613 green — it was
+planted and confirmed. AC6 is therefore a convention enforced by code review (and by this document),
+not by any test; sharing the function buys divergence-detection, not duplication-prevention.
+
 ## Design
 
 ### The rule: `src/lib/ticket-search.ts`
@@ -59,10 +72,23 @@ in `backlog.ts` and has `board.ts` compose with it rather than duplicate it.
 
 Behaviour:
 
-- Trim the query. A trimmed-empty query returns the input list (AC4) — identity, not `[]`. This is
-  the single most important branch in the module: getting it backwards would empty both tabs on
-  first render, since both start with an empty query.
+- Trim the query. A trimmed-empty query returns the input list (AC4) — identity, not `[]`. Inverting
+  this branch would empty both tabs on first render, since both start with an empty query, and that
+  inversion is caught widely — measured at **37 of 613** unit tests on the commit this correction was
+  written against (re-derive rather than trust that count; it drifts as tests are added).
 - Compare case-insensitively by lowercasing both sides.
+
+**Correction (SPRIN-68 post-merge review) on what this early return is FOR.** An earlier draft
+called the trimmed-empty-query `if` "the one line here worth a test of its own" and implied that
+*deleting* it (not just inverting it) is what a test guards against. That is false and was
+disproved by mutation: deleting the line outright is **behaviour-identical** to keeping it, because
+an empty needle already satisfies `''.includes('')` for every ticket — the subsequent `.filter()`
+would return every row regardless — and `.filter()` also allocates a fresh array, so even the
+`not.toBe(TICKETS)` identity assertions still pass. Deleting the line is lint-clean, build-clean,
+and 613/613 green; no test in this suite can tell it apart from keeping it. The line is kept anyway,
+because it is a genuine short-circuit (it skips reading `t.key`/`t.summary` at all for the common
+empty-query case) and it documents intent — but its test coverage comes entirely from the
+*inversion* case above, not from its mere presence.
 - A ticket matches when its **key** contains the query, or its **summary** does.
 
 **Why key and summary, and nothing else.** Both are visible on every board card and backlog row, so

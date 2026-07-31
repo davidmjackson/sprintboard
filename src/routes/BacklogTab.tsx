@@ -71,7 +71,14 @@ export function BacklogTab() {
       <TicketSearchInput value={query} onChange={setQuery} />
       {matches.length === 0 ? (
         <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-          <p className="text-muted-foreground text-sm">No tickets match your search.</p>
+          {/* `role="status"` — this message appears in direct response to typing, the same
+              reason `TicketDetailHeader.tsx` puts `role="status"` on its own informational
+              text. Not `role="alert"`: that project convention (`LoadFailure`, `ErrorBoundary`,
+              `BoardTab`'s `moveError`) is reserved for actual failures, and a filter narrowing
+              to nothing is not one. */}
+          <p role="status" className="text-muted-foreground text-sm">
+            No tickets match your search.
+          </p>
         </div>
       ) : (
         <ul className="divide-y rounded-lg border">

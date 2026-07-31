@@ -60,8 +60,14 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  */
 function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
   const filtering = blockedOnly || isSearchActive(query)
+  // `role="status"`, not `role="alert"`: this appears in direct response to typing or
+  // toggling a filter, the same informational case `TicketDetailHeader.tsx` announces with
+  // `role="status"`. `role="alert"` stays reserved for actual failures (`LoadFailure`,
+  // `ErrorBoundary`, `moveError` above) — a filter narrowing a column to nothing is not one.
   return (
-    <p className="text-muted-foreground text-xs">{filtering ? 'No matches.' : 'No tickets yet.'}</p>
+    <p role="status" className="text-muted-foreground text-xs">
+      {filtering ? 'No matches.' : 'No tickets yet.'}
+    </p>
   )
 }
 

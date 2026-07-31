@@ -621,6 +621,17 @@ describe('BoardTab search (SPRIN-68)', () => {
     expect(screen.queryByRole('searchbox', { name: /search/i })).not.toBeInTheDocument()
   })
 
+  // M5 (SPRIN-68 post-merge review): the negative control above sets BOTH `tickets: []` and
+  // `sprints: []` at once, so it cannot tell "hidden because there is no active sprint" apart
+  // from "hidden because there are no tickets" — gating the box on `boardTickets.length > 0`
+  // instead of `activeSprint !== null` would pass it just as happily. This is the other half:
+  // an ACTIVE sprint with a genuinely empty ticket list must still show the box, because the
+  // gate is the sprint, not the list.
+  it('DOES offer the search box over an active sprint with no tickets yet (positive control)', () => {
+    renderTab(BoardTab, boardCtx({ tickets: [] }))
+    expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
+  })
+
   // AC2's second half, and the reason the totals are worth a test rather than an assertion in
   // the spec: they must describe what is on screen. `summariseColumn` is not changed by this
   // story, so this test guards the COMPOSITION — that the query is applied before the column
@@ -668,6 +679,32 @@ describe('BoardTab search (SPRIN-68)', () => {
     renderBoard()
     expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
     expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
+  })
+
+  // M4 (SPRIN-68 post-merge review): the column's empty message ("No matches." here, or "No
+  // tickets yet." on an unfiltered column) was a plain <p>. `getByRole('status', ...)` resolves
+  // ONLY an element carrying that role, so this fails if the attribute is dropped. Scoped to one
+  // column since several columns can say "No matches." at once.
+  it('announces a filtered-empty column to screen readers (M4)', async () => {
+    renderBoard()
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
+    const inProgress = screen.getByRole('heading', { name: 'In Progress' }).closest('section')!
+    expect(within(inProgress).getByRole('status')).toHaveTextContent(/no matches/i)
+  })
+
+  // I1 (SPRIN-68 post-merge review): the Backlog's mirror test (`BacklogTab.test.tsx`, "keeps
+  // the search box rendered when the query matches nothing") had no Board equivalent. Gating
+  // `<TicketSearchInput>` on the FILTERED list (e.g. `visibleTickets.length > 0`) is lint-clean,
+  // build-clean and passed every OTHER test in this file — nothing pinned that the box itself
+  // must survive a no-match query. Without this test, typing a non-matching query would unmount
+  // the only control that could clear it, leaving four "No matches." columns with no way back.
+  it('keeps the search box rendered when the query matches nothing', async () => {
+    renderBoard()
+    const box = screen.getByRole('searchbox', { name: /search/i })
+    await userEvent.type(box, 'zzz')
+    expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
+    await userEvent.clear(box)
+    expect(screen.getByRole('button', { name: /wire the board/i })).toBeInTheDocument()
   })
 
   // A whitespace-only query is not a filter — `selectMatchingTickets`'s own documented

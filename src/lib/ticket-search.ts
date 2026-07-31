@@ -9,9 +9,16 @@ import type { Ticket } from './domain'
  * other import a rule from a module named after a surface it is not. Same reason
  * `selectSprintTickets` stays in `backlog.ts` and `board.ts` composes with it.
  *
- * **An empty or whitespace-only query returns the list unchanged, never `[]`.** Both tabs
- * mount with an empty query, so inverting this branch empties the whole product on first
- * render — it is the one line here worth a test of its own.
+ * **An empty or whitespace-only query returns the list unchanged, never `[]`.** That is true, but
+ * this early `if` is not what makes it true: an empty needle already satisfies `''.includes('')`
+ * for every ticket, so the `.filter()` below would return every row anyway. The `if` is a
+ * short-circuit — it skips touching `t.key`/`t.summary` at all for the common empty-query case —
+ * and it documents intent, but it is behaviour-IDENTICAL to deleting it. Deleting it is therefore
+ * not covered by any test in this suite: `.filter()` also allocates a fresh array, so even the
+ * `not.toBe(TICKETS)` identity checks still hold. **Inverting** it to `return []` is a different
+ * story — that really does empty both tabs on first render, since both mount with an empty query,
+ * and it is caught widely (measured at 37 of 613 unit tests on the commit this was written
+ * against; re-derive rather than trust the number, since it will drift as tests are added).
  *
  * Key and summary only. Description, acceptance criteria and labels are deliberately not
  * searched: neither the board card nor the backlog row renders them, so a match would be

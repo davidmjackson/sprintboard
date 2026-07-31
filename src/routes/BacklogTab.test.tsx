@@ -357,4 +357,14 @@ describe('BacklogTab search (SPRIN-68)', () => {
     renderTab(BacklogTab, ctxWith({ tickets: [] as never }))
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
   })
+
+  // M4 (SPRIN-68 post-merge review): the filtered-empty message appears in direct response to
+  // typing, the same as this project's other informational messages (`TicketDetailHeader.tsx`'s
+  // `role="status"`), but it was a plain <p> announcing nothing. `getByRole('status', ...)`
+  // resolves ONLY an element with that role, so this fails if the attribute is dropped.
+  it('announces the no-matches message to screen readers (M4)', async () => {
+    renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
+    expect(screen.getByRole('status')).toHaveTextContent(/no tickets match your search/i)
+  })
 })
