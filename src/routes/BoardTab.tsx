@@ -100,7 +100,7 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
  * however many reads are unready, and `onRetry` reloads all three together.
  *
  * "No active sprint" (sprints loaded, none active) is its own honest state: a caption above the
- * grid, so four empty columns are never mistaken for "you have no tickets".
+ * grid, so a row of empty columns is never mistaken for "you have no tickets".
  *
  * S7.2 makes the board writable: dragging a card to another column changes its `status`. The
  * move is optimistic and rolls back on failure — see `moveTicket`.

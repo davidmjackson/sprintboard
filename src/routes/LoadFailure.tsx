@@ -31,19 +31,24 @@ const FAILURE_COPY: Record<LoadFailureResource, string> = {
  * control, and a deliberate one. `listTickets`/`listSprints`/`listProjectStatuses` reject with
  * `Could not load tickets: ${error.message}` — a raw PostgREST string that can name columns,
  * policies or schema internals. With an open string channel, `<LoadFailure message={err.message} />`
- * would render that verbatim into `role="alert"` and COMPILE CLEAN; the only thing standing
- * between us and that today is that all three call sites happen to pass literals. A closed
- * discriminant makes the wrong call untypeable rather than merely discouraged — the same move
- * as `SprintCreateInsert = Omit<SprintInsert, 'status'>` and
+ * would render that verbatim into `role="alert"` and COMPILE CLEAN. A closed discriminant makes
+ * the wrong call untypeable rather than merely discouraged — the same move as
+ * `SprintCreateInsert = Omit<SprintInsert, 'status'>` and
  * `TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number'>` elsewhere in this codebase.
  * Adding a resource means adding a case to `FAILURE_COPY`, which is exactly the review moment
  * we want — `'statuses'` was added that way in SPRIN-76.
  *
- * `BoardTab` now reaches this component through `firstUnready`, which is generic in `R` for
- * this reason: `R` infers `LoadFailureResource` from the board's own literal array and flows
- * in unwidened. Typing that helper's `resource` to `string` would compile clean on its own and
- * silently reopen the channel — so it is `BoardTab`'s call site, not the helper, that makes
- * this control real.
+ * **Not every call site passes a literal any more.** Since SPRIN-76 `BoardTab` passes
+ * `unready.resource`, a variable, obtained from `firstUnready` — so the union is no longer held
+ * closed by luck at the call sites. It is held by `firstUnready<R extends string>`, whose `R`
+ * infers the board's own literal union and flows in unwidened; drop that constraint and `R`
+ * widens to `string`. That is a strictly stronger position than "everyone happens to pass a
+ * literal", because it survives a caller computing the value.
+ *
+ * **This is pinned, not merely described.** `LoadFailure.test.tsx` ends with compile-time
+ * guards covering both directions — widening this union trips `TS2578` on their
+ * `@ts-expect-error`s, and narrowing `firstUnready` breaks their directive-free positive case.
+ * Change either and the build goes red. Do not delete them to make an edit compile.
  */
 export function LoadFailure({
   resource,

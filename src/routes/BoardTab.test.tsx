@@ -453,8 +453,15 @@ describe('BoardTab', () => {
   // column with a composite fk to `project_statuses (project_id, slug)` — SPRIN-79 keyed it on
   // the slug precisely so no ticket row is rewritten when a status is renamed. Writing
   // `status.id` would put a uuid into that column and the fk would reject it, a failure the
-  // board would only meet in production. The fixture's ids look nothing like its slugs so this
-  // cannot pass by resemblance.
+  // board would only meet in production.
+  //
+  // BE HONEST ABOUT WHAT THIS PINS. It is exactly as fixture-dependent as the four drag tests
+  // around it: give `SEEDED_STATUSES`/`FIVE_STATUSES` ids equal to their slugs and swapping in
+  // `status.id` becomes a semantic no-op that NOTHING here can catch — measured, 68/68 still
+  // green. This test is not structurally immune to that; no test can be. What it adds over its
+  // siblings is that its NAME and the explicit negative assertion below make the fixture's role
+  // visible, so an editor tidying those ids can see what they are load-bearing for instead of
+  // discovering it in production. Keep the ids unlike the slugs.
   it("writes the dropped column's slug, not its row id (composite fk)", async () => {
     updateTicket.mockResolvedValue({
       ok: true,
