@@ -408,8 +408,10 @@ Claude Code CLI owns the Jira board (project key `SPRIN`) through the **Composio
 MCP connector — there is no native Atlassian connector on this machine. The Jira
 connection persists across sessions; check `has_active_connection` before ever
 asking for a re-auth. Transition ids are per-workflow: fetch them, never hardcode.
-- Create the 8 epics first, then stories linked to their epic. Source of truth
-  is `docs/sprintboard_phase1_backlog.md`.
+- **The board is the source of truth for what is left to build.** Phase 1's epics and
+  stories are all created and Done, so query it (`statusCategory != Done`) rather than a
+  document — the phase-1 backlog file that used to hold them was retired in SPRIN-69,
+  and git history has it if the original ACs are ever needed.
 - Confirm the Jira workflow columns map to the four fixed statuses. If they do
   not, adjust the Jira workflow, not the app scope.
 - Move each issue as work progresses: In Progress on start, In Review on PR
@@ -448,7 +450,8 @@ the endpoint cannot rot underneath the cron. `npm run keepalive` triggers it man
 
 ## Key files
 - `docs/sprintboard_phase1_schema.sql` — the database schema.
-- `docs/sprintboard_phase1_backlog.md` — epics and stories with acceptance criteria.
-- `docs/sprintboard_phase1_traceability.md` — E8 audit trail: each DoD/RLS-in-CI AC mapped
-  to the artefact that satisfies it.
+- `docs/standards-audit-2026-07-25.md` — banner-marked HISTORICAL, and mostly is. Two
+  sections are not: the **eight pre-existing coverage gaps** deliberately left unfixed, and
+  the note on **guards no test can observe**. Both are live. SPRIN-69 kept this file for
+  exactly that reason while retiring its three neighbours.
 - `CLAUDE.md` — this file.
