@@ -210,7 +210,12 @@ Two defences, both load-bearing — do not undo either while "tidying up":
   blast radius — before reaching for a remedy, and never let "neither documented flake
   matches" become "therefore it is my diff". That inference is backwards. Seen 2026-07-29.
 - **When it still bites, it is transient — never "fix" it by weakening a suite.** Confirm
-  the failing test *is* the null-`id` setup crash (any other failure is real), wait ~2–5
+  the failing test matches **one of the three signatures above** — the null-`id` setup
+  crash, the ES256 `unrecognized JWT kid`, or the `status: 0`/`ECONNRESET` transport reset.
+  Anything else is real. (This clause used to read "the null-`id` setup crash, any other
+  failure is real", which contradicted the third signature the moment it was added: that
+  one arrives in a test *body*. Naming all three is what keeps this from being read as a
+  general licence to re-run body-level failures.) Then wait ~2–5
   minutes with no sign-ins, then re-run the failed job (`gh run rerun <id> --failed`).
   Confirm the rerun's `headSha` equals the PR head, and trust the CI result over a local
   run. Serialising CI against the shared database (the `verify` concurrency group) already
@@ -281,10 +286,21 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
 ## Accessible names under jsdom are not the names a browser computes (SPRIN-67)
 
 **Never assert an *exact* accessible name for an element whose name is composed from several
-children.** Under jsdom that string is not what any browser produces. Substring/regex name queries
+children whose `display` comes from the stylesheet** — which, with Tailwind, is all of them. Under
+jsdom that string is not what any browser produces. Substring/regex name queries
 (`{ name: /assigned to/i }`) are fine and often the right tool; so is an exact name on an element
-whose name comes from a single text node or an `aria-label` (`{ name: 'Log in' }` — the suite has
-hundreds of those and they are correct).
+whose name comes from a single text node or an `aria-label` (`{ name: 'Log in' }` — there are 181
+such queries across `src/` and `e2e/` and they are correct).
+
+Two boundaries on that carve-out, both measured:
+
+- **A `<div>`- or `<p>`-structured component is safe** — its parts are block-level without any
+  stylesheet, so both engines separate them identically. The rule is about CSS-derived layout, not
+  about having multiple children.
+- **A single text node is NOT automatically safe if `text-transform` applies.** Chrome's AX tree
+  uppercases (`Story` → `STORY`); Playwright's accname does not. Nothing in the suite currently
+  exact-name-queries such an element — `TicketDetailSidebar.tsx:45`, `EditableText.tsx:11`,
+  `BacklogTab.tsx:67` and `TicketCard.tsx:35` are the live candidates — but do not start.
 
 **The mechanism, stated precisely, because the first version of this section got it wrong.**
 `dom-accessibility-api` does *not* treat everything as inline — it reads `getComputedStyle(child)
@@ -294,8 +310,9 @@ the `separator` line). The divergence has **two** causes, and both are needed:
 1. **The test document loads no stylesheet.** Tailwind's `flex` never enters the cascade, so every
    `<span>` falls back to the UA default `inline` and gets no separator.
 2. **jsdom does not blockify flex children.** Even with `style="display:flex"` set inline, jsdom
-   returns the same fused name — measured. Chrome blockifies, which is what actually separates the
-   parts; `getComputedStyle` on the row's six span children returns `block` for all but one.
+   returns the same fused name — measured. Chrome blockifies, and that is what actually separates
+   the parts: **in Chrome** `getComputedStyle` on the row's six span children returns `block` for
+   all but one (the `inline-flex` blocked badge), while **in jsdom** all six are `inline`.
 
 So they do **not** "disagree completely". They agree wherever the parts are already block-level
 (a `<div>`- or `<p>`-structured component reads the same in both) and diverge exactly where a

@@ -108,10 +108,13 @@ Decisions, with reasoning:
 - **Prefix, not suffix.** It must precede the value it labels, or it reads as a trailing fragment.
 - **Only on the assigned branch.** `Unassigned` is already a complete statement; prefixing it would
   produce "Assigned to Unassigned".
-- **The trailing space inside the `sr-only` span is cosmetic, not load-bearing.** Chrome separates
-  blockified nodes on its own, and the accname algorithm trims each node's text contribution — the
-  existing `" story points"` proves this, since its *leading* space is what jsdom discards. The
-  space is kept for the plain-DOM-text reading, not relied upon.
+- **The trailing space inside the `sr-only` span is not load-bearing *for the accessible name*.**
+  Chrome separates blockified nodes on its own (`sr-only` computes to `display:block;
+  position:absolute`), and the accname algorithm trims each node's text contribution — the existing
+  `" story points"` proves that, since its *leading* space is what jsdom discards. It **is** pinned
+  by the order assertion's text-content regex, which reads the raw DOM rather than the name;
+  deleting the space reddens that test. Both statements are true and the distinction matters: the
+  name does not depend on it, the DOM-text assertion does.
 - **No change to `TicketCard`.** It renders no assignee. Its name is correct in a browser.
 
 ## Testing
@@ -151,9 +154,18 @@ delicate part.
   matrix re-run **in full** after the tests changed rather than only for the new cases — changing a
   test can silently un-kill a mutation it already killed. Delete the prefix; move it outside the
   `<button>`; drop `sr-only`; prefix both branches; `aria-hidden="true"`; `sr-only hidden`;
-  suffix-not-prefix; wrap the value in `sr-only`. The scoping was separately proven load-bearing —
-  with the prefix outside the button the scoped test goes red while an identical unscoped assertion
-  passes.
+  suffix-not-prefix; wrap the value in `sr-only`; **widen the predicate to `assignee_id != null`**,
+  which announced the viewer's own address over a ticket assigned to somebody else — a false
+  ownership claim that all 65 other tests passed. Nine in total.
+- **A claim that stopped being true, and the correction.** The `within(row)` scoping *was*
+  separately proven load-bearing against the first draft: with the prefix moved outside the button,
+  the scoped test went red while a byte-identical unscoped assertion passed 5/5. Adding the
+  substring name query then made the two overlap — that mutation now reddens the name query as
+  well, so removing the scoping alone no longer goes green. The scoping stays (it is the assertion
+  that names the property), but "proven load-bearing" is no longer the right description and has
+  been corrected here, in the test comment and in the PR body. A defence that is currently
+  redundant is not the same as one that is unnecessary — and a fix that silently invalidates the
+  evidence for an earlier claim is exactly how overlapping defences mask each other.
 
 No live integration test. This is a client-only render change with no query, write or RLS
 contract — the same reasoning as S7.3. The tripwire gap stays 7; a *constant* gap after a

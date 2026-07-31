@@ -113,35 +113,50 @@ describe('BacklogTab does not paint an unconfirmed list while the read is in fli
 // "… 5 story points dev@example.com" with nothing naming it.
 //
 // These tests deliberately do NOT assert an exact accessible name, and that is the whole
-// design. Under jsdom `dom-accessibility-api` performs no layout, so it cannot see that a
-// row's flex children are blockified and it concatenates them with no separator — a string
-// no browser ever produces. Asserting it would pin a fiction. What is asserted here is DOM
-// text and the container it sits in: both are true in every engine. See CLAUDE.md.
-const ASSIGNED_TICKETS = [
-  {
-    id: 't1',
-    key: 'MP-1',
-    number: 1,
-    summary: 'Do the todo',
-    type: 'story',
-    status: 'todo',
-    sprint_id: null,
-    assignee_id: USER.id,
-  },
-] as never
+// design. In this test environment no stylesheet is loaded, so Tailwind's `flex` never
+// enters the cascade and every <span> falls back to the UA default `inline` — and jsdom
+// does not blockify flex children even when `display:flex` IS set. A browser does both, so
+// it separates the parts where jsdom fuses them, producing a string no user ever hears.
+// (`dom-accessibility-api` DOES read computed `display` and separate on non-inline — an
+// earlier draft of this comment said it "performs no layout", which is false and was
+// corrected in review.) What is asserted here is DOM text, its container, and its presence
+// in the name — all true in every engine. See CLAUDE.md.
+function ticketsWith(fields: Record<string, unknown>) {
+  return [
+    {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Do the todo',
+      type: 'story',
+      status: 'todo',
+      sprint_id: null,
+      ...fields,
+    },
+  ] as never
+}
+
+const ASSIGNED_TICKETS = ticketsWith({ assignee_id: USER.id })
+// A real uuid belonging to SOMEBODY ELSE. `assignee_id uuid references auth.users(id)` has
+// nothing tying it to `owner_id`, so this value is storable today.
+const FOREIGN_TICKETS = ticketsWith({ assignee_id: '99999999-9999-4999-8999-999999999999' })
 
 describe('BacklogTab says who a ticket is assigned to (SPRIN-67)', () => {
-  // Scoped to the row's <button> ON PURPOSE, and that scoping is the test. The entire
-  // `sr-only`-over-`aria-label` decision rests on the text joining the BUTTON's accessible
-  // name, so an unscoped `screen.getByText` would sit green with the prefix rendered
-  // outside the button — exactly how SPRIN-65's points badge escaped all 12 of its tests.
+  // Scoped to the row's <button> because the entire `sr-only`-over-`aria-label` decision
+  // rests on the text joining the BUTTON's accessible name.
+  //
+  // Honest note on what that scoping now buys, because the first version of this comment
+  // overclaimed and review caught it: with only `getByText`, the scoping WAS the sole
+  // control — unscoped, moving the prefix out of the button stayed green. The name query
+  // added below now *also* reddens that mutation, so the two overlap and removing the
+  // scoping alone no longer goes green for the right reason. Keep it anyway: it is the
+  // assertion that names the property, and a defence that is currently redundant is not
+  // the same as one that is unnecessary.
   it('prefixes the assignee with a screen-reader-only label, inside the row button', () => {
     renderTab(BacklogTab, ctxWith({ tickets: ASSIGNED_TICKETS }))
 
     const row = screen.getByRole('button', { name: /do the todo/i })
     const prefix = within(row).getByText(/assigned to/i)
-
-    expect(prefix).toBeInTheDocument()
 
     // The text must reach the ACCESSIBILITY TREE, not merely the DOM — which is the whole
     // point of the story and which `getByText` says nothing about. A **substring** name
@@ -180,6 +195,25 @@ describe('BacklogTab says who a ticket is assigned to (SPRIN-67)', () => {
     const row = screen.getByRole('button', { name: /do the todo/i })
 
     expect(within(row).queryByText(/assigned to/i)).not.toBeInTheDocument()
+    expect(within(row).getByText('Unassigned')).toBeInTheDocument()
+  })
+
+  // The row above has NO assignee, so it cannot tell "mine" from "somebody else's" — and
+  // that distinction is the one this story put a sentence on top of. Widening the predicate
+  // to `assignee_id != null` announced "Assigned to dev@example.com" over another user's
+  // ticket — the viewer's own address, a false ownership claim — with all 65 tests green.
+  //
+  // Unreachable today only because Phase 1 is single-owner; the schema does not enforce it
+  // (`assignee_id uuid references auth.users(id)`, with nothing tying it to `owner_id`).
+  // That is the argument FOR pinning it, exactly as the `backlog.length === 0` conjunct
+  // above was pinned for being unreachable-but-not-guaranteed.
+  it('does not claim a ticket that is assigned to somebody else', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: FOREIGN_TICKETS }))
+
+    const row = screen.getByRole('button', { name: /do the todo/i })
+
+    expect(within(row).queryByText(/assigned to/i)).not.toBeInTheDocument()
+    expect(within(row).queryByText(USER.email)).not.toBeInTheDocument()
     expect(within(row).getByText('Unassigned')).toBeInTheDocument()
   })
 })
