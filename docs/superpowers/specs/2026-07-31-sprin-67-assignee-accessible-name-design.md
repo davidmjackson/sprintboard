@@ -19,28 +19,37 @@ MP-1StoryWire the boardBlocked5story pointsdev@example.com
 That observation was reproduced exactly — under Vitest. **It does not reproduce in a browser**,
 and the difference is not a detail.
 
-`dom-accessibility-api`, the implementation Testing Library uses under jsdom, performs no layout.
-It therefore treats every element as inline and concatenates sibling text with no separator.
-Chrome computes the name from the **rendered box tree**. Every part of a card and a row is a flex
-item, and flex children are **blockified** — so Chrome inserts separators where jsdom cannot know
-to.
+**The mechanism, corrected after review.** The first draft of this spec said
+`dom-accessibility-api` "performs no layout, so it treats every element as inline". That is false
+and refutable in one command: it reads `getComputedStyle(child).display` and inserts a separator
+for any non-inline child (`accessible-name-and-description.js`, the `separator` line). The jsdom
+cell of the table below contains two spaces, which the claim could not explain.
 
-Measured with Chrome DevTools Protocol `Accessibility.getPartialAXTree`, on markup matching the
-components (same classes, same nesting, same `sr-only` definition):
+The divergence has **two** causes and needs both:
+
+1. **The test document loads no stylesheet.** Tailwind's `flex` never enters the cascade, so each
+   `<span>` falls back to the UA default `inline` and earns no separator.
+2. **jsdom does not blockify flex children.** Chrome does, and that is what actually separates the
+   parts — `getComputedStyle` on the row button's six span children returns `block` for all but
+   one.
+
+Measured with Chrome DevTools Protocol `Accessibility.getPartialAXTree` and, on the jsdom side,
+`computeAccessibleName`. Both columns are the **same ticket in the same state** — blocked, five
+points, assigned — and both are post-change, so the table does not go stale the day it lands:
 
 | Surface | jsdom (`dom-accessibility-api`) | Chrome (real accname) |
 |---|---|---|
-| Board card | `MP-1 Story5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
-| Backlog row | `MP-1StoryWire the boardBlocked5story pointsdev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points dev@example.com` |
-| Unassigned row | — | `MP-2 BUG Second one Unassigned` |
+| Board card | `MP-1 BlockedStory5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
+| Backlog row | `MP-1StoryWire the boardBlocked5story pointsAssigned todev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points Assigned to dev@example.com` |
 
-The mechanism was **confirmed directly rather than inferred**, because a mechanistic rationale is
-a hypothesis until tested. The same three spans:
-
-```html
-<button style="display:flex">  <!-- children blockified -->  →  MP-1 Story Wire the board
-<button>                       <!-- children truly inline -->  →  MP-1StoryWire the board
-```
+**What was and was not confirmed directly.** The Chrome half was: three spans under a
+`display:flex` button give `MP-1 Story Wire the board`, and under a default button
+`MP-1StoryWire the board`. The first draft of this spec presented that pair as proof of the *jsdom*
+claim too — it is not, and cannot be: run the identical pair under jsdom and **both** give
+`MP-1StoryWire the board`, because jsdom ignores the blockification entirely. A Chrome-only
+measurement was being used to certify a claim about jsdom. That is the right answer by the wrong
+road, which is the failure mode this section invokes by name; it was caught in review and the jsdom
+half has since been measured separately.
 
 So the fusion is a test-environment artefact. Building the original ACs — injecting comma
 separators until the jsdom string read nicely — would have made the real browser name *noisier*
@@ -50,6 +59,9 @@ requirement.
 
 **Verified in Chromium only.** Firefox and WebKit are not installed on this machine, so this spec
 claims Chrome behaviour and the general spec rule about blockification, not universal agreement.
+Chrome also uppercases via `text-transform` when computing the name (`STORY`), where Playwright's
+independent accname implementation does not — another reason not to treat any single engine's
+string as the truth.
 
 ## What is actually wrong
 
@@ -118,8 +130,30 @@ delicate part.
      SPRIN-65 hit exactly this: its points badge was moved outside its button and all 12 tests
      stayed green, because `screen.getByText` searches the whole document and says nothing about
      *where*. Scope the query with `within(button)`.
-- **Mutation proof required before the work is called done**: move the `sr-only` span outside the
-  `<button>` and confirm the scoped test goes red while an unscoped one would not.
+- **DOM text alone proved insufficient, and review caught it.** The first draft asserted only that
+  the text existed under the button carrying class `sr-only`. Three mutations survived that, each
+  reverting the story's entire deliverable with every test green: `aria-hidden="true"` on the
+  prefix, `className="sr-only hidden"`, and moving the prefix to a *suffix*. The remedy is three
+  more assertions, none of them an exact name:
+  1. a **substring** name query (`getByRole('button', { name: /assigned to/i })`). It honours
+     `aria-hidden` where `getByText` does not — `getByText` ignores only `<script>`/`<style>` — and
+     it is engine-independent precisely *because* it is not exact. Reaching for "assert DOM text,
+     never the name" and stopping there skipped the one query that both complies with the new rule
+     and closes the worst gap.
+  2. an **exact class** assertion. `toHaveClass` is a subset check, so `sr-only hidden` passes it.
+  3. an **order** assertion on the cell's text content. "Prefix, not suffix" is a stated design
+     decision above and was pinned by nothing.
+  4. an assertion that the **value itself stays visible** — `getByText(email)` must resolve to the
+     cell, not to some wrapper. Review rated this one unkillable in jsdom; it is not. `getByText`
+     matches the element whose *direct* text children match, so wrapping the email in `sr-only`
+     (which blanks the cell on screen) moves the match and reddens it.
+- **Mutation proof required before the work is called done.** Eight mutations, all killed, and the
+  matrix re-run **in full** after the tests changed rather than only for the new cases — changing a
+  test can silently un-kill a mutation it already killed. Delete the prefix; move it outside the
+  `<button>`; drop `sr-only`; prefix both branches; `aria-hidden="true"`; `sr-only hidden`;
+  suffix-not-prefix; wrap the value in `sr-only`. The scoping was separately proven load-bearing —
+  with the prefix outside the button the scoped test goes red while an identical unscoped assertion
+  passes.
 
 No live integration test. This is a client-only render change with no query, write or RLS
 contract — the same reasoning as S7.3. The tripwire gap stays 7; a *constant* gap after a

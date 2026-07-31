@@ -280,36 +280,61 @@ not fire them reliably), and the test waits on the `tickets` PATCH so it proves 
 
 ## Accessible names under jsdom are not the names a browser computes (SPRIN-67)
 
-**Never assert an exact accessible name in a Vitest test.** `dom-accessibility-api` — the
-implementation Testing Library uses — performs **no layout**, so it treats every element as inline
-and concatenates sibling text with no separator. A browser computes the name from the rendered box
-tree, and **flex children are blockified**, so it inserts separators where jsdom cannot know to.
-Every part of a ticket card and a backlog row is a flex item, so the two disagree completely:
+**Never assert an *exact* accessible name for an element whose name is composed from several
+children.** Under jsdom that string is not what any browser produces. Substring/regex name queries
+(`{ name: /assigned to/i }`) are fine and often the right tool; so is an exact name on an element
+whose name comes from a single text node or an `aria-label` (`{ name: 'Log in' }` — the suite has
+hundreds of those and they are correct).
 
-| | jsdom | Chrome |
+**The mechanism, stated precisely, because the first version of this section got it wrong.**
+`dom-accessibility-api` does *not* treat everything as inline — it reads `getComputedStyle(child)
+.display` and inserts a separator for any non-inline child (`accessible-name-and-description.js`,
+the `separator` line). The divergence has **two** causes, and both are needed:
+
+1. **The test document loads no stylesheet.** Tailwind's `flex` never enters the cascade, so every
+   `<span>` falls back to the UA default `inline` and gets no separator.
+2. **jsdom does not blockify flex children.** Even with `style="display:flex"` set inline, jsdom
+   returns the same fused name — measured. Chrome blockifies, which is what actually separates the
+   parts; `getComputedStyle` on the row's six span children returns `block` for all but one.
+
+So they do **not** "disagree completely". They agree wherever the parts are already block-level
+(a `<div>`- or `<p>`-structured component reads the same in both) and diverge exactly where a
+`<span>` is a flex item — which is every ticket card and backlog row:
+
+| Same ticket, blocked, 5 points, assigned | jsdom | Chrome |
 |---|---|---|
-| Board card | `MP-1 Story5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
-| Backlog row | `MP-1StoryWire the boardBlocked5story pointsdev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points dev@example.com` |
+| Board card | `MP-1 BlockedStory5story points Wire the board` | `MP-1 BLOCKED STORY 5 story points Wire the board` |
+| Backlog row | `MP-1StoryWire the boardBlocked5story pointsAssigned todev@example.com` | `MP-1 STORY Wire the board BLOCKED 5 story points Assigned to dev@example.com` |
 
-The mechanism was confirmed directly, not inferred: three spans under a `display:flex` button give
-`MP-1 Story Wire the board`; the same three under a default button give `MP-1StoryWire the board`.
-Chrome measured via CDP `Accessibility.getPartialAXTree`. **Chromium only** — Firefox and WebKit are
-not installed here.
+Chrome measured via CDP `Accessibility.getPartialAXTree`; jsdom via `computeAccessibleName`. Both
+columns are the same ticket in the same state, post-SPRIN-67 — an earlier draft of this table paired
+an unblocked jsdom name with a blocked Chrome one, which made the row meaningless. **Chromium only**
+— Firefox and WebKit are not installed here.
 
 SPRIN-67 was opened to fix that "fusion" and the fusion does not exist for users. It cost a story to
 find out, so the rules are:
 
-- **Assert DOM text and the container it sits in**, never the composed name. Both are true in every
-  engine. Scope with `within(button)` — an unscoped `getByText` says the text exists and nothing
-  about *where*. SPRIN-65's points badge was moved outside its button and all 12 tests stayed green.
+- **Assert DOM text and the container it sits in.** Both are true in every engine. Scope with
+  `within(button)` — an unscoped `getByText` says the text exists and nothing about *where*.
+  SPRIN-65's points badge was moved outside its button and all 12 tests stayed green.
+- **But DOM text alone is not enough**, and this is the trap the story's own first draft fell into:
+  `getByText` ignores only `<script>`/`<style>`, so it matches an `aria-hidden` subtree happily. An
+  `aria-hidden="true"` on `sr-only` text reverts the fix entirely with every test green. Pair the
+  text assertion with a **substring name query** (`getByRole('button', { name: /assigned to/i })`),
+  which honours `aria-hidden` and is engine-independent because it is not an exact match.
+- **`toHaveClass` is a subset check.** `sr-only hidden` passes `toHaveClass('sr-only')` while the
+  element stops rendering. For a span whose entire job is to be `sr-only`, assert the exact class.
 - **`sr-only` text still works and is still right** over `aria-label` on a `<span>` (`role="generic"`,
   where ARIA 1.2 prohibits it). Chrome renders `5 story points` from exactly that pattern.
 - **A browser is the only place an accessible name is real.** Measure there before believing a name
   is broken — and note that `e2e.yml` is not the gate, so a Playwright assertion documents a name
   rather than protecting it.
 
-Still open, deliberately: Chrome applies `text-transform: uppercase` when computing the name, so the
-type and blocked badges announce as `STORY` and `BLOCKED`. Its own story if wanted.
+Still open, deliberately, and **engine-specific**: Chrome's AX tree applies `text-transform:
+uppercase` when computing the name, so on the same DOM it yields `STORY` while Playwright's own
+accname implementation yields `Story`. What a screen reader then *does* with an all-caps name is
+untested here — so whether the type and blocked badges are worth changing is a real question, and
+its own story if wanted.
 
 ## Review depth is chosen by the diff, not applied by default
 

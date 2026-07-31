@@ -142,11 +142,34 @@ describe('BacklogTab says who a ticket is assigned to (SPRIN-67)', () => {
     const prefix = within(row).getByText(/assigned to/i)
 
     expect(prefix).toBeInTheDocument()
-    // The only control available for "carries no visible weight": jsdom applies no real
-    // stylesheet, so `sr-only` cannot be observed as invisibility, only as the class that
-    // Tailwind hides. Without this a plainly visible "Assigned to" would ship green.
-    expect(prefix).toHaveClass('sr-only')
-    expect(within(row).getByText(USER.email)).toBeInTheDocument()
+
+    // The text must reach the ACCESSIBILITY TREE, not merely the DOM — which is the whole
+    // point of the story and which `getByText` says nothing about. A **substring** name
+    // query, never an exact one: the exact string differs per engine (see CLAUDE.md), but
+    // "the name contains this" is true in all of them. Without this line, adding
+    // `aria-hidden="true"` to the prefix reverts the entire fix with every test green —
+    // `getByText` ignores only `<script>`/`<style>` and happily matches hidden subtrees,
+    // while the name computation correctly excludes them.
+    expect(screen.getByRole('button', { name: /assigned to/i })).toBe(row)
+
+    // Exact class, NOT `toHaveClass` — that is a subset check, so `sr-only hidden` (the
+    // likelier accident, added while tidying) passes it while the prefix stops rendering
+    // at all. jsdom loads no stylesheet, so the class string is the only available handle
+    // on "carries no visible weight"; the browser-level version of this is disclosed in
+    // the PR's "Not verified here".
+    expect(prefix).toHaveAttribute('class', 'sr-only')
+
+    // Order, not merely presence. The spec requires a PREFIX: a suffix reads as a trailing
+    // fragment ("… dev@example.com assigned to") and survives every other assertion here.
+    // `parentElement` is the assignee cell that holds the prefix and the value together.
+    const cell = prefix.parentElement
+    expect(cell).toHaveTextContent(/^Assigned to dev@example\.com$/)
+
+    // The VALUE must stay visible while only its label is hidden. `getByText` resolves to
+    // the element whose *direct* text children match, so wrapping the email in any element
+    // — `sr-only` included, which would blank the cell on screen — moves this away from the
+    // cell and reddens the assertion. Without it that mutation ships green.
+    expect(within(row).getByText(USER.email)).toBe(cell)
   })
 
   // The negative half. Its positive control is the test above — on its own this would pass
