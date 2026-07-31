@@ -96,6 +96,116 @@ create trigger on_project_created
   for each row execute function create_project_counter();
 
 -- ============================================================
+-- project_statuses  (per-project status vocabulary AND board columns)
+-- ============================================================
+-- One row = one board column, ordered by `position`. There is deliberately no
+-- separate board_columns table: the mapping is 1:1 today, a second table would
+-- carry no data, and the Rung 3 split is purely additive when it is wanted.
+--
+-- SERVER-OWNED in this slice (SPRIN-79): clients may SELECT only. See the policy
+-- block at the foot of this file for why that departs from every other table.
+--
+-- text + check, never an enum.
+create table project_statuses (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid not null references projects(id) on delete cascade,
+
+  -- Stable machine identity, and the fk target for tickets.status. Users rename
+  -- `name`, never `slug` — the same division projects.key already uses.
+  slug        text not null,
+
+  -- The board column heading.
+  name        text not null,
+
+  -- Jira's status category, and the eventual home of the "done is terminal" rule
+  -- currently inlined in src/lib/sprints.ts and src/routes/ProjectShell.tsx. The
+  -- default is deliberately the NON-terminal middle bucket: a flow that forgets to
+  -- set it produces a status not treated as Done, so incomplete tickets return to
+  -- the backlog. Fail safe, not fail convenient.
+  category    text not null default 'in_progress'
+                check (category in ('todo','in_progress','done')),
+
+  -- Board order. Dense 1..N per project.
+  position    int  not null,
+
+  -- Where new tickets land. NOT derived from position: under a position-derived
+  -- default, dragging Done to the front of the board would silently start creating
+  -- tickets in Done. Seeded true on `todo`, which is also tickets.status's column
+  -- default — the integration suite asserts those two agree.
+  is_initial  boolean not null default false,
+
+  created_at  timestamptz not null default now(),
+
+  constraint project_statuses_slug_format
+    check (slug ~ '^[a-z][a-z0-9_]{0,29}$'),
+  constraint project_statuses_name_nonempty
+    check (btrim(name) <> '' and length(name) <= 40),
+  constraint project_statuses_position_positive
+    check (position > 0),
+
+  -- The fk target for tickets. NON-deferrable, so it remains a legal fk target and
+  -- can still arbitrate ON CONFLICT.
+  constraint project_statuses_project_slug_unique
+    unique (project_id, slug),
+
+  -- DEFERRABLE so a reorder can swap positions inside ONE statement without a
+  -- temporary sentinel. NOTE: a DEFERRABLE constraint cannot be used for ON
+  -- CONFLICT inference — upserts must target (project_id, slug).
+  constraint project_statuses_project_position_unique
+    unique (project_id, position) deferrable initially deferred,
+
+  -- Redundant on its own (id is the PK). Exists so a future board_columns table can
+  -- point at a status with a COMPOSITE fk and prove same-project membership —
+  -- exactly why sprints_id_project_unique and tickets_id_project_unique exist.
+  constraint project_statuses_id_project_unique
+    unique (id, project_id)
+);
+
+-- At most one initial status per project. Same idiom as sprints_one_active_per_project,
+-- and the same limitation: it prevents two, not zero.
+create unique index project_statuses_one_initial_per_project
+  on project_statuses (project_id) where is_initial;
+
+-- Seed the four default statuses whenever a project is created, by EVERY creation
+-- path — the app, the raw fixture inserts in the integration suites, the Playwright
+-- E2E, and a human pasting SQL. Only a trigger covers all four, and it fires in the
+-- parent's transaction, so "a project with no statuses" is not a reachable state.
+--
+-- SECURITY DEFINER, following handle_new_user and NOT create_project_counter. That
+-- is forced by the select-only policy below: an invoker function's INSERT would be
+-- denied. It pays for the privilege the same way — an empty pinned search_path,
+-- schema-qualified references, and a revoke. It cannot be abused: it only fires
+-- after a projects INSERT that already passed projects_owner's WITH CHECK.
+--
+-- The four values are inlined rather than shared with the backfill via a helper: a
+-- `returns table` function in `public` is published by PostgREST as an anon-callable
+-- RPC, and the revoke remedy cannot be applied to a helper a trigger calls.
+create or replace function seed_project_statuses()
+returns trigger language plpgsql
+security definer set search_path = ''
+as $$
+begin
+  insert into public.project_statuses
+    (project_id, slug, name, category, position, is_initial)
+  values
+    (new.id, 'todo',        'To Do',       'todo',        1, true),
+    (new.id, 'in_progress', 'In Progress', 'in_progress', 2, false),
+    (new.id, 'in_review',   'In Review',   'in_progress', 3, false),
+    (new.id, 'done',        'Done',        'done',        4, false)
+  on conflict (project_id, slug) do nothing;
+  return new;
+end;
+$$;
+
+revoke execute on function public.seed_project_statuses() from public, anon, authenticated;
+
+-- Fires after on_project_created (the counter), in name order. Neither depends on
+-- the other; the name states the order rather than stumbling into it.
+create trigger on_project_created_statuses
+  after insert on projects
+  for each row execute function seed_project_statuses();
+
+-- ============================================================
 -- sprints
 -- ============================================================
 create table sprints (
@@ -136,8 +246,12 @@ create table tickets (
   description    text,
   type           text not null default 'story'
                    check (type in ('epic','story','bug','task')),
-  status         text not null default 'todo'
-                   check (status in ('todo','in_progress','in_review','done')),
+  -- Validated by tickets_status_fk below, NOT by a check constraint: the status
+  -- vocabulary is per-project, and a CHECK body may not contain a subquery. The
+  -- default stays a bare literal, which is safe only while the vocabulary is
+  -- immutable to clients (see statuses_owner_read). SPRIN-80 must replace it with
+  -- is_initial resolution in the same story that allows a status to be deleted.
+  status         text not null default 'todo',
   assignee_id    uuid references auth.users(id) on delete set null,
   story_points   int,
   acceptance_criteria text,
@@ -178,6 +292,28 @@ create table tickets (
   constraint tickets_epic_fk foreign key (parent_epic_id, project_id)
     references tickets (id, project_id) on delete set null (parent_epic_id),
 
+  -- The status vocabulary is per-project, so this replaces what used to be a global
+  -- check constraint on the column. COMPOSITE, carrying project_id, for the same reason
+  -- the two fks above are: it makes "a ticket in project A holding project B's
+  -- status" unrepresentable. Both columns are NOT NULL, so MATCH SIMPLE always
+  -- checks — there is no null escape hatch here, unlike sprint_id/parent_epic_id.
+  --
+  -- ON UPDATE NO ACTION, never CASCADE: the referencing column list includes
+  -- project_id, so cascading a change to project_statuses.project_id would
+  -- propagate into tickets.project_id and silently move tickets between projects.
+  --
+  -- DEFERRABLE INITIALLY DEFERRED is load-bearing, not tidiness. `delete from
+  -- projects` fires one cascade per referencing fk, and each cascade's own
+  -- immediate checks fire at the end of its own inner statement — so a
+  -- non-deferrable NO ACTION is only safe if the tickets cascade happens to run
+  -- first, which is RI trigger name order, i.e. luck. On a fresh apply of THIS
+  -- file, project_statuses is created before tickets and so cascades first, which
+  -- would raise 23503 and take every integration teardown with it.
+  constraint tickets_status_fk foreign key (project_id, status)
+    references project_statuses (project_id, slug)
+    on update no action on delete no action
+    deferrable initially deferred,
+
   -- The blocked trigger keeps these three aligned, but a trigger is not a
   -- guarantee against a direct write. CLAUDE.md requires both edges.
   constraint tickets_blocked_coherent check (
@@ -190,6 +326,10 @@ create table tickets (
 create index tickets_project_idx on tickets(project_id);
 create index tickets_sprint_idx  on tickets(sprint_id);
 create index tickets_epic_idx    on tickets(parent_epic_id);
+-- The referencing side of tickets_status_fk. Every delete of a project_statuses row
+-- (including the cascade from a project delete) probes (project_id, status);
+-- tickets_project_idx alone does not cover the pair.
+create index tickets_project_status_idx on tickets(project_id, status);
 
 -- ============================================================
 -- Ticket key generation  (atomic, race-safe)
@@ -298,11 +438,12 @@ create trigger tickets_set_updated_at
 -- ============================================================
 -- Row Level Security  (owner-scoped, every table)
 -- ============================================================
-alter table profiles         enable row level security;
-alter table projects         enable row level security;
-alter table project_counters enable row level security;
-alter table sprints          enable row level security;
-alter table tickets          enable row level security;
+alter table profiles          enable row level security;
+alter table projects          enable row level security;
+alter table project_counters  enable row level security;
+alter table project_statuses  enable row level security;
+alter table sprints           enable row level security;
+alter table tickets           enable row level security;
 
 -- profiles: a user sees and edits only their own row
 create policy profiles_self on profiles
@@ -324,6 +465,27 @@ create policy counters_owner on project_counters
                    and p.owner_id = auth.uid()))
   with check (exists (select 1 from projects p
                  where p.id = project_counters.project_id
+                   and p.owner_id = auth.uid()));
+
+-- project_statuses: readable via an owned project, and READ-ONLY to every client.
+--
+-- This is the one policy in this file that is not `for all`, and the departure is
+-- deliberate. tickets.status used to be guarded by a global check constraint, so a
+-- client could not invent a status at all. Replacing that with a per-project
+-- vocabulary in a table that ALTER DEFAULT PRIVILEGES already grants anon and
+-- authenticated full DML on means the policy is the ONLY guard left. A `for all`
+-- policy would let any owner widen their own vocabulary and then write into it in
+-- two ordinary PostgREST requests, while the board still renders four hard-coded
+-- columns — the ticket would render in no column and vanish, with no test, type or
+-- constraint going red. An owner deleting the `todo` row would permanently break
+-- ticket creation, because tickets.status's default is a bare literal.
+--
+-- Write access arrives with SPRIN-77, which is the story that also builds the UI to
+-- render a changed vocabulary. Widening this is a story, not a tweak.
+create policy statuses_owner_read on project_statuses
+  for select
+  using (exists (select 1 from projects p
+                 where p.id = project_statuses.project_id
                    and p.owner_id = auth.uid()));
 
 -- sprints: via owned project
