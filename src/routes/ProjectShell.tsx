@@ -43,8 +43,9 @@ export type ProjectShellContext = {
   sprintsPhase: SprintsPhase
   /** The project's statuses, in column (`position`) order. `[]` while loading and when the
    *  read failed — always read `statusesPhase` before treating an empty list as "no
-   *  statuses". Shared for the same reason as sprints: the board's columns (S5.6) and the
-   *  detail dialog's status picker (S5.7) both need the same rows. */
+   *  statuses". Shared for the same reason as sprints: the board's columns and the detail
+   *  dialog's status picker (both later tasks of this same story, SPRIN-76) both need the
+   *  same rows. */
   statuses: ProjectStatus[]
   statusesPhase: ReadPhase
   /** Re-runs ALL THREE reads for this project. Manual only — there is no automatic retry,

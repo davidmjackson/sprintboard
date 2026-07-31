@@ -139,11 +139,13 @@ function SprintContextProbe() {
  * reading the context directly can pin the phase itself.
  */
 function TicketContextProbe() {
-  const { tickets, ticketsPhase, sprintsPhase, onRetry } = useOutletContext<ProjectShellContext>()
+  const { tickets, ticketsPhase, sprintsPhase, statusesPhase, onRetry } =
+    useOutletContext<ProjectShellContext>()
   return (
     <div>
       <p>tickets phase: {ticketsPhase}</p>
       <p>sprints phase: {sprintsPhase}</p>
+      <p>statuses phase: {statusesPhase}</p>
       <ul>
         {tickets.map((t) => (
           <li key={t.id}>{t.summary}</li>
@@ -692,6 +694,26 @@ describe('ProjectShell', () => {
       await u.click(await screen.findByRole('button', { name: 'probe retry' }))
 
       await waitFor(() => expect(mockListStatuses).toHaveBeenCalledTimes(2))
+    })
+
+    // Fix round 1 (Critical): the two tests above only assert the read was CALLED, never
+    // what phase it produced — a regression that swapped `statusesPhase`'s source (e.g. for
+    // `sprintRead.phase`) would call `listProjectStatuses` correctly and still ship a
+    // permanently wrong phase, undetected. These pin the phase itself, through both
+    // transitions, the same way the ticket/sprint phase tests below already do.
+    it("publishes 'loaded' with statusesPhase once the read lands", async () => {
+      mockListStatuses.mockResolvedValue([])
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('statuses phase: loaded')).toBeVisible()
+    })
+
+    it("publishes 'failed' on statusesPhase when listProjectStatuses rejects, never 'loaded'", async () => {
+      mockListStatuses.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/ticket-probe')
+
+      expect(await screen.findByText('statuses phase: failed')).toBeVisible()
+      expect(screen.queryByText('statuses phase: loaded')).not.toBeInTheDocument()
     })
   })
 
