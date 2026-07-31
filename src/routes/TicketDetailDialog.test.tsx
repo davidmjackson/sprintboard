@@ -74,8 +74,8 @@ const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
 })) as unknown as ProjectStatus[]
 
 // A vocabulary this project's rows could plausibly hold once SPRIN-77 lets them be edited:
-// five statuses, one of them ('parked') a slug the `TICKET_STATUSES` constant this story goes on
-// to remove never contained, and in an order that deliberately disagrees with the hard-coded board
+// five statuses, one of them ('parked') a slug the `TICKET_STATUSES` constant this story removed
+// never contained, and in an order that deliberately disagrees with the once hard-coded board
 // order and with sorting by slug. `listProjectStatuses` already returns rows ordered by
 // `position`, so the picker's job is to render the list it is handed, unsorted.
 //

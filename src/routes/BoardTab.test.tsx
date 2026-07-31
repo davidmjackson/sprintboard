@@ -176,6 +176,42 @@ describe('BoardTab', () => {
     expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
   })
 
+  // A SUCCESSFUL statuses read that returned nothing. Before the guard, this fell through to
+  // `statuses.map([])`: a `<div class="grid">` with no children, no heading, no alert, no
+  // `role="status"` — and the sprint name plus the filter chrome still painted above it,
+  // implying a healthy board while every card in the sprint had vanished.
+  //
+  // Unreachable today; reachable at SPRIN-77/80 and SPRIN-75, because RLS FILTERS rather than
+  // raises — a denied read is `{data: [], error: null}`, i.e. `loaded` with zero rows.
+  it('says the board has no columns when the statuses read succeeds with none', () => {
+    renderTab(BoardTab, boardCtx({ statuses: [], statusesPhase: 'loaded' }))
+    // Announced, not merely visible. `role="status"` (informational), never `role="alert"` —
+    // the read did not fail — and its own sentence, distinguishable from both neighbours.
+    const announced = screen.getByRole('status')
+    expect(announced).toHaveTextContent(/this board has no columns/i)
+    expect(announced).toHaveTextContent(/this project has no statuses/i)
+    // Not a failure: no alert and no Retry, which is what separates this from a failed read.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+    // And it is not sitting on top of the columnless grid, the sprint caption or the filters:
+    // the state replaces the board rather than decorating it.
+    expect(screen.queryAllByRole('heading', { level: 2 })).toHaveLength(0)
+    expect(screen.queryByText('Sprint 1')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /blocked only/i })).not.toBeInTheDocument()
+    // The two sentences it must never be mistaken for.
+    expect(screen.queryByText('No tickets yet.')).not.toBeInTheDocument()
+    expect(screen.queryByText(/no active sprint/i)).not.toBeInTheDocument()
+  })
+
+  // The control on the test above: it must be asserting something the board does NOT always
+  // say. Without this, inverting the guard to `statuses.length > 0` would still leave a green
+  // suite for the empty case while every real board claimed it had no columns.
+  it('says nothing about missing columns when the project HAS statuses', () => {
+    renderTab(BoardTab, boardCtx())
+    expect(screen.queryByText(/no columns/i)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(SEEDED_STATUSES.length)
+  })
+
   it('claims neither empty nor failed while the STATUSES load', () => {
     renderTab(BoardTab, boardCtx({ statuses: [], statusesPhase: 'loading' }))
     expect(screen.getByText('Loading…')).toBeInTheDocument()

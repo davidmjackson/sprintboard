@@ -20,10 +20,16 @@ import { TicketSearchInput } from './TicketSearchInput'
  * when there are any — how many cards carry no estimate, so a total is never silently
  * understated.
  *
- * It is a separate component for two reasons. `BoardTab` sits at the T2 cyclomatic limit
- * of 10, so its three conditionals (the empty check, the singular/plural count, and the
- * unestimated count) have to be somebody else's; and the arithmetic itself is
+ * It is a separate component for two reasons. When it was written `BoardTab` measured exactly
+ * 10 — the T2 cyclomatic limit — so its three conditionals (the empty check, the singular/plural
+ * count, and the unestimated count) HAD to be somebody else's; and the arithmetic itself is
  * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
+ *
+ * The first reason is no longer a constraint: SPRIN-76's `firstUnready` refactor bought two
+ * branches back and `BoardTab` measures **9 of 10** as of that story (`npx eslint
+ * src/routes/BoardTab.tsx --rule '{"complexity":["error",1]}'` — re-measure rather than trust
+ * this line). The split stays because it is the right shape and hoisting three conditionals
+ * would spend the whole margin; the second reason never depended on the count at all.
  *
  * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards
  * actually on screen — the blocked-only filter and the SPRIN-68 search filter both change
@@ -54,10 +60,13 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  * the board already had it before this story: with blocked-only on, a column holding no
  * blocked cards has always said "No tickets yet."
  *
- * The `||` lives HERE rather than in `BoardTab` for a measured reason: `BoardTab`'s body sits
- * at the T2 cyclomatic limit of exactly 10, so computing a filter-active flag up there takes
- * it to 11 and reddens `npm run lint`. Deciding the sentence in its own component costs
- * `BoardTab` nothing.
+ * The `||` lives HERE rather than in `BoardTab` for a reason that was measured when it was
+ * written: `BoardTab`'s body then sat at the T2 cyclomatic limit of exactly 10, so computing a
+ * filter-active flag up there took it to 11 and reddened `npm run lint`. That is no longer
+ * true — SPRIN-76's `firstUnready` refactor left `BoardTab` at **9 of 10** — so this is now a
+ * preference, not a forced move. It stays a preference worth keeping: deciding the sentence in
+ * its own component costs `BoardTab` nothing, and the remaining margin is better spent on a
+ * state the board cannot otherwise tell apart than on inlining a `||`.
  */
 function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
   const filtering = blockedOnly || isSearchActive(query)
@@ -200,6 +209,34 @@ export function BoardTab() {
     )
   }
 
+  // A SUCCESSFUL statuses read that returned no rows. Without it, execution fell through to
+  // `statuses.map([])` and painted a columnless `<div class="grid">` under the sprint name and
+  // the filters — every card in the sprint gone, nothing announced, the chrome above implying a
+  // healthy board. That is the S4.6 defect once more: a distinct state wearing another's face.
+  //
+  // It is unreachable today (the seed trigger guarantees four rows and `activeProjectId` comes
+  // from the owner-scoped project list) and deliberately handled anyway, because RLS FILTERS
+  // rather than raises: a policy that denies the read returns `{data: [], error: null}`, which
+  // arrives here as exactly `phase: 'loaded'` with `items: []`. SPRIN-77/80 (status deletion,
+  // with nothing yet enforcing "a project has at least one status") and SPRIN-75 (every policy
+  // rewritten to a membership check, where a `project_statuses` policy narrower than the
+  // `projects` one hands a member a blank board) both make it reachable.
+  //
+  // `role="status"`, not `role="alert"`, and no Retry: the read SUCCEEDED. `role="alert"` and
+  // `LoadFailure` stay reserved for actual failures. The sentence names COLUMNS and STATUSES so
+  // it cannot be misread as either neighbour — "No active sprint — start one from the Sprints
+  // tab." or a column's own "No tickets yet." / "No matches." It promises no settings screen,
+  // because managing statuses does not exist until SPRIN-77. Returning early is the point: the
+  // empty grid, the sprint caption and the filters must not sit above this.
+  if (statuses.length === 0) {
+    return (
+      <p role="status" className="text-muted-foreground text-sm">
+        This board has no columns — this project has no statuses, so none of its tickets can be
+        shown.
+      </p>
+    )
+  }
+
   const activeSprint = selectActiveSprint(sprints)
   const boardTickets = activeSprint ? selectSprintTickets(tickets, activeSprint.id) : []
   const visibleTickets = selectMatchingTickets(
@@ -222,8 +259,11 @@ export function BoardTab() {
       {activeSprint !== null ? (
         <>
           {/* The board never said WHICH sprint it was showing. Both children hang off the
-              ONE `activeSprint !== null` test on purpose: `BoardTab` sits at the T2
-              cyclomatic limit of 10, so a second conditional here reddens the lint gate. */}
+              ONE `activeSprint !== null` test on purpose: when this was written `BoardTab`
+              measured exactly 10 — the T2 limit — and a second test here reddened the lint
+              gate. It measures 9 of 10 now, so grouping them is a preference rather than a
+              constraint; it is still one test for one question, and splitting it would buy
+              nothing. */}
           <p className="flex flex-wrap items-baseline gap-2 text-sm">
             <span className="font-medium">{activeSprint.name}</span>
             <SprintDates sprint={activeSprint} />
