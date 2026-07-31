@@ -14,20 +14,24 @@
  * Its link to the schema now runs through `DEFAULT_PROJECT_STATUSES` and the
  * seeding trigger instead, which is why that constant exists.
  *
- * Three links hold the chain together, and each is checked somewhere different:
+ * For `type`, `project_type` and `sprint.status`, three links hold the chain
+ * together, and each is checked somewhere different:
  *
  *   union  ≡  runtime array   — `Exact<>` below, at compile time
  *   array  ≡  the schema file  — domain.test.ts, by parsing the DDL: a check
- *                                constraint for most, the trigger's VALUES list
- *                                for statuses
- *   column ≡  the live database — regenerating database.types.ts, and for
- *                                statuses, rls.integration.test.ts reading the
- *                                rows the database actually seeded
+ *                                constraint for each
+ *   column ≡  the live database — regenerating database.types.ts
  *
  * The middle link is the one that matters and the one a compiler cannot see, so
- * it is a test. `Assignable<>` alone is NOT sufficient: the generated column type
- * is `string`, so *any* string union satisfies it, and adding a value to a union
- * would sail through. `Exact<>` is what actually bites.
+ * it is a test. `Assignable<>` alone is NOT sufficient for those three: the
+ * generated column type is `string`, so *any* string union satisfies it, and
+ * adding a value to a union would sail through. `Exact<>` is what actually bites.
+ *
+ * `TicketStatus` has neither guard. It was widened to `string` in Task 3 of
+ * SPRIN-76 (see its docblock below), so there is no union for `Exact<>` to check
+ * and no narrowing for `Assignable<>` to bite on. What still ties it to the
+ * schema is `DEFAULT_PROJECT_STATUSES` and the two tests described on that
+ * constant, not a type-level guard here.
  */
 
 import type { Tables, TablesInsert, TablesUpdate } from './database.types'
@@ -43,7 +47,20 @@ export type TicketType = 'epic' | 'story' | 'bug' | 'task'
  * them, together — before it opens write access to `project_statuses`.
  */
 export type StatusCategory = 'todo' | 'in_progress' | 'done'
-export type TicketStatus = 'todo' | 'in_progress' | 'in_review' | 'done'
+/**
+ * A ticket's status: the `slug` of one of its project's `project_statuses` rows.
+ *
+ * Deliberately `string`, and deliberately NOT a union. The vocabulary is PER PROJECT as of
+ * SPRIN-79, so no single union can describe it — and SPRIN-76's AC2 requires a new status row
+ * to produce a new board column with no code change. Re-narrowing this to a union would
+ * silently re-break that.
+ *
+ * What enforces it instead is stronger than the union ever was, because it is per-project and
+ * lives in the database: the composite foreign key `tickets_status_fk (project_id, status) →
+ * project_statuses (project_id, slug)`. The alias survives the widening only to say all of
+ * this at the ~15 call sites that read it.
+ */
+export type TicketStatus = string
 export type SprintStatus = 'future' | 'active' | 'complete'
 export type ProjectType = 'scrum'
 
@@ -51,8 +68,10 @@ export type ProjectType = 'scrum'
  * The four board columns the client still renders, in board order.
  *
  * As of SPRIN-79 the database no longer constrains `tickets.status` to this list —
- * `project_statuses` does, per project. This array survives only until SPRIN-76
- * switches the board to render from those rows, at which point it is deleted.
+ * `project_statuses` does, per project. `TicketStatus` was widened to `string` in
+ * Task 3 of SPRIN-76, so this array is no longer what the type system checks
+ * against; it is deleted in Task 7 of this same story, once the board renders from
+ * `project_statuses` rows directly and no consumer of this constant is left.
  * `domain.test.ts` asserts it still equals `DEFAULT_PROJECT_STATUSES`; that
  * assertion is what keeps the two halves of the change from drifting apart in the
  * window between them.
@@ -169,10 +188,10 @@ type Assignable<Narrow extends Wide, Wide> = Narrow
 
 /** The union and the runtime array must be the SAME SET, in both directions.
  *  Without this, adding a value to a union and forgetting the array compiles
- *  fine — and `isTicketStatus` then rejects a value the type system calls valid. */
-export type AssertTicketStatusesExhaustive = Expect<
-  Exact<TicketStatus, (typeof TICKET_STATUSES)[number]>
->
+ *  fine — and `isTicketStatus` then rejects a value the type system calls valid.
+ *  There is no such guard for `TicketStatus`: it was widened to `string` in Task 3
+ *  of SPRIN-76 (the vocabulary is per-project), so `Exact<string, ...>` would be
+ *  `false` and the guard would fail to compile while asserting nothing real. */
 export type AssertTicketTypesExhaustive = Expect<Exact<TicketType, (typeof TICKET_TYPES)[number]>>
 export type AssertSprintStatusesExhaustive = Expect<
   Exact<SprintStatus, (typeof SPRINT_STATUSES)[number]>
@@ -183,7 +202,9 @@ export type AssertStatusCategoriesExhaustive = Expect<
 >
 
 export type AssertTicketTypeColumn = Assignable<TicketType, Tables<'tickets'>['type']>
-export type AssertTicketStatusColumn = Assignable<TicketStatus, Tables<'tickets'>['status']>
+/* No AssertTicketStatusColumn: `TicketStatus` is `string` as of Task 3 of SPRIN-76, so
+ * `Assignable<string, string>` would be vacuous — it would compile without checking
+ * anything, which is worse than no guard because it still reads like one. */
 export type AssertSprintStatusColumn = Assignable<SprintStatus, Tables<'sprints'>['status']>
 export type AssertProjectTypeColumn = Assignable<ProjectType, Tables<'projects'>['project_type']>
 export type AssertStatusCategoryColumn = Assignable<
