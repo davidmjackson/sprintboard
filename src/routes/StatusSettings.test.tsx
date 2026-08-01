@@ -1,0 +1,341 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+
+import { StatusSettings } from './StatusSettings'
+import type { ProjectStatus } from '@/lib/domain'
+import {
+  createProjectStatus,
+  renameProjectStatus,
+  reorderProjectStatuses,
+} from '@/lib/project-statuses'
+
+// Spread the real module: `status-schemas.ts` calls `slugForName` from it during validation,
+// and `doneSlugs`/`statusName` are pure. Only the three network-touching writes are mocked.
+vi.mock('@/lib/project-statuses', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-statuses')>()),
+  createProjectStatus: vi.fn(),
+  renameProjectStatus: vi.fn(),
+  reorderProjectStatuses: vi.fn(),
+}))
+
+const mockCreate = vi.mocked(createProjectStatus)
+const mockRename = vi.mocked(renameProjectStatus)
+const mockReorder = vi.mocked(reorderProjectStatuses)
+
+/**
+ * A vocabulary that is NOT the seeded four, and whose names never equal a CATEGORY label.
+ * A fixture reusing 'To Do'/'In Progress'/'Done' could not tell "renders the row's name" from
+ * "renders the row's category", nor "reads the rows" from "reads a constant".
+ */
+function status(overrides: Partial<ProjectStatus> = {}): ProjectStatus {
+  return {
+    id: 'st1',
+    project_id: 'p1',
+    slug: 'triage',
+    name: 'Triage',
+    category: 'todo',
+    position: 1,
+    is_initial: true,
+    created_at: '2026-08-01T00:00:00+00:00',
+    ...overrides,
+  } as ProjectStatus
+}
+
+const TRIAGE = status()
+const BUILDING = status({
+  id: 'st2',
+  slug: 'building',
+  name: 'Building',
+  category: 'in_progress',
+  position: 2,
+  is_initial: false,
+})
+const SHIPPED = status({
+  id: 'st3',
+  slug: 'shipped',
+  name: 'Shipped',
+  category: 'done',
+  position: 3,
+  is_initial: false,
+})
+const STATUSES = [TRIAGE, BUILDING, SHIPPED]
+
+function renderSettings(
+  props: {
+    statuses?: ProjectStatus[]
+    onCreated?: (s: ProjectStatus) => void
+    onUpdated?: (s: ProjectStatus) => void
+    onReordered?: (s: ProjectStatus[]) => void
+  } = {},
+) {
+  const handlers = {
+    onCreated: vi.fn(),
+    onUpdated: vi.fn(),
+    onReordered: vi.fn(),
+    ...props,
+  }
+  render(
+    <StatusSettings
+      projectId="p1"
+      statuses={props.statuses ?? STATUSES}
+      onCreated={handlers.onCreated}
+      onUpdated={handlers.onUpdated}
+      onReordered={handlers.onReordered}
+    />,
+  )
+  return handlers
+}
+
+/** The row for a status, found by the name it renders. Scoping every DOM-text assertion to
+ *  the row is the SPRIN-67 discipline: an unscoped `getByText` says the text exists and
+ *  nothing about where. A `<li>` takes no accessible name from its content, so the row is
+ *  reached through the name it renders rather than by a role-name query. */
+function rowFor(name: string): HTMLElement {
+  const row = screen.getByText(name).closest('li')
+  if (!row) throw new Error(`No row rendered for '${name}'`)
+  return row
+}
+
+/** The text a field actually POINTS AT through `aria-describedby` — not merely text that
+ *  exists somewhere on the page. A field-level message is a relationship, and asserting the
+ *  sentence alone passes just as happily with the message rendered as a page banner. */
+function fieldMessage(field: HTMLElement): string {
+  return (field.getAttribute('aria-describedby') ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? '')
+    .join(' ')
+}
+
+beforeEach(() => {
+  mockCreate.mockReset()
+  mockRename.mockReset()
+  mockReorder.mockReset()
+})
+
+describe('StatusSettings', () => {
+  it("lists the project's statuses in the order given, with their category", () => {
+    renderSettings()
+
+    const rows = screen.getAllByRole('listitem')
+    expect(rows).toHaveLength(3)
+    // Order is the rows' own (position) order, which IS the board's column order.
+    expect(within(rows[0]!).getByText('Triage')).toBeVisible()
+    expect(within(rows[1]!).getByText('Building')).toBeVisible()
+    expect(within(rows[2]!).getByText('Shipped')).toBeVisible()
+    // The CATEGORY, by its label — 'Shipped' is a done-category status whose name says so
+    // nowhere, so a row echoing its own name would not produce this.
+    expect(within(rows[2]!).getByText('Done')).toBeVisible()
+    expect(within(rows[1]!).getByText('In progress')).toBeVisible()
+  })
+
+  describe('adding a status', () => {
+    it('sends the typed name and the chosen category, then hands the row up', async () => {
+      const u = userEvent.setup()
+      const created = status({ id: 'st4', slug: 'blocked', name: 'Blocked', position: 4 })
+      mockCreate.mockResolvedValue({ ok: true, value: created })
+      const { onCreated } = renderSettings()
+
+      await u.type(screen.getByRole('textbox', { name: 'Name' }), 'Blocked')
+      await u.selectOptions(screen.getByRole('combobox', { name: 'Category' }), 'in_progress')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      await waitFor(() =>
+        expect(mockCreate).toHaveBeenCalledWith({
+          projectId: 'p1',
+          name: 'Blocked',
+          category: 'in_progress',
+          // The existing rows travel with it: `createProjectStatus` derives both the unique
+          // slug and `max(position)+1` from them, so a call without them appends wrongly.
+          existing: STATUSES,
+        }),
+      )
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created))
+    })
+
+    it('clears the name field after a successful add', async () => {
+      const u = userEvent.setup()
+      mockCreate.mockResolvedValue({ ok: true, value: status({ id: 'st4', name: 'Blocked' }) })
+      renderSettings()
+
+      const name = screen.getByRole('textbox', { name: 'Name' })
+      await u.type(name, 'Blocked')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      await waitFor(() => expect(name).toHaveValue(''))
+    })
+
+    // AC4: a duplicate is a user-correctable outcome about ONE field, so it is reported on
+    // that field — not as a banner the user has to map back to an input themselves.
+    it('reports a duplicate name on the name field, and does not hand anything up', async () => {
+      const u = userEvent.setup()
+      mockCreate.mockResolvedValue({ ok: false, error: 'duplicate' })
+      const { onCreated } = renderSettings()
+
+      const field = screen.getByRole('textbox', { name: 'Name' })
+      await u.type(field, 'Triage')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      await waitFor(() => expect(fieldMessage(field)).toMatch(/already/i))
+      expect(field).toHaveAttribute('aria-invalid', 'true')
+      // And NOT as a page-level banner, which is the shape AC4 rules out.
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(onCreated).not.toHaveBeenCalled()
+    })
+
+    it('shows the generic retry copy for a failure the user cannot correct', async () => {
+      const u = userEvent.setup()
+      mockCreate.mockResolvedValue({ ok: false, error: 'unknown' })
+      const { onCreated } = renderSettings()
+
+      await u.type(screen.getByRole('textbox', { name: 'Name' }), 'Blocked')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Something went wrong. Please try again.',
+      )
+      expect(onCreated).not.toHaveBeenCalled()
+    })
+
+    it('refuses a blank name at the client edge, without a write', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      expect(await screen.findByText('Give the status a name')).toBeVisible()
+      expect(mockCreate).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('renaming a status', () => {
+    it('commits the new name and hands the returned row up', async () => {
+      const u = userEvent.setup()
+      const renamed = { ...BUILDING, name: 'In Build' }
+      mockRename.mockResolvedValue({ ok: true, value: renamed })
+      const { onUpdated } = renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, 'In Build{Enter}')
+
+      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('st2', 'In Build'))
+      await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(renamed))
+    })
+
+    it('reports a duplicate rename on the row and hands nothing up', async () => {
+      const u = userEvent.setup()
+      mockRename.mockResolvedValue({ ok: false, error: 'duplicate' })
+      const { onUpdated } = renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, 'Triage{Enter}')
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(/already/i)
+      // On the ROW that failed, not floating at the top of the page.
+      expect(within(rowFor('Building')).getByRole('alert')).toBe(alert)
+      expect(onUpdated).not.toHaveBeenCalled()
+    })
+
+    it('does not write when the name is unchanged', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      await u.type(screen.getByRole('textbox', { name: /building/i }), '{Enter}')
+
+      expect(mockRename).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('reordering', () => {
+    it('sends the COMPLETE swapped slug list when a row moves down', async () => {
+      const u = userEvent.setup()
+      mockReorder.mockResolvedValue({ ok: true, value: [BUILDING, TRIAGE, SHIPPED] })
+      const { onReordered } = renderSettings()
+
+      await u.click(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i }))
+
+      // Every slug the project has, in the new order. A PARTIAL list would leave the omitted
+      // rows on their old positions and can collide on the deferred unique constraint.
+      await waitFor(() =>
+        expect(mockReorder).toHaveBeenCalledWith('p1', ['building', 'triage', 'shipped']),
+      )
+      await waitFor(() => expect(onReordered).toHaveBeenCalledWith([BUILDING, TRIAGE, SHIPPED]))
+    })
+
+    it('sends the COMPLETE swapped slug list when a row moves up', async () => {
+      const u = userEvent.setup()
+      mockReorder.mockResolvedValue({ ok: true, value: [TRIAGE, SHIPPED, BUILDING] })
+      renderSettings()
+
+      await u.click(within(rowFor('Shipped')).getByRole('button', { name: /move .* up/i }))
+
+      await waitFor(() =>
+        expect(mockReorder).toHaveBeenCalledWith('p1', ['triage', 'shipped', 'building']),
+      )
+    })
+
+    it('offers no Move up on the first row and no Move down on the last', () => {
+      renderSettings()
+
+      expect(within(rowFor('Triage')).queryByRole('button', { name: /move .* up/i })).toBeNull()
+      expect(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i })).toBeVisible()
+      expect(within(rowFor('Shipped')).queryByRole('button', { name: /move .* down/i })).toBeNull()
+      expect(within(rowFor('Shipped')).getByRole('button', { name: /move .* up/i })).toBeVisible()
+    })
+
+    it('disables every move control while a reorder is in flight', async () => {
+      const u = userEvent.setup()
+      let release: (v: { ok: true; value: ProjectStatus[] }) => void = () => {}
+      mockReorder.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve
+        }),
+      )
+      renderSettings()
+
+      await u.click(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i }))
+
+      await waitFor(() =>
+        expect(
+          within(rowFor('Shipped')).getByRole('button', { name: /move .* up/i }),
+        ).toBeDisabled(),
+      )
+      release({ ok: true, value: STATUSES })
+      await waitFor(() =>
+        expect(
+          within(rowFor('Shipped')).getByRole('button', { name: /move .* up/i }),
+        ).toBeEnabled(),
+      )
+    })
+
+    it('leaves the list alone and says so when the reorder fails', async () => {
+      const u = userEvent.setup()
+      mockReorder.mockResolvedValue({ ok: false, error: 'unknown' })
+      const { onReordered } = renderSettings()
+
+      await u.click(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Something went wrong. Please try again.',
+      )
+      expect(onReordered).not.toHaveBeenCalled()
+      // The rendered order is the prop's, untouched — the parent owns the list.
+      const rows = screen.getAllByRole('listitem')
+      expect(within(rows[0]!).getByText('Triage')).toBeVisible()
+    })
+  })
+
+  it('still offers the add form when the project has no statuses at all', () => {
+    renderSettings({ statuses: [] })
+
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Add status' })).toBeVisible()
+  })
+})

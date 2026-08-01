@@ -150,6 +150,22 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   task: 'Task',
 }
 
+/**
+ * Human-readable category labels, keyed by category — the settings surface (SPRIN-77) shows a
+ * status's category on its row and offers the three in the add form, and `in_progress` is not
+ * a thing to put in front of a user.
+ *
+ * Here rather than in the component for the same reason as every other label map above:
+ * status/type/column display names live in `domain.ts` and nowhere else, so a fourth category
+ * cannot ship without a label and two surfaces cannot drift on the wording. The exhaustive
+ * `Record<StatusCategory, string>` is what enforces the first half at compile time.
+ */
+export const STATUS_CATEGORY_LABELS: Record<StatusCategory, string> = {
+  todo: 'To do',
+  in_progress: 'In progress',
+  done: 'Done',
+}
+
 export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
   future: 'Future',
   active: 'Active',
@@ -210,9 +226,12 @@ export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus 
  * One project's status row. A board column IS one of these, ordered by `position` —
  * there is deliberately no separate board-columns table while the mapping is 1:1.
  *
- * Read-only to every client in this slice: `statuses_owner_read` is a SELECT-only
- * policy, so there is no Insert or Update counterpart to this type on purpose.
- * SPRIN-77 adds them together with the write policy.
+ * No Insert or Update counterpart to this type, and that is still deliberate after
+ * SPRIN-77 opened the writes. An owner may INSERT a row and UPDATE only
+ * (name, category, position) — `slug` is revoked at column level and there is no
+ * DELETE policy at all — so the shapes a client may send are narrower than any
+ * generated row type, and each is stated at its own write in
+ * `src/lib/project-statuses.ts` rather than as one permissive alias here.
  */
 export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
   category: StatusCategory

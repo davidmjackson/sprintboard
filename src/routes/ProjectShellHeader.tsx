@@ -73,6 +73,9 @@ export function ProjectShellHeader({
         <NavLink to="sprints" className={tabClass}>
           Sprints
         </NavLink>
+        <NavLink to="settings" className={tabClass}>
+          Settings
+        </NavLink>
       </nav>
     </header>
   )

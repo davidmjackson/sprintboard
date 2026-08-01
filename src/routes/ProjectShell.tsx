@@ -48,6 +48,16 @@ export type ProjectShellContext = {
    *  same rows. */
   statuses: ProjectStatus[]
   statusesPhase: ReadPhase
+  /** A status was added from the Settings tab (SPRIN-77). Appended, because the write gives
+   *  it `max(position)+1` — so appending IS the board's column order, not a guess at it. */
+  onStatusCreated: (status: ProjectStatus) => void
+  /** A status was renamed. Replaces one row by id; no other row moves, and no ticket row
+   *  changes at all — `tickets_status_fk` references the slug, which a rename never touches. */
+  onStatusUpdated: (status: ProjectStatus) => void
+  /** The statuses were reordered. Takes the DATABASE's own post-update rows (the RPC's
+   *  `RETURNING`), not a locally computed guess — the same discipline as
+   *  `onSprintCompleted`'s `returnedTickets`. */
+  onStatusesReordered: (statuses: ProjectStatus[]) => void
   /** Re-runs ALL THREE reads for this project. Manual only — there is no automatic retry,
    *  backoff or polling — and it returns every phase to `loading` immediately, so a click
    *  is never mistaken for a no-op. */
@@ -179,6 +189,30 @@ export function ProjectShell() {
     )
   }
 
+  // The three status reducers (SPRIN-77). Local mutations like every other one here, and for
+  // the same reason: an unguarded refetch resolving after a project switch clobbers the new
+  // project's list. They matter beyond this tab — `statuses` is what BoardTab renders its
+  // columns from, so patching it here is the whole of AC1 ("appears as a board column without
+  // a reload").
+  const onStatusCreated = (status: ProjectStatus) =>
+    statusRead.patch(project.id, (ss) => [...ss, status])
+
+  const onStatusUpdated = (updated: ProjectStatus) =>
+    statusRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
+
+  // Merged by id and re-sorted by `position` rather than swapped in place: `position` order IS
+  // the board's column order (`listProjectStatuses` sorts by it and nothing re-sorts
+  // downstream), and the RPC returns its rows in no guaranteed order. Merging rather than
+  // replacing the list wholesale keeps any row the RPC did not return — there are none today,
+  // since the caller sends the complete list and the write layer rejects a short result — so a
+  // future partial reorder degrades to "some rows moved", never to "the rest vanished".
+  const onStatusesReordered = (rows: ProjectStatus[]) => {
+    const byId = new Map(rows.map((s) => [s.id, s]))
+    statusRead.patch(project.id, (ss) =>
+      ss.map((s) => byId.get(s.id) ?? s).sort((a, b) => a.position - b.position),
+    )
+  }
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   return (
@@ -219,6 +253,9 @@ export function ProjectShell() {
                 sprintsPhase,
                 statuses,
                 statusesPhase,
+                onStatusCreated,
+                onStatusUpdated,
+                onStatusesReordered,
                 onRetry,
                 onSprintCreated,
                 onSprintUpdated,
