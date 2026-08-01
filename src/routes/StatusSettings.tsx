@@ -89,6 +89,9 @@ function StatusRow({
     if (parsed.data.name === status.name) return
     const result = await renameProjectStatus(status.id, parsed.data.name)
     if (!result.ok) {
+      // No `'stale'` branch, and that is not an omission: a rename sends `name` alone, so it
+      // cannot reach `project_statuses_project_position_unique` — the only constraint that
+      // produces that tag. If it somehow did, generic retry copy is the honest fallback.
       setError(result.error === 'duplicate' ? DUPLICATE_NAME : GENERIC_CREATE_ERROR)
       return
     }
