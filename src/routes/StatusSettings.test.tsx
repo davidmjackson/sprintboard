@@ -242,12 +242,31 @@ describe('StatusSettings', () => {
       expect(onUpdated).not.toHaveBeenCalled()
     })
 
-    it('does not write when the name is unchanged', async () => {
+    // Committing an untouched field writes nothing. Recorded honestly: this passes because of
+    // `EditableText`'s own `draft !== value` test, NOT the row's — deleting the row's guard
+    // leaves this test green (measured by mutation). It is kept because the composed behaviour
+    // is worth pinning, not because it pins this file. The test below is the one that does.
+    it('does not write when the field is committed untouched', async () => {
       const u = userEvent.setup()
       renderSettings()
 
       await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
       await u.type(screen.getByRole('textbox', { name: /building/i }), '{Enter}')
+
+      expect(mockRename).not.toHaveBeenCalled()
+    })
+
+    // Where the row's OWN guard is the only one that can fire. `EditableText` compares the raw
+    // draft, so 'Building ' is a change to it and `onCommit` runs; the row compares the TRIMMED
+    // name, which the database also stores and compares, so this is a no-op write that never
+    // needs sending. Without the row's guard the request goes out and a duplicate-name index
+    // is consulted for nothing.
+    it('does not write when the name differs only by surrounding whitespace', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      await u.type(screen.getByRole('textbox', { name: /building/i }), '   {Enter}')
 
       expect(mockRename).not.toHaveBeenCalled()
     })
