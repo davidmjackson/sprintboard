@@ -179,6 +179,29 @@ describe('slugForName', () => {
     expect(slugForName('   ')).toBeNull()
     expect(slugForName('')).toBeNull()
   })
+
+  /**
+   * The characters that would break `completeSprint`'s filter, pinned by name.
+   *
+   * `src/lib/sprints.ts` builds a PostgREST filter by string-joining slugs into
+   * `.not('status','in','(a,b)')`, and its docblock says that is safe BECAUSE slugs cannot
+   * contain a comma, paren or quote. The database's `project_statuses_slug_format` check is the
+   * real control and is pinned live — but this module mirrors that rule client-side, and the
+   * mirror was free to drift: widening BOTH gates here to admit a comma left all 765 unit tests
+   * green, with `slugForName('a,b')` returning `'a,b'` — the exact separator that filter uses.
+   *
+   * The cases above use `!`, `-`, spaces and digits, none of which is a separator. This asserts
+   * the dangerous characters specifically, so the mirror cannot drift silently. On drift the
+   * database still refuses the write, but with a 23514 — which is not a 23505, so `writeError`
+   * returns `'unknown'` and the user gets generic retry copy for a name they could trivially fix.
+   */
+  it.each([',', ')', '(', "'", '"', '\\'])(
+    'never emits %j, which would break the sprint-completion filter',
+    (char) => {
+      expect(slugForName(`qa${char}b`)).toBe('qa_b')
+      expect(slugForName(`${char}${char}qa`)).toBe('qa')
+    },
+  )
 })
 
 describe('uniqueSlugForName', () => {
@@ -365,6 +388,27 @@ describe('createProjectStatus', () => {
 
   it('maps any other error to unknown', async () => {
     single.mockResolvedValue({ data: null, error: { code: '08006', message: 'boom' } })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'unknown' })
+  })
+
+  /**
+   * The SQLSTATE gate, pinned separately from the message gate.
+   *
+   * The test above supplies a message with no constraint name in it, so it reaches `'unknown'`
+   * whether or not the code is consulted — it pins "any other MESSAGE", not "any other ERROR".
+   * Deleting `error.code !== UNIQUE_VIOLATION` from `writeError` left the whole suite green.
+   *
+   * This is the one input that can tell them apart: a constraint name from the allow-list
+   * carried by a NON-unique SQLSTATE. Nothing produces that shape today — it is a probe for the
+   * gate, not a scenario — and that is exactly why it has to be constructed deliberately.
+   */
+  it('consults the SQLSTATE, not just the message: a known constraint under 23514 is unknown', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23514', message: uniqueViolation(POSITION) },
+    })
     await expect(
       createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing }),
     ).resolves.toEqual({ ok: false, error: 'unknown' })

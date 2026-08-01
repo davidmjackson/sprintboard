@@ -401,6 +401,13 @@ describe('StatusSettings', () => {
       // The rendered order is the prop's, untouched — the parent owns the list.
       const rows = screen.getAllByRole('listitem')
       expect(within(rows[0]!).getByText('Triage')).toBeVisible()
+
+      // AND THE USER CAN TRY AGAIN. Without this line, moving `setReordering(false)` below the
+      // failure return passes every test in this file — shipping a settings tab where every
+      // Move control is permanently disabled after one failed reorder, sitting next to a
+      // "Please try again" message the user cannot act on. Asserting the message alone reads
+      // as though it covers the recovery; it does not.
+      expect(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i })).toBeEnabled()
     })
   })
 
@@ -409,5 +416,13 @@ describe('StatusSettings', () => {
 
     expect(screen.queryAllByRole('listitem')).toHaveLength(0)
     expect(screen.getByRole('button', { name: 'Add status' })).toBeVisible()
+    // The empty-state sentence itself, which nothing observed: `statuses.length > 0` mutated to
+    // `>= 0` removes it entirely and the two assertions above stay green, because zero
+    // `listitem`s is equally true of an empty `<ul>`. Unreachable today — the seed trigger
+    // guarantees four statuses and there is no DELETE policy — but SPRIN-80 makes it reachable,
+    // and a state that only appears once deletion exists is the one least likely to be noticed.
+    expect(
+      screen.getByText('This project has no statuses, so its board has no columns.'),
+    ).toBeVisible()
   })
 })

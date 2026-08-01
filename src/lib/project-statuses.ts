@@ -186,7 +186,14 @@ const UNIQUE_VIOLATION = '23505'
  * **Matching on the message is the only channel available**, and that was measured rather than
  * assumed: provoking each constraint live on 2026-08-01 returns `code: '23505'` with `details`
  * and `hint` both `null`, and the constraint name inside `message` alone. `rls.integration.test.ts`
- * pins that sentence against the live database so this parse cannot rot silently.
+ * pins the `stale` sentence AND the `duplicate` one against the live database, so a migration
+ * that renames either constraint goes red rather than silently degrading this parse to
+ * `'unknown'` and its generic retry copy. (Only the `stale` half was pinned at first — the
+ * coverage was inverted relative to risk, since AC4's user-facing message depends on the
+ * `duplicate` half.)
+ *
+ * Localisation does not threaten this: Postgres translates the surrounding prose, but the
+ * constraint name inside the double quotes comes from the catalog and is never translated.
  *
  * It is an ALLOW-LIST on purpose. An unrecognised 23505 — a constraint added later, or
  * `project_statuses_one_initial_per_project`, which is reachable by insert even though this

@@ -772,6 +772,14 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .select()
       expect(sameCaseless.data).toBeNull()
       expect(sameCaseless.error!.code).toBe('23505')
+      // The CONSTRAINT NAME, not just the SQLSTATE. `writeError` in project-statuses.ts can
+      // only tell a duplicate name from a stale position by matching this string — PostgREST
+      // returns `details` and `hint` null, so `message` is the sole channel. Without this
+      // assertion a migration renaming the index degrades AC4's "A status with that name
+      // already exists in this project." to generic retry copy, with the gate green. The
+      // stale-position sentence was pinned from the start; this half was not, which had the
+      // coverage inverted relative to which message a user is more likely to see.
+      expect(sameCaseless.error!.message).toContain('project_statuses_project_name_unique')
 
       const samePadded = await a
         .from('project_statuses')
