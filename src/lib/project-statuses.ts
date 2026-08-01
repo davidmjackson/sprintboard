@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { ProjectStatus, StatusCategory } from './domain'
+import type { ProjectStatus, ProjectStatusUpdate, StatusCategory } from './domain'
 
 /**
  * The category that makes a status terminal. Annotated `StatusCategory` rather than left as
@@ -155,19 +155,55 @@ export function doneSlugs(statuses: readonly ProjectStatus[]): Set<string> {
  * Writes return a tagged result rather than throwing, matching `createProject` and
  * `startSprint`: a duplicate name is an expected, user-correctable outcome, not an exception.
  *
- * `23505` is the only code mapped, and within this table it can only mean the
- * `project_statuses_project_name_unique` index (AC4) or the slug unique constraint — both of
- * which the user fixes by choosing a different name, so one tag serves both.
+ * `'stale'` carries the same meaning it does in `startSprint`: the caller's view of the world
+ * is out of date, and no amount of editing this form fixes it. It is a DIFFERENT remedy from
+ * `'duplicate'` (choose another name) and from `'unknown'` (try again), which is the entire
+ * reason it is a third tag rather than folded into either.
  */
 export type StatusWriteResult<T> = { ok: true; value: T } | { ok: false; error: StatusWriteError }
 
-type StatusWriteError = 'duplicate' | 'unknown'
+type StatusWriteError = 'duplicate' | 'stale' | 'unknown'
 
-/** Postgres `unique_violation`. The only code this table can raise that a user can act on. */
+/** Postgres `unique_violation`. */
 const UNIQUE_VIOLATION = '23505'
 
-function writeError(code: string | undefined): StatusWriteError {
-  return code === UNIQUE_VIOLATION ? 'duplicate' : 'unknown'
+/**
+ * The three unique constraints on `project_statuses`, and which remedy each one implies.
+ *
+ * **A 23505 on this table is NOT necessarily a duplicate name**, and mapping every one of them
+ * to `'duplicate'` produced a message that was flatly untrue. `createProjectStatus` sends an
+ * explicit `position` computed as `max(position)+1` from a client-held list that nothing in the
+ * app refetches, so two tabs open on one project both compute the same next position: the
+ * second insert collides on `project_statuses_project_position_unique` and the user was told
+ * "a status with that name already exists" about a name that is unique — with a retry
+ * reproducing it forever, because nothing about the name was ever the problem.
+ *
+ * A position collision is a STALE LIST, so it maps to `'stale'` and the form says to refresh.
+ * The name and slug constraints are both fixed by choosing a different name, so one tag serves
+ * both (two different names can derive to one slug — "To Do" and "To-Do" — and the client's own
+ * de-duplication in `uniqueSlugForName` loses that race against another tab).
+ *
+ * **Matching on the message is the only channel available**, and that was measured rather than
+ * assumed: provoking each constraint live on 2026-08-01 returns `code: '23505'` with `details`
+ * and `hint` both `null`, and the constraint name inside `message` alone. `rls.integration.test.ts`
+ * pins that sentence against the live database so this parse cannot rot silently.
+ *
+ * It is an ALLOW-LIST on purpose. An unrecognised 23505 — a constraint added later, or
+ * `project_statuses_one_initial_per_project`, which is reachable by insert even though this
+ * module always sends `is_initial: false` — collapses to `'unknown'` and its generic retry copy,
+ * rather than a confident sentence about the wrong column.
+ */
+const DUPLICATE_CONSTRAINTS = [
+  'project_statuses_project_name_unique',
+  'project_statuses_project_slug_unique',
+]
+const STALE_CONSTRAINT = 'project_statuses_project_position_unique'
+
+function writeError(error: { code?: string; message?: string } | null): StatusWriteError {
+  if (!error || error.code !== UNIQUE_VIOLATION) return 'unknown'
+  const message = error.message ?? ''
+  if (message.includes(STALE_CONSTRAINT)) return 'stale'
+  return DUPLICATE_CONSTRAINTS.some((c) => message.includes(c)) ? 'duplicate' : 'unknown'
 }
 
 /**
@@ -216,7 +252,7 @@ export async function createProjectStatus(input: {
     .select()
     .single()
 
-  if (error) return { ok: false, error: writeError(error.code) }
+  if (error) return { ok: false, error: writeError(error) }
   return { ok: true, value: data as ProjectStatus }
 }
 
@@ -225,6 +261,10 @@ export async function createProjectStatus(input: {
  * tidiness: `authenticated` holds UPDATE on exactly (name, category, position), so a patch
  * touching `slug` is refused by Postgres before any policy is consulted. Sending only what
  * changes keeps the request inside that grant.
+ *
+ * `satisfies ProjectStatusUpdate` is what makes that structural rather than a comment. The
+ * generated row type offers every column, so `.update({ slug })` used to compile and fail only
+ * at runtime, against the live database — somewhere a mocked-client unit test never goes.
  *
  * The trim is here rather than only in `RenameStatusSchema` because the schema binds the FORM,
  * not this function. A direct caller sending `'  Done  '` clears the database's
@@ -238,12 +278,12 @@ export async function renameProjectStatus(
 ): Promise<StatusWriteResult<ProjectStatus>> {
   const { data, error } = await supabase
     .from('project_statuses')
-    .update({ name: name.trim() })
+    .update({ name: name.trim() } satisfies ProjectStatusUpdate)
     .eq('id', id)
     .select()
     .single()
 
-  if (error) return { ok: false, error: writeError(error.code) }
+  if (error) return { ok: false, error: writeError(error) }
   return { ok: true, value: data as ProjectStatus }
 }
 

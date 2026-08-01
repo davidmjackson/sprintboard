@@ -214,6 +214,14 @@ export type AssertStatusCategoryColumn = Assignable<
   Tables<'project_statuses'>['category']
 >
 
+/** `ProjectStatusUpdate` mirrors a column-level GRANT (see its docblock), so its key set is the
+ *  assertion — `Assignable<>` would be vacuous, since a wider Pick of the same table is still
+ *  assignable to the generated update type. `Exact<>` is what makes adding `slug` back a
+ *  compile error rather than a silent re-widening. */
+export type AssertProjectStatusUpdateColumns = Expect<
+  Exact<keyof ProjectStatusUpdate, 'name' | 'category' | 'position'>
+>
+
 /* ------------------------------------------------------------------ *
  * Row types, with the text columns narrowed to the domain unions.
  * ------------------------------------------------------------------ */
@@ -226,12 +234,10 @@ export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus 
  * One project's status row. A board column IS one of these, ordered by `position` —
  * there is deliberately no separate board-columns table while the mapping is 1:1.
  *
- * No Insert or Update counterpart to this type, and that is still deliberate after
- * SPRIN-77 opened the writes. An owner may INSERT a row and UPDATE only
- * (name, category, position) — `slug` is revoked at column level and there is no
- * DELETE policy at all — so the shapes a client may send are narrower than any
- * generated row type, and each is stated at its own write in
- * `src/lib/project-statuses.ts` rather than as one permissive alias here.
+ * The UPDATE counterpart is `ProjectStatusUpdate` below. There is deliberately no
+ * INSERT counterpart: an insert legitimately carries `project_id`, `slug` and
+ * `is_initial`, so `TablesInsert<'project_statuses'>` is already the right shape and
+ * an alias would only restate it.
  */
 export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
   category: StatusCategory
@@ -310,6 +316,29 @@ export type SprintCreateInsert = Omit<SprintInsert, 'status'>
  * partial unique index, not here.
  */
 export type SprintStatusUpdate = Pick<TablesUpdate<'sprints'>, 'status'>
+
+/**
+ * The ONLY columns a client may UPDATE on `project_statuses` — and unlike every other write
+ * type here, this one mirrors a **column-level GRANT**, not a policy or a trigger.
+ *
+ * SPRIN-77's migration revoked the table-level UPDATE and granted it back on
+ * (name, category, position) alone, so Postgres refuses a patch touching `slug`, `is_initial`,
+ * `project_id`, `id` or `created_at` with a 42501 before any policy is consulted — `slug` above
+ * all, because `tickets_status_fk` references (project_id, slug) and moving it would strand
+ * every ticket sitting on that status.
+ *
+ * The generated `TablesUpdate<'project_statuses'>` cannot express that: it sees a table with
+ * updatable columns and offers all of them, so `.update({ slug })` compiled cleanly and failed
+ * only at runtime, against the live database, on a path a unit test with a mocked client never
+ * reaches. `Pick` makes the wrong write untypeable instead — the same move `TicketBlockUpdate`
+ * and `SprintStatusUpdate` make for their invariants. `AssertProjectStatusUpdateColumns` above
+ * pins the key set, so widening this alias is itself a compile error rather than a quiet
+ * loosening of the grant's client-side mirror.
+ */
+export type ProjectStatusUpdate = Pick<
+  TablesUpdate<'project_statuses'>,
+  'name' | 'category' | 'position'
+>
 
 /* ------------------------------------------------------------------ */
 

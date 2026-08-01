@@ -59,6 +59,22 @@ beforeEach(() => {
   vi.mocked(supabase.rpc).mockReset()
 })
 
+/**
+ * The three unique constraints `project_statuses` can raise a 23505 on, and the sentence
+ * Postgres wraps them in. MEASURED against the live database on 2026-08-01 by provoking each
+ * one in turn: the code is `23505`, `details` and `hint` are both null, and the constraint
+ * name appears ONLY inside `message`. That is why the client parses `message` — there is no
+ * other channel — and it is pinned live in `rls.integration.test.ts` so the sentence cannot
+ * rot underneath this mapping.
+ */
+const NAME = 'project_statuses_project_name_unique'
+const SLUG = 'project_statuses_project_slug_unique'
+const POSITION = 'project_statuses_project_position_unique'
+
+function uniqueViolation(constraint: string): string {
+  return `duplicate key value violates unique constraint "${constraint}"`
+}
+
 /** Deliberately NOT in position order, and NOT the seeded four: a fixture that already
  *  looks like the answer cannot prove the code produced it. */
 const ROWS = [
@@ -290,11 +306,61 @@ describe('createProjectStatus', () => {
     ).resolves.toEqual({ ok: true, value: { slug: 'qa', name: 'QA' } })
   })
 
-  it('maps 23505 to duplicate, so the form can point at the name field', async () => {
-    single.mockResolvedValue({ data: null, error: { code: '23505', message: 'dup' } })
+  it('maps a duplicate NAME to duplicate, so the form can point at the name field', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: uniqueViolation(NAME) },
+    })
     await expect(
       createProjectStatus({ projectId: 'p1', name: 'Done', category: 'todo', existing }),
     ).resolves.toEqual({ ok: false, error: 'duplicate' })
+  })
+
+  // Two DIFFERENT names can derive to one slug, and the client's own de-duplication loses
+  // that race against another tab. The user still fixes it by choosing a different name, so
+  // it shares the name tag.
+  it('maps a duplicate SLUG to duplicate as well', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: uniqueViolation(SLUG) },
+    })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'Done!', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'duplicate' })
+  })
+
+  /**
+   * THE ONE THAT DISTINGUISHES THE TWO CONSTRAINTS. `position` is computed as `max+1` from a
+   * client-held list nothing refetches, so two tabs on one project both compute the same next
+   * position and the second collides — on a 23505 that has nothing to do with the name. Mapped
+   * to `duplicate` it told the user "that name already exists" about a name that is unique, and
+   * retrying reproduced it forever. A test asserting only `23505 -> duplicate` is exactly the
+   * one that cannot tell them apart.
+   */
+  it('maps a duplicate POSITION to stale, not to duplicate', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: uniqueViolation(POSITION) },
+    })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'Blocked', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'stale' })
+  })
+
+  // A 23505 naming a constraint this client does not know about is NOT a duplicate name. The
+  // mapping is an allow-list, so an unrecognised one gets the generic retry copy rather than a
+  // confident sentence about the wrong column.
+  it('maps a 23505 from an unrecognised constraint to unknown', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: {
+        code: '23505',
+        message: uniqueViolation('project_statuses_one_initial_per_project'),
+      },
+    })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'Start', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'unknown' })
   })
 
   it('maps any other error to unknown', async () => {
@@ -362,12 +428,26 @@ describe('renameProjectStatus', () => {
     })
   })
 
-  it('maps 23505 to duplicate', async () => {
-    single.mockResolvedValue({ data: null, error: { code: '23505', message: 'dup' } })
+  it('maps a duplicate NAME to duplicate', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: uniqueViolation(NAME) },
+    })
     await expect(renameProjectStatus('s1', 'Done')).resolves.toEqual({
       ok: false,
       error: 'duplicate',
     })
+  })
+
+  // A rename sends `name` alone, so it cannot collide on position — but it shares `writeError`
+  // with the insert, and a shared mapping that only ever gets exercised through one call site
+  // is a mapping nobody has checked on the other.
+  it('maps a duplicate POSITION to stale here too', async () => {
+    single.mockResolvedValue({
+      data: null,
+      error: { code: '23505', message: uniqueViolation(POSITION) },
+    })
+    await expect(renameProjectStatus('s1', 'Done')).resolves.toEqual({ ok: false, error: 'stale' })
   })
 
   it('maps any other error to unknown', async () => {
