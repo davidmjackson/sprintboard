@@ -27,8 +27,16 @@ const name = z
 
 /**
  * Add's extra rule, and ONLY Add's. `slugForName` prefixes a name whose slug would not start
- * with a letter ("2026 Review"), so the only names left to refuse are those with no
- * alphanumeric character at all — nothing to derive a slug from.
+ * with a letter ("2026 Review"), so the only names left to refuse are those with no character
+ * it can derive a slug from at all.
+ *
+ * **The message names the character set rather than saying "a letter or number", because ASCII
+ * is what the rule actually is.** `project_statuses_slug_format` is `^[a-z][a-z0-9_]{0,29}$`,
+ * so `slugForName` keeps `[a-z0-9]` and discards everything else — which refuses `完了`,
+ * `Проверка` and `ß`, names that plainly consist of letters. The old wording ("Use at least one
+ * letter or number in the name") was therefore false exactly where it fired, and left the user
+ * with no idea what to change. Widening the derivation to other scripts is a schema question
+ * and a separate story; telling the truth about today's rule is not.
  *
  * Deliberately NOT applied to `RenameStatusSchema`: a rename never re-derives the slug (that
  * is the whole point of the name/slug division), so a name with no derivable slug is perfectly
@@ -36,7 +44,7 @@ const name = z
  */
 const addName = name.refine(
   (value) => slugForName(value) !== null,
-  'Use at least one letter or number in the name',
+  'Include at least one character from a–z or 0–9 in the name',
 )
 
 // Read from the shared constant rather than re-listing the three values: a fourth category

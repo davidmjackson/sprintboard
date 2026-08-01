@@ -225,8 +225,10 @@ export function BoardTab() {
   // `role="status"`, not `role="alert"`, and no Retry: the read SUCCEEDED. `role="alert"` and
   // `LoadFailure` stay reserved for actual failures. The sentence names COLUMNS and STATUSES so
   // it cannot be misread as either neighbour — "No active sprint — start one from the Sprints
-  // tab." or a column's own "No tickets yet." / "No matches." It promises no settings screen,
-  // because managing statuses does not exist until SPRIN-77. Returning early is the point: the
+  // tab." or a column's own "No tickets yet." / "No matches." It deliberately does not point at
+  // the Settings tab either: SPRIN-77 built that screen, but this state is reached by a DEGRADED
+  // READ as often as by a genuinely empty vocabulary, and a project whose statuses the client
+  // could not see is not one the user fixes by adding another. Returning early is the point: the
   // empty grid, the sprint caption and the filters must not sit above this.
   if (statuses.length === 0) {
     return (

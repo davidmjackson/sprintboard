@@ -51,7 +51,24 @@ describe('AddStatusSchema', () => {
     // The path is what makes it a FIELD-level message rather than a form-level one — a
     // form-level issue would render as the same generic banner this rule exists to avoid.
     expect(result.error?.issues.map((i) => i.path)).toContainEqual(['name'])
-    expect(result.error?.issues.map((i) => i.message).join(' ')).toMatch(/letter or number/i)
+    expect(result.error?.issues.map((i) => i.message).join(' ')).toMatch(/a–z or 0–9/)
+  })
+
+  /**
+   * The names the rule ACTUALLY refuses, and the reason its wording had to change.
+   *
+   * `slugForName` derives the slug from ASCII `[a-z0-9]` alone, so a name written in any other
+   * script has nothing to derive from and is refused — while plainly consisting of letters. The
+   * message used to read "Use at least one letter or number in the name", which is simply untrue
+   * of `完了` and tells the user nothing they can act on. Making these names WORK is a scope
+   * change (the slug rule is a database check constraint); saying what is required is not.
+   */
+  it.each(['完了', 'Проверка', 'ß'])('refuses %s, whose slug would be empty', (name) => {
+    const result = AddStatusSchema.safeParse({ name, category: 'todo' })
+
+    expect(result.success).toBe(false)
+    // The copy names the character set, not "letters" — the whole point of the rewording.
+    expect(result.error?.issues.map((i) => i.message).join(' ')).toMatch(/a–z or 0–9/)
   })
 
   // The mirror, and the one with teeth: a leading digit is a LEGITIMATE name that
