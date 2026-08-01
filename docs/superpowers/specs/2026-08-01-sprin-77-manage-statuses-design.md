@@ -110,9 +110,23 @@ creation fails at insert time for every user.
 ### 4.3 Column-level revoke — slug immutability
 
 ```sql
-revoke update (id, project_id, slug, is_initial)
-  on project_statuses from authenticated, anon;
+revoke update on public.project_statuses from authenticated, anon;
+grant  update (name, category, position) on public.project_statuses to authenticated;
 ```
+
+**This shape was arrived at by measurement, and the obvious version of it does not work.**
+The first draft of this spec said `revoke update (id, project_id, slug, is_initial) ... from
+authenticated`. That would have been a **silent no-op**. Postgres does not let a column-level
+`REVOKE` carve a hole in a table-level grant — "REVOKE ... (column) will not revoke a
+table-level privilege" — and `relacl` on this table is
+`authenticated=arwdDxtm/postgres`, i.e. table-wide `w`. Measured on the live database before
+the migration was written; had it shipped, every column would have stayed updatable while the
+migration, the spec and the schema comment all claimed otherwise.
+
+The working form is the inverse: **revoke the table-level privilege outright, then grant back
+only the three columns a client may legitimately write.** `name` for rename, `category` so the
+add form's picker can be corrected, `position` because the reorder function is `security
+invoker` and updates that column as the caller.
 
 This is the guard that makes the UPDATE policy safe to grant. `tickets_status_fk`
 references `project_statuses (project_id, slug)`, and CLAUDE.md's rule is that the fk is
@@ -125,9 +139,18 @@ status's slug would change freely, and the next ticket created on the old slug w
 a foreign-key check with no explanation. Postgres column privileges close it at the right
 layer: the request is rejected before any policy is consulted.
 
-`is_initial` is in the list for the same reason — `project_statuses_one_initial_per_project`
-prevents *two* initial statuses but not *zero*, and zero is a state SPRIN-80 must handle,
-not one this story should let a user reach.
+`is_initial` is excluded from the grant for the same reason —
+`project_statuses_one_initial_per_project` prevents *two* initial statuses but not *zero*, and
+zero is a state SPRIN-80 must handle, not one this story should let a user reach. `id` and
+`project_id` are excluded because moving a status between projects is not an operation this
+product has.
+
+**INSERT is deliberately left unrestricted at the column level.** The three things a client
+could try to smuggle in on an insert are each already refused by something else: a foreign
+`project_id` by the new policy's `WITH CHECK`, a second `is_initial` by the existing partial
+unique index, and a colliding `position` by the deferred unique constraint (checked at the end
+of PostgREST's single-request transaction, so it surfaces as a plain 23505). Adding a column
+grant list there would be ceremony that pins nothing.
 
 ### 4.4 The reorder function
 
