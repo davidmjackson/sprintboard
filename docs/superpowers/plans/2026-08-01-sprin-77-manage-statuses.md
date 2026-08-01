@@ -835,6 +835,69 @@ Re-derive with `npx vitest list --filesOnly | wc -l`.
 
 ---
 
+## Plan corrections, made during execution
+
+Recorded rather than silently edited, because each was a real defect in the plan as written.
+
+**1. Task 4 Step 1 is PULLED FORWARD, to run immediately after Task 1.** The plan sequenced
+the migration (applied before Task 1) ahead of the tests that assert the *old* SELECT-only
+world, so the branch was red from `d2b901a` onward and Tasks 1-3's "Expected: PASS" steps were
+unachievable as written. Found by Task 1's implementer, which re-derived it two independent
+ways (a `git stash` run at the parent commit, and a live `pg_policy` query). **The lesson is
+sequencing: a migration that changes observable behaviour must land in the same task as the
+tests that pin that behaviour, never before them.**
+
+**2. A pre-existing teardown defect, now reachable, is folded into that task.**
+`rls.integration.test.ts`'s `afterAll` asserts `expect(before.data).toHaveLength(4)` **before**
+issuing the cleanup delete. Any failure of that assertion skips the delete and leaks the
+fixture project into the shared database permanently — which has now happened four times. The
+assertion may keep its pre-delete *read*; it must not keep its pre-delete *throw*. This was
+latent long before SPRIN-77 and would have bitten any future teardown assertion.
+
+**3. Two of the four failures were collateral, not independent.** The first test now genuinely
+plants a status row, so the two later `toHaveLength(4)` assertions saw 5. Only two of the four
+were real. Worth stating because "four things are broken" would have produced four fixes.
+
+**4. `database.types.ts` DOES need regenerating for the RPC** — the plan offered "regenerate or
+cast" as if either would do. `Functions` was `{ [_ in never]: never }`, which keys the only
+`supabase.rpc` overload, so the call was a hard type error and no cast was avoidable. Task 1
+regenerated via the Supabase MCP (a read, so it works under `read_only=true`) and proved the
+typing non-vacuous by mutation: a misspelled RPC name gives TS2345, a misspelled parameter
+TS2561.
+
+**5. A legal name can have no legal slug, and the plan made that report `'unknown'`.**
+`slugForName` returns `null` for any name not starting with a letter — but **"2026 Review"** and
+**"3rd Party Blocked"** are entirely plausible status names. `AddStatusSchema` accepts them, the
+write then fails with the not-user-correctable tag, and the form shows generic retry copy for a
+name the user could trivially fix.
+
+**Decision (mine, recorded per the autonomy standing decision):** `slugForName` **prefixes
+`s_`** when the derived slug does not start with a letter, so every name containing at least one
+alphanumeric character yields a legal slug. The slug is machine identity and is never shown to
+a user, so a prefix costs nothing and rejecting the name costs a legitimate one. `null` is then
+reserved for names with **no** alphanumeric character at all (`"!!!"`), and `AddStatusSchema`
+gains a `.refine` so that case surfaces as a **field-level message on the name input** rather
+than as a write failure. Validation belongs at the edge that can explain itself.
+
+**6. `renameProjectStatus` does not trim.** Trimming lives only in the zod schemas, so a direct
+caller sending `'  Done  '` passes the database's `btrim(name) <> ''` check and then collides on
+`lower(btrim(name))` — the right outcome reached by luck rather than design. Trim in the write
+function too, so the property holds for every caller rather than only the form.
+
+**7. `reorderProjectStatuses` reports success on a no-op.** It returns `{ ok: true, value: [] }`
+whenever `error` is null — and a cross-tenant or stale-project call returns exactly
+`error: null, data: []`, because RLS **filters** an UPDATE rather than raising. So a reorder that
+changed nothing reads as success in the UI. Not exploitable today (the app only ever reorders
+the project it is displaying), but it is a textbook green-for-the-wrong-reason shape, and it
+gets worse under SPRIN-75's membership model where "read is broader than write" makes zero-row
+writes routine. **Fix:** treat a returned row count that does not match the requested slug count
+as `'unknown'`. The RPC's `RETURNING` gives the count for free.
+
+**8. The leak was TEN rows, not four.** The throwing assertion sat above **both** cleanup
+deletes, so `B's project` leaked on every occurrence too — five pairs. Corrected here because
+the first count was mine and it was wrong in the direction that matters (understating a
+shared-database leak).
+
 ## Self-Review Notes
 
 - **Spec coverage:** §4 (migration) is applied and verified live, out of this plan's scope by
