@@ -47,6 +47,25 @@ vi.mock('@/lib/supabase', () => ({
   },
 }))
 
+/**
+ * The four project tabs, stubbed down to a sentinel each, plus a `ProjectShell` that is nothing
+ * but the `<Outlet />` its real counterpart renders.
+ *
+ * The subject here is `App`'s ROUTE TABLE and only that: which paths exist, and which element
+ * each one resolves to. Stubbing the tabs is what keeps it that — the real components need
+ * tickets, sprints and statuses plumbed through the shell's context, and a test that supplied
+ * all of it would go red for a dozen reasons that have nothing to do with a route. Every tab's
+ * own behaviour is covered in its own file; none of those files can see this table at all.
+ */
+vi.mock('@/routes/ProjectShell', async () => {
+  const { Outlet } = await import('react-router-dom')
+  return { ProjectShell: () => <Outlet /> }
+})
+vi.mock('@/routes/BoardTab', () => ({ BoardTab: () => <p>the board tab</p> }))
+vi.mock('@/routes/BacklogTab', () => ({ BacklogTab: () => <p>the backlog tab</p> }))
+vi.mock('@/routes/SprintsTab', () => ({ SprintsTab: () => <p>the sprints tab</p> }))
+vi.mock('@/routes/SettingsTab', () => ({ SettingsTab: () => <p>the settings tab</p> }))
+
 const SESSION = { access_token: 't', user: { id: 'u1', email: 'a@example.com' } }
 
 function renderAt(path: string) {
@@ -85,6 +104,39 @@ describe('routing and the auth guard', () => {
     // The authed shell renders (its Log out control), not the login screen.
     expect(await screen.findByRole('button', { name: 'Log out' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Log in' })).not.toBeInTheDocument()
+  })
+
+  /**
+   * THE ROUTE, NOT THE LINK — and against the REAL table, which is the part that was missing.
+   *
+   * `ProjectShell.test.tsx` builds its own `<Routes>` containing a settings route, so it
+   * exercises that fixture and never this file: deleting `<Route path="settings">` from `App`,
+   * or misspelling its path, left all 750 unit tests green while `/projects/:id/settings`
+   * silently fell through to the catch-all redirect and the whole user-facing surface of
+   * SPRIN-77 became unreachable.
+   *
+   * A missing route does not 404 here — `<Route path="*">` sends it to the home landing — so
+   * the assertion pairs the tab's sentinel WITH the absence of that landing. The sentinel alone
+   * would be enough today, but the pairing is what names the actual failure mode.
+   *
+   * All four tabs, not only Settings: the blind spot was never specific to the new route (the
+   * pre-existing `sprints` route survived deletion in exactly the same way), and covering the
+   * other three costs one table row each.
+   */
+  it.each([
+    ['board', 'the board tab'],
+    ['backlog', 'the backlog tab'],
+    ['sprints', 'the sprints tab'],
+    ['settings', 'the settings tab'],
+  ])('resolves /projects/:projectId/%s to its tab', async (tab, sentinel) => {
+    h.state.session = SESSION
+    renderAt(`/projects/p1/${tab}`)
+
+    expect(await screen.findByText(sentinel)).toBeInTheDocument()
+    // `ProjectsHome`'s heading — what the catch-all redirect lands on. Its ABSENCE is the
+    // second half of the evidence: the sentinel says the tab rendered, this says the router
+    // did not quietly bounce the URL somewhere that happens to render nothing recognisable.
+    expect(screen.queryByRole('heading', { name: 'Sprintboard' })).not.toBeInTheDocument()
   })
 
   it('logs out: clears the session and returns to the login screen', async () => {

@@ -240,8 +240,10 @@ describe('ProjectShell', () => {
     expect(screen.getByRole('heading', { name: /Apple/ })).toBeInTheDocument()
   })
 
-  // The route itself, not just the link: a `NavLink` to a path with no `<Route>` renders a
-  // dead link that navigates to the shell's index redirect and lands back on the board.
+  // The LINK, and the shell's ability to render a settings tab underneath it — NOT the app's
+  // route table. `renderShell` above builds its own `<Routes>`, settings route included, so
+  // nothing in this file can observe `src/App.tsx`: the real `<Route path="settings">` was
+  // deletable with every test here still green. `App.test.tsx` covers the real table.
   it('opens the Settings tab from its nav link', async () => {
     const user = userEvent.setup()
     renderShell('/projects/p1')
