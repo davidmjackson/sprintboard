@@ -33,6 +33,19 @@ import { FormRootError, selectClass, SubmitButton } from './form-primitives'
 const DUPLICATE_NAME = 'A status with that name already exists in this project.'
 
 /**
+ * What a `'stale'` write result means in words, and why it is not the generic retry copy.
+ *
+ * A position collision happens when this tab's list of statuses is older than the database's —
+ * another tab (or another window) added a status, so `max(position)+1` computed here is a
+ * position that is already taken. Retrying the same submit reproduces it exactly, forever;
+ * reloading is the only thing that fixes it, so that is what the sentence has to say. Reported
+ * at FORM level rather than on the name field: the name was never the problem, and a message
+ * under an input invites the user to edit the one thing that cannot help.
+ */
+const STALE_LIST =
+  'This list of statuses is out of date — refresh the page and try adding it again.'
+
+/**
  * One status, with its name editable in place and the two reorder controls.
  *
  * The rename call lives HERE rather than in the parent so a failed rename can say so on the
@@ -66,10 +79,14 @@ function StatusRow({
       setError(parsed.error.issues[0]?.message ?? GENERIC_CREATE_ERROR)
       return
     }
+    // Cleared BEFORE the no-op check, not after it. Every commit that reaches this function is
+    // a fresh attempt, and the previous attempt's message describes none of them — a stale
+    // 'that name already exists' survived a no-op commit and went on accusing a name the user
+    // had since reverted, about a request that was never sent.
+    setError(null)
     // The trim is the schema's, so `'Triage '` on a status called `Triage` is a no-op here as
     // well as in the database. `renameProjectStatus` trims too; this only avoids the request.
     if (parsed.data.name === status.name) return
-    setError(null)
     const result = await renameProjectStatus(status.id, parsed.data.name)
     if (!result.ok) {
       setError(result.error === 'duplicate' ? DUPLICATE_NAME : GENERIC_CREATE_ERROR)
@@ -168,7 +185,9 @@ function AddStatusForm({
         form.setError('name', { message: DUPLICATE_NAME })
         return
       }
-      form.setError('root', { message: GENERIC_CREATE_ERROR })
+      form.setError('root', {
+        message: result.error === 'stale' ? STALE_LIST : GENERIC_CREATE_ERROR,
+      })
       return
     }
 

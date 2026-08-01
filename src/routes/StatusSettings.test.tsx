@@ -184,6 +184,31 @@ describe('StatusSettings', () => {
       expect(onCreated).not.toHaveBeenCalled()
     })
 
+    /**
+     * A position collision is a STALE LIST, not a duplicate name — two tabs on one project both
+     * compute the same `max(position)+1` from a list nothing refetches. Told "that name already
+     * exists", the user retries the same unique name and gets the identical result forever.
+     *
+     * Asserted three ways, because any one alone would pass on the old behaviour: the copy names
+     * the actual remedy, it is NOT the duplicate-name sentence, and it is a page-level banner
+     * rather than a message on the name field — editing that field cannot fix this.
+     */
+    it('tells the user to refresh when the list is stale, not that the name is taken', async () => {
+      const u = userEvent.setup()
+      mockCreate.mockResolvedValue({ ok: false, error: 'stale' })
+      const { onCreated } = renderSettings()
+
+      const field = screen.getByRole('textbox', { name: 'Name' })
+      await u.type(field, 'Blocked')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(/refresh/i)
+      expect(alert).not.toHaveTextContent(/already exists/i)
+      expect(fieldMessage(field)).not.toMatch(/already/i)
+      expect(onCreated).not.toHaveBeenCalled()
+    })
+
     it('shows the generic retry copy for a failure the user cannot correct', async () => {
       const u = userEvent.setup()
       mockCreate.mockResolvedValue({ ok: false, error: 'unknown' })
@@ -254,6 +279,34 @@ describe('StatusSettings', () => {
       await u.type(screen.getByRole('textbox', { name: /building/i }), '{Enter}')
 
       expect(mockRename).not.toHaveBeenCalled()
+    })
+
+    /**
+     * A failed rename's message must not outlive the attempt it describes.
+     *
+     * The no-op path is the one that leaked it: the row's own trim guard returns BEFORE the
+     * error is cleared, so the row went on claiming "a status with that name already exists"
+     * about a commit that was never sent and could not have collided with anything. Reached
+     * through trailing whitespace because that is the only commit `EditableText` forwards and
+     * the row then declines — an untouched field never reaches this code at all.
+     */
+    it('clears a failed rename’s message when the next commit is a no-op', async () => {
+      const u = userEvent.setup()
+      mockRename.mockResolvedValue({ ok: false, error: 'duplicate' })
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, 'Triage{Enter}')
+      expect(await screen.findByRole('alert')).toHaveTextContent(/already/i)
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      await u.type(screen.getByRole('textbox', { name: /building/i }), '   {Enter}')
+
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+      // And it really was a no-op — the message went away without a second write.
+      expect(mockRename).toHaveBeenCalledOnce()
     })
 
     // Where the row's OWN guard is the only one that can fire. `EditableText` compares the raw
