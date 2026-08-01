@@ -142,10 +142,26 @@ describe('slugForName', () => {
     expect(slugForName('abcdefghijklmnopqrstuvwxyzabc def')).not.toMatch(/_$/)
   })
 
-  it('returns null when the name cannot produce a slug starting with a letter', () => {
-    expect(slugForName('42')).toBeNull()
+  // "2026 Review" and "3rd Party Blocked" are entirely plausible status names, and the DB's
+  // slug_format check wants a leading letter. The slug is machine identity and is NEVER shown
+  // to a user, so a prefix costs nothing while rejecting the name costs a legitimate one.
+  it('prefixes s_ when the derived slug would not start with a letter', () => {
+    expect(slugForName('2026 Review')).toBe('s_2026_review')
+    expect(slugForName('3rd Party Blocked')).toBe('s_3rd_party_blocked')
+  })
+
+  // The prefix must fit INSIDE the 30 the check allows, not push the slug past it.
+  it('keeps the s_ prefix inside the 30-character limit', () => {
+    const slug = slugForName(`9${'a'.repeat(50)}`)
+    expect(slug).toHaveLength(30)
+    expect(slug).toMatch(/^s_9a+$/)
+  })
+
+  // null is now reserved for the ONE case a prefix cannot rescue: nothing to prefix.
+  it('returns null only when the name has no alphanumeric character at all', () => {
     expect(slugForName('!!!')).toBeNull()
     expect(slugForName('   ')).toBeNull()
+    expect(slugForName('')).toBeNull()
   })
 })
 
@@ -167,8 +183,13 @@ describe('uniqueSlugForName', () => {
     expect(slug!.length).toBeLessThanOrEqual(30)
   })
 
+  // The prefixed slug is a real slug like any other, so it collides and suffixes like one.
+  it('suffixes a prefixed slug too when it is already taken', () => {
+    expect(uniqueSlugForName('2026 Review', ['s_2026_review'])).toBe('s_2026_review_2')
+  })
+
   it('returns null when the name has no derivable slug at all', () => {
-    expect(uniqueSlugForName('42', [])).toBeNull()
+    expect(uniqueSlugForName('!!!', [])).toBeNull()
   })
 })
 
@@ -286,12 +307,39 @@ describe('createProjectStatus', () => {
   it('fails WITHOUT a request when the name yields no legal slug', async () => {
     const result = await createProjectStatus({
       projectId: 'p1',
-      name: '42',
+      name: '!!!',
       category: 'todo',
       existing,
     })
     expect(result).toEqual({ ok: false, error: 'unknown' })
     expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  // A name starting with a digit is legitimate and must REACH the database, not be refused
+  // client-side: `slugForName` prefixes it rather than returning null.
+  it('sends a request for a name that starts with a digit', async () => {
+    single.mockResolvedValue({ data: { slug: 's_2026_review' }, error: null })
+
+    await createProjectStatus({
+      projectId: 'p1',
+      name: '2026 Review',
+      category: 'todo',
+      existing,
+    })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ slug: 's_2026_review' }))
+  })
+
+  // Trimming lives in the zod schema, but the schema is only the FORM's edge. A direct caller
+  // sending '  QA  ' would otherwise store a name whose surrounding space the DB's
+  // `btrim(name) <> ''` check tolerates and whose `lower(btrim(name))` unique index ignores —
+  // the right outcome reached by luck. The property has to hold for every caller.
+  it('trims the name it sends', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+
+    await createProjectStatus({ projectId: 'p1', name: '  QA  ', category: 'todo', existing })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ name: 'QA' }))
   })
 })
 
@@ -329,11 +377,28 @@ describe('renameProjectStatus', () => {
       error: 'unknown',
     })
   })
+
+  // Same reasoning as createProjectStatus's trim test: '  Done  ' passes the DB's
+  // `btrim(name) <> ''` check and then collides with 'Done' on the `lower(btrim(name))` unique
+  // index — a correct outcome the caller reached by luck rather than by design.
+  it('trims the name it sends', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa', name: 'In QA' }, error: null })
+
+    await renameProjectStatus('s1', '  In QA  ')
+
+    expect(update).toHaveBeenCalledWith({ name: 'In QA' })
+  })
 })
 
 describe('reorderProjectStatuses', () => {
+  /** What the RPC's RETURNING gives back for a reorder that actually touched every row. */
+  const reordered = [
+    { slug: 'done', position: 1 },
+    { slug: 'todo', position: 2 },
+  ]
+
   it('calls the RPC with the COMPLETE ordered slug list', async () => {
-    vi.mocked(supabase.rpc).mockResolvedValue({ data: [], error: null } as never)
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: reordered, error: null } as never)
 
     await reorderProjectStatuses('p1', ['done', 'todo'])
 
@@ -347,12 +412,59 @@ describe('reorderProjectStatuses', () => {
   // INITIALLY DEFERRED and PostgREST gives each request its own transaction, so N separate
   // `PATCH position=` calls collide on the very first swap.
   it('issues exactly one request and never a PostgREST table write', async () => {
-    vi.mocked(supabase.rpc).mockResolvedValue({ data: [], error: null } as never)
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: reordered, error: null } as never)
 
     await reorderProjectStatuses('p1', ['done', 'todo'])
 
     expect(supabase.rpc).toHaveBeenCalledTimes(1)
     expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  // The green-for-the-wrong-reason shape. RLS FILTERS an UPDATE rather than raising it, so a
+  // cross-tenant, stale or unknown-slug reorder comes back as exactly `error: null, data: []`
+  // — indistinguishable from success unless the row COUNT is checked. The RPC's RETURNING
+  // supplies that count for free.
+  it('reports unknown when the RPC touched FEWER rows than the slugs asked for', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: [], error: null } as never)
+
+    await expect(reorderProjectStatuses('p1', ['done', 'todo'])).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
+  })
+
+  it('reports unknown on a partial reorder — one row of two moved', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({
+      data: [{ slug: 'done', position: 1 }],
+      error: null,
+    } as never)
+
+    await expect(reorderProjectStatuses('p1', ['done', 'todo'])).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
+  })
+
+  // The other side of the count check: more rows back than slugs sent means the RPC did
+  // something other than what was asked, which is equally not a success.
+  it('reports unknown when the RPC touched MORE rows than the slugs asked for', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: reordered, error: null } as never)
+
+    await expect(reorderProjectStatuses('p1', ['done'])).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
+  })
+
+  // `data: null` with no error is the same no-op in a different disguise, and it must not
+  // sail through the `?? []` into a success with an empty value.
+  it('reports unknown when the RPC returns null data with no error', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: null, error: null } as never)
+
+    await expect(reorderProjectStatuses('p1', ['done'])).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
   })
 
   it("returns the RPC's own post-update rows, not a guess", async () => {

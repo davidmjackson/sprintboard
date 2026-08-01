@@ -40,6 +40,29 @@ describe('AddStatusSchema', () => {
       expect(AddStatusSchema.safeParse({ name: 'QA', category }).success).toBe(true)
     }
   })
+
+  // A name with no alphanumeric character has no derivable slug, so the write would fail with
+  // the not-user-correctable `unknown` tag and the form would show generic retry copy for a
+  // name the user could trivially fix. Validation belongs at the edge that can explain itself.
+  it('rejects a name with no derivable slug, ON THE NAME FIELD', () => {
+    const result = AddStatusSchema.safeParse({ name: '!!!', category: 'todo' })
+
+    expect(result.success).toBe(false)
+    // The path is what makes it a FIELD-level message rather than a form-level one — a
+    // form-level issue would render as the same generic banner this rule exists to avoid.
+    expect(result.error?.issues.map((i) => i.path)).toContainEqual(['name'])
+    expect(result.error?.issues.map((i) => i.message).join(' ')).toMatch(/letter or number/i)
+  })
+
+  // The mirror, and the one with teeth: a leading digit is a LEGITIMATE name that
+  // `slugForName` now prefixes rather than refusing. Rejecting it here would re-create the
+  // defect one layer up.
+  it('accepts a name that starts with a digit', () => {
+    expect(AddStatusSchema.safeParse({ name: '2026 Review', category: 'todo' }).success).toBe(true)
+    expect(AddStatusSchema.safeParse({ name: '3rd Party Blocked', category: 'todo' }).success).toBe(
+      true,
+    )
+  })
 })
 
 describe('RenameStatusSchema', () => {
@@ -53,5 +76,13 @@ describe('RenameStatusSchema', () => {
   it('does not carry a category through', () => {
     const parsed = RenameStatusSchema.parse({ name: 'In QA', category: 'done' })
     expect(parsed).toEqual({ name: 'In QA' })
+  })
+
+  // Deliberately NOT Add's slug rule. A rename never re-derives the slug — that is the whole
+  // point of the name/slug division — so a name with no derivable slug is perfectly storable
+  // on an existing row. Copying Add's `.refine` here would refuse a rename the database
+  // accepts and the foreign key never notices.
+  it('accepts a name with no derivable slug, because a rename never touches the slug', () => {
+    expect(RenameStatusSchema.safeParse({ name: '!!!' }).success).toBe(true)
   })
 })

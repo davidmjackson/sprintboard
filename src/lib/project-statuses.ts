@@ -71,24 +71,43 @@ const SLUG_MAX = 30
 
 const SLUG_FORMAT = /^[a-z][a-z0-9_]{0,29}$/
 
+/** What the check's leading `[a-z]` demands, and the prefix that supplies it when a name
+ *  cannot. `s_` is arbitrary but stable: two characters, always legal, never user-visible. */
+const LEADING_LETTER = /^[a-z]/
+const SLUG_PREFIX = 's_'
+
 /**
  * The machine identity derived from a display name. Users rename `name`, never `slug` — the
  * same division `projects.key` already uses, and the reason a rename never rewrites a ticket
  * row: `tickets_status_fk` references (project_id, slug).
  *
- * Returns `null` rather than a best-effort string when the name cannot produce a legal slug
- * (it starts with a digit, or is all punctuation). The caller reports a field error; sending
- * it would earn a constraint violation naming a column the user has never seen.
+ * A name whose derived slug would not start with a letter is PREFIXED, not refused.
+ * "2026 Review" and "3rd Party Blocked" are entirely plausible status names, and the earlier
+ * version returned `null` for both — so the schema accepted the name, the write then failed
+ * with the not-user-correctable `unknown` tag, and the form showed generic retry copy for a
+ * name the user could trivially fix. The slug is machine identity and is never shown to a
+ * user, so the prefix costs nothing while refusing the name costs a legitimate one.
  *
- * The truncate happens BEFORE the edge strip, so a 30-character cut landing mid-underscore
- * cannot leave a trailing `_` and fail the check it was trying to satisfy.
+ * `null` is therefore reserved for the one case a prefix cannot rescue: a name with NO
+ * alphanumeric character at all ("!!!"), where there is nothing to prefix. `AddStatusSchema`
+ * refines on exactly this so it surfaces as a field-level message rather than a write failure.
+ *
+ * The prefix is applied BEFORE the truncate, so it fits inside the check's 30 characters
+ * rather than pushing the slug past them; and the truncate happens BEFORE the trailing-edge
+ * strip, so a 30-character cut landing mid-underscore cannot leave a trailing `_` and fail
+ * the check it was trying to satisfy.
  */
 export function slugForName(name: string): string | null {
-  const slug = name
+  const core = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
-    .slice(0, SLUG_MAX)
     .replace(/^_+|_+$/g, '')
+
+  if (core === '') return null
+
+  const slug = (LEADING_LETTER.test(core) ? core : `${SLUG_PREFIX}${core}`)
+    .slice(0, SLUG_MAX)
+    .replace(/_+$/, '')
 
   return SLUG_FORMAT.test(slug) ? slug : null
 }
@@ -156,6 +175,10 @@ function writeError(code: string | undefined): StatusWriteError {
  *
  * ONE object parameter, not four positional ones: T4 caps parameters at 4, and an object is
  * this repo's existing idiom for a write's inputs (`createProject`, `createSprint`).
+ *
+ * The name is trimmed HERE and not only in `AddStatusSchema`, because the schema is the
+ * form's edge and this function's contract has to hold for every caller. See
+ * `renameProjectStatus` for the failure mode that motivated it.
  */
 export async function createProjectStatus(input: {
   projectId: string
@@ -163,8 +186,9 @@ export async function createProjectStatus(input: {
   category: StatusCategory
   existing: readonly ProjectStatus[]
 }): Promise<StatusWriteResult<ProjectStatus>> {
+  const name = input.name.trim()
   const slug = uniqueSlugForName(
-    input.name,
+    name,
     input.existing.map((s) => s.slug),
   )
   // No legal slug means no request at all. Sending one would earn a check-constraint
@@ -182,7 +206,7 @@ export async function createProjectStatus(input: {
     .insert({
       project_id: input.projectId,
       slug,
-      name: input.name,
+      name,
       category: input.category,
       position,
       // Explicit, not left to the column default: that default is what SPRIN-80 changes, and
@@ -201,6 +225,12 @@ export async function createProjectStatus(input: {
  * tidiness: `authenticated` holds UPDATE on exactly (name, category, position), so a patch
  * touching `slug` is refused by Postgres before any policy is consulted. Sending only what
  * changes keeps the request inside that grant.
+ *
+ * The trim is here rather than only in `RenameStatusSchema` because the schema binds the FORM,
+ * not this function. A direct caller sending `'  Done  '` clears the database's
+ * `btrim(name) <> ''` check and then collides with `'Done'` on the `lower(btrim(name))` unique
+ * index — the right outcome, reached by luck. Trimming makes it hold by construction, for
+ * every caller, and makes the stored name match what the uniqueness rule compares.
  */
 export async function renameProjectStatus(
   id: string,
@@ -208,7 +238,7 @@ export async function renameProjectStatus(
 ): Promise<StatusWriteResult<ProjectStatus>> {
   const { data, error } = await supabase
     .from('project_statuses')
-    .update({ name })
+    .update({ name: name.trim() })
     .eq('id', id)
     .select()
     .single()
@@ -231,6 +261,15 @@ export async function renameProjectStatus(
  *
  * A failure is never user-correctable here — the caller chose no text — so there is no
  * `duplicate` tag to reach, and every error collapses to `unknown`.
+ *
+ * **A null error is not success.** RLS FILTERS an UPDATE rather than raising on it, so a
+ * cross-tenant project id, a stale one, or a slug the project does not have comes back as
+ * exactly `error: null, data: []` — a reorder that changed nothing, indistinguishable from one
+ * that changed everything unless the row COUNT is checked. The RPC's `RETURNING` supplies that
+ * count for free, and the requested list is complete by contract, so "as many rows back as
+ * slugs sent" is the whole test. Not exploitable today (the app only reorders the project it
+ * is displaying), but it gets worse under SPRIN-75's membership model, where read being
+ * broader than write makes zero-row writes routine.
  */
 export async function reorderProjectStatuses(
   projectId: string,
@@ -242,5 +281,8 @@ export async function reorderProjectStatuses(
   })
 
   if (error) return { ok: false, error: 'unknown' }
-  return { ok: true, value: (data ?? []) as ProjectStatus[] }
+
+  const rows = (data ?? []) as ProjectStatus[]
+  if (rows.length !== orderedSlugs.length) return { ok: false, error: 'unknown' }
+  return { ok: true, value: rows }
 }
