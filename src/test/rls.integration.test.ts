@@ -22,6 +22,27 @@ function runKey(): string {
   return `T${pick()}${pick()}`
 }
 
+/**
+ * Awaits a PostgREST call and turns a THROWN error into the `{ data, error }` shape
+ * the call would otherwise have returned. For teardown only.
+ *
+ * supabase-js reports API failures in `error` rather than by throwing, but the
+ * transport underneath it can still reject — CLAUDE.md documents an
+ * `AuthRetryableFetchError` / `status: 0` / `ECONNRESET` flake on this very database.
+ * In a teardown that is not a reported failure but a LEAK: the throw propagates out
+ * of the hook, every later `delete` is skipped, and the fixtures it would have
+ * removed stay in the shared database with nothing left that can reach them.
+ * Wrapping each step lets the hook complete its cleanup and then report what went
+ * wrong, instead of choosing one over the other.
+ */
+async function settled<T>(call: PromiseLike<T>): Promise<T | { data: null; error: Error }> {
+  try {
+    return await call
+  } catch (cause) {
+    return { data: null, error: cause instanceof Error ? cause : new Error(String(cause)) }
+  }
+}
+
 describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   let a: SupabaseClient<Database>
   let b: SupabaseClient<Database>
@@ -118,30 +139,53 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // post-teardown read as A returns [] whether the statuses cascaded away or
       // were stranded. adminClient() bypasses RLS, so it can see the difference.
       const before = hasServiceRoleKey
-        ? await adminClient().from('project_statuses').select('id').eq('project_id', projectA)
+        ? await settled(
+            adminClient().from('project_statuses').select('id').eq('project_id', projectA),
+          )
         : null
-      if (before) expect(before.data).toHaveLength(4)
 
-      // Owner-scoped RLS means each client can only delete its own rows — which
-      // is exactly the guarantee under test, so cleanup is also a final
-      // assertion. A silent zero-row delete here would leak a project + sprint +
-      // tickets + counter row into the shared database on every run, forever.
-      const { data, error } = await a.from('projects').delete().eq('id', projectA).select()
-      expect(error).toBeNull()
-      expect(data).toHaveLength(1)
+      // EVERY DELETE RUNS BEFORE THE FIRST ASSERTION, and that ordering is the whole
+      // point of this shape. This hook used to `expect(before.data).toHaveLength(4)`
+      // on the line above. When SPRIN-77 made statuses insertable and a test planted
+      // a fifth, that expect threw — and the deletes below never ran. Each such run
+      // stranded a project (plus its sprint, tickets, counter and statuses) and B's
+      // project in the SHARED live database, where nothing can reach them afterwards:
+      // project_statuses has no DELETE policy at all. Five orphaned pairs accumulated
+      // before anyone looked. An assertion in teardown is a REPORT; the delete is an
+      // OBLIGATION, and the obligation goes first.
+      //
+      // Owner-scoped RLS means each client can only delete its own rows — which is
+      // exactly the guarantee under test, so cleanup is also a final assertion. A
+      // silent zero-row delete is still a leak, so it is still asserted; just later.
+      const gone = await settled(a.from('projects').delete().eq('id', projectA).select())
+      const orphans = hasServiceRoleKey
+        ? await settled(
+            adminClient().from('project_statuses').select('id').eq('project_id', projectA),
+          )
+        : null
+      const bGone = projectB
+        ? await settled(b.from('projects').delete().eq('id', projectB).select())
+        : null
+
+      expect(gone.error).toBeNull()
+      expect(gone.data).toHaveLength(1)
+
+      // "There were rows before, and none after" — the honest property, and the one
+      // that survives SPRIN-77. NOT an exact count: an owner can add statuses now, so
+      // a hard-coded 4 is a standing invitation to repeat the leak described above.
+      // The seeded defaults are a floor, which still fails if seeding never ran.
+      if (before) {
+        expect(before.error).toBeNull()
+        expect(before.data!.length).toBeGreaterThanOrEqual(DEFAULT_PROJECT_STATUSES.length)
+      }
 
       // The deferred fk did not block the cascade, and nothing was left behind.
-      if (hasServiceRoleKey) {
-        const orphans = await adminClient()
-          .from('project_statuses')
-          .select('id')
-          .eq('project_id', projectA)
+      if (orphans) {
         expect(orphans.error).toBeNull()
         expect(orphans.data).toEqual([])
       }
 
-      if (projectB) {
-        const bGone = await b.from('projects').delete().eq('id', projectB).select()
+      if (bGone) {
         expect(bGone.error).toBeNull()
         expect(bGone.data).toHaveLength(1)
       }
@@ -389,7 +433,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
   })
 
-  describe('the status vocabulary is server-owned (SPRIN-79)', () => {
+  describe('the status vocabulary is per-project and owner-scoped', () => {
     /**
      * These two are the tests that kill the mutation none of the others do.
      *
@@ -417,63 +461,6 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // Doubles as the data-plane identity control for the new table, and proves
       // the seeding trigger fired for B's project too — not just A's.
       expect(data!.filter((r) => r.project_id === projectB)).toHaveLength(4)
-    })
-
-    /**
-     * The tests that pin the SELECT-only decision, and they are EXPECTED to be
-     * changed by SPRIN-77 — consciously, together with the policy and the
-     * migration's own `cmd = 'SELECT'` post-condition.
-     *
-     * Until then this is what actually replaces tickets_status_check. The fk cannot
-     * do it: the fk only says a status must EXIST for the project, so a client that
-     * can add rows to its own vocabulary can satisfy the fk with anything it likes.
-     * The board still renders four hard-coded columns, so such a ticket would render
-     * in no column and vanish. The policy is the only thing standing there.
-     */
-    it('even the owner cannot INSERT a status: the vocabulary is not client-writable', async () => {
-      const { data, error } = await a
-        .from('project_statuses')
-        .insert({ project_id: projectA, slug: 'planted', name: 'Planted', position: 9 })
-        .select()
-      expect(data).toBeNull()
-      // OBSERVED against the live database: statuses_owner_read is FOR SELECT, so no
-      // INSERT policy exists and RLS denies by default with 42501. INSERT has no
-      // USING clause to filter against, which is why this raises rather than
-      // silently affecting zero rows the way the UPDATE and DELETE cases do.
-      expect(error!.code).toBe('42501')
-
-      const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
-      expect(asA.data).toHaveLength(4) // nothing landed
-    })
-
-    it("B cannot INSERT a status into A's project either", async () => {
-      const { data, error } = await b
-        .from('project_statuses')
-        .insert({ project_id: projectA, slug: 'planted', name: 'Planted', position: 9 })
-        .select()
-      expect(data).toBeNull()
-      expect(error!.code).toBe('42501')
-
-      const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
-      expect(asA.data).toHaveLength(4)
-    })
-
-    it('even the owner cannot rename or delete a status', async () => {
-      // No UPDATE or DELETE policy exists, so unlike INSERT these do not raise —
-      // there IS a USING clause to evaluate and it is absent, so the rows are simply
-      // invisible to the command. Counting rows is the only honest assertion.
-      const renamed = await a
-        .from('project_statuses')
-        .update({ name: 'Renamed' })
-        .eq('id', statusA)
-        .select()
-      const deleted = await a.from('project_statuses').delete().eq('id', statusA).select()
-      expect(renamed.data).toEqual([])
-      expect(deleted.data).toEqual([])
-
-      // Positive control: the row is untouched, and still called what it was.
-      const asA = await a.from('project_statuses').select('name').eq('id', statusA)
-      expect(asA.data).toEqual([{ name: 'To Do' }])
     })
 
     /**
@@ -528,6 +515,367 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const gone = await a.from('projects').delete().eq('id', proj!.id).select()
       expect(gone.error).toBeNull()
       expect(gone.data).toHaveLength(1)
+    })
+  })
+
+  /**
+   * SPRIN-77 opened `project_statuses` to the owner, and the shape of what it opened
+   * is the thing worth pinning. The migration replaced ONE select-only policy with
+   * THREE — select, insert, update — and deliberately no DELETE, because deleting a
+   * status strands the tickets sitting on it and deleting `todo` permanently breaks
+   * ticket creation (tickets.status's default is still the bare literal 'todo').
+   * SPRIN-80 owns deletion. Collapsing those three back into one `for all` would look
+   * like a tidy-up and would silently reopen that hole; the DELETE test below is what
+   * goes red when someone tries.
+   *
+   * UPDATE is narrowed a second time, by PRIVILEGE rather than by policy: the
+   * table-level grant is revoked and re-granted on (name, category, position) alone,
+   * so `slug` — the fk target of tickets_status_fk — and `is_initial` cannot move.
+   * A policy cannot express that, so no policy test can catch its loss.
+   *
+   * WHY ITS OWN PROJECTS. Every test here writes, and there is no DELETE policy, so a
+   * status planted in the shared fixture project could never be removed again. Two
+   * throwaway projects are created here and dropped whole in afterAll — the cascade
+   * is the only way these rows can leave the database. It also keeps `projectA` and
+   * `projectB` on exactly their seeded four, which is what the cross-tenant read tests
+   * above count.
+   *
+   * The tests run IN ORDER and depend on each other: the first plants `qa`, the rest
+   * rename it, refuse to move it, refuse to delete it, and reorder around it. That
+   * coupling is deliberate — the pairing is the evidence. A refusal only means
+   * something next to a success on the same row.
+   */
+  describe('the owner can add, rename and reorder statuses (SPRIN-77)', () => {
+    let wp1: string
+    let wp2: string
+
+    async function throwawayProject(name: string): Promise<string> {
+      const { data, error } = await a
+        .from('projects')
+        .insert({ owner_id: userAId, name, key: runKey() })
+        .select('id')
+        .single()
+      if (error) throw new Error(`Fixture: could not create "${name}": ${error.message}`)
+      return data.id
+    }
+
+    beforeAll(async () => {
+      wp1 = await throwawayProject('Status writes')
+      wp2 = await throwawayProject('Status writes, second project')
+    }, 30_000)
+
+    afterAll(async () => {
+      // DELETE FIRST, ASSERT AFTERWARDS — the same rule as the suite-level teardown,
+      // and it bites harder here: these two projects are the only reachable handle on
+      // every status this block writes. project_statuses has no DELETE policy, so a
+      // skipped cascade leaves rows that no client of this application can ever
+      // remove.
+      const one = wp1 ? await settled(a.from('projects').delete().eq('id', wp1).select()) : null
+      const two = wp2 ? await settled(a.from('projects').delete().eq('id', wp2).select()) : null
+
+      expect(one?.error).toBeNull()
+      expect(one?.data).toHaveLength(1)
+      expect(two?.error).toBeNull()
+      expect(two?.data).toHaveLength(1)
+    }, 30_000)
+
+    /**
+     * THE POSITIVE CONTROL, and it comes first on purpose. Every refusal below is
+     * only evidence of a guard if this passes: a broken fixture, a revoked INSERT
+     * grant or a mis-scoped policy would make all of them pass while proving nothing.
+     */
+    it('the owner CAN insert a status into their own project', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp1,
+          slug: 'qa',
+          name: 'Ready for QA',
+          category: 'in_progress',
+          position: 5,
+        })
+        .select()
+        .single()
+      expect(error).toBeNull()
+      expect(data!.slug).toBe('qa')
+      // The column default, not something the caller asked for. is_initial is not
+      // client-writable at all (see below), so a new status can never steal it.
+      expect(data!.is_initial).toBe(false)
+
+      const rows = await a.from('project_statuses').select('slug').eq('project_id', wp1)
+      expect(rows.data).toHaveLength(DEFAULT_PROJECT_STATUSES.length + 1)
+    })
+
+    /**
+     * WITH CHECK, not USING. statuses_owner_insert correlates the row's project_id to
+     * a project the caller owns; drop that correlation and any authenticated user can
+     * plant a column on anyone's board. INSERT has no USING clause to filter against,
+     * which is why this RAISES 42501 rather than quietly affecting zero rows the way
+     * the DELETE case does.
+     */
+    it("a stranger cannot insert a status into someone else's project", async () => {
+      const { data, error } = await b
+        .from('project_statuses')
+        .insert({ project_id: wp1, slug: 'planted', name: 'Planted by B', position: 9 })
+        .select()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: statuses_owner_insert's WITH CHECK.
+
+      const asA = await a.from('project_statuses').select('slug').eq('project_id', wp1)
+      expect(asA.data!.map((r) => r.slug)).not.toContain('planted')
+      expect(asA.data).toHaveLength(DEFAULT_PROJECT_STATUSES.length + 1) // nothing landed
+    })
+
+    /**
+     * PAIRED ON THE SAME ROW, and that pairing is the entire argument. The rename is
+     * what proves the slug refusal comes from the column privilege rather than from a
+     * broken fixture, a missing UPDATE policy or a row the caller cannot see — all of
+     * which would refuse both halves identically.
+     *
+     * The refusal is a PRIVILEGE, and the obvious way to write the migration was a
+     * no-op: `revoke update (slug)` cannot carve a hole in a table-level grant, so the
+     * table-level UPDATE had to be revoked outright and (name, category, position)
+     * granted back. This test is the client-side witness to that.
+     */
+    it('the owner can rename a status but cannot move its slug', async () => {
+      const renamed = await a
+        .from('project_statuses')
+        .update({ name: 'In QA' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(renamed.error).toBeNull()
+      expect(renamed.data).toHaveLength(1)
+      expect(renamed.data![0]!.name).toBe('In QA')
+
+      const moved = await a
+        .from('project_statuses')
+        .update({ slug: 'qa2' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(moved.data).toBeNull()
+      expect(moved.error!.code).toBe('42501') // OBSERVED: no UPDATE privilege on slug.
+
+      // The row kept its new name AND its old slug. Asserting both together is what
+      // makes this a column restriction rather than "the update failed somehow".
+      const after = await a
+        .from('project_statuses')
+        .select('slug, name')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(after.data).toEqual([{ slug: 'qa', name: 'In QA' }])
+    })
+
+    /**
+     * Deliberately clears is_initial on `todo` rather than setting it on `qa`: setting
+     * it would ALSO violate project_statuses_one_initial_per_project, so the test
+     * would stay green through a widened column grant. Clearing it is legal in every
+     * way except the privilege, so the privilege is the only thing that can refuse it.
+     * A project with zero initial statuses is SPRIN-80's state to reach deliberately,
+     * not one an owner can stumble into.
+     */
+    it('the owner cannot change is_initial', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .update({ is_initial: false })
+        .eq('project_id', wp1)
+        .eq('slug', 'todo')
+        .select()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: no UPDATE privilege on is_initial.
+
+      const initial = await a
+        .from('project_statuses')
+        .select('slug')
+        .eq('project_id', wp1)
+        .eq('is_initial', true)
+      expect(initial.data).toEqual([{ slug: 'todo' }])
+    })
+
+    /**
+     * THE ONE THAT KEEPS SPRIN-80'S DOOR SHUT. If anyone ever "simplifies" the three
+     * policies into a single `for all`, this is what goes red.
+     *
+     * A DELETE matching zero rows is NOT an error — there is no DELETE policy, so RLS
+     * filters the row out of the command's view and Postgres reports a successful
+     * delete of nothing. `expect(error).toBeNull()` therefore proves nothing here and
+     * `expect(data).toEqual([])` proves only that nothing came back. Re-selecting the
+     * whole vocabulary and finding every row still in place is the only honest
+     * evidence, and it is why the assertion below names all five slugs in order.
+     */
+    it('nobody can delete a status — not a stranger, and not even the owner', async () => {
+      const asOwner = await a
+        .from('project_statuses')
+        .delete()
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asOwner.error).toBeNull() // it does not raise...
+      expect(asOwner.data).toEqual([]) // ...it filters.
+
+      const asStranger = await b
+        .from('project_statuses')
+        .delete()
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asStranger.error).toBeNull()
+      expect(asStranger.data).toEqual([])
+
+      const survivors = await a
+        .from('project_statuses')
+        .select('slug')
+        .eq('project_id', wp1)
+        .order('position')
+      expect(survivors.data!.map((r) => r.slug)).toEqual([
+        ...DEFAULT_PROJECT_STATUSES.map((s) => s.slug),
+        'qa',
+      ])
+    })
+
+    /**
+     * AC4's edge. project_statuses_project_name_unique is keyed on
+     * `lower(btrim(name))`, mirroring the existing project_statuses_name_nonempty
+     * check: "Done", "done" and " Done " are one name to a user, so they are one name
+     * to the index. Both halves are asserted because a plain `unique (project_id,
+     * name)` would let either through.
+     */
+    it('a duplicate status name is rejected within one project, ignoring case and padding', async () => {
+      const sameCaseless = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp1,
+          slug: 'qa_lower',
+          name: 'in qa',
+          category: 'in_progress',
+          position: 6,
+        })
+        .select()
+      expect(sameCaseless.data).toBeNull()
+      expect(sameCaseless.error!.code).toBe('23505')
+
+      const samePadded = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp1,
+          slug: 'qa_padded',
+          name: '  In QA  ',
+          category: 'in_progress',
+          position: 6,
+        })
+        .select()
+      expect(samePadded.data).toBeNull()
+      expect(samePadded.error!.code).toBe('23505')
+
+      const rows = await a.from('project_statuses').select('slug').eq('project_id', wp1)
+      expect(rows.data).toHaveLength(DEFAULT_PROJECT_STATUSES.length + 1) // neither landed
+    })
+
+    /**
+     * The other half of AC4, and as load-bearing as the rejection: the index is scoped
+     * by project_id, so the same name in a different project is legal. A project_id-less
+     * index would pass the test above and silently break every second project.
+     */
+    it('the same status name in a DIFFERENT project is accepted', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp2,
+          slug: 'qa',
+          name: 'In QA',
+          category: 'in_progress',
+          position: 5,
+        })
+        .select()
+        .single()
+      expect(error).toBeNull()
+      expect(data!.name).toBe('In QA')
+
+      // And the original is still there, unchanged, in the other project.
+      const first = await a
+        .from('project_statuses')
+        .select('name')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(first.data).toEqual([{ name: 'In QA' }])
+    })
+
+    /**
+     * The reorder is an RPC rather than N position PATCHes because
+     * project_statuses_project_position_unique is DEFERRABLE INITIALLY DEFERRED and
+     * PostgREST gives every request its own transaction — separate patches collide on
+     * the first swap, with no later statement for the deferral to defer to.
+     *
+     * Asserting the resulting (slug, position) pairs, not just "no error", is what
+     * makes this a reorder test: positions must come back DENSE 1..N in exactly the
+     * order asked for, which is also the board's column order.
+     */
+    it('reorder_project_statuses produces the order it was asked for, dense from 1', async () => {
+      const order = ['qa', 'done', 'in_review', 'in_progress', 'todo']
+      const { data, error } = await a.rpc('reorder_project_statuses', {
+        p_project_id: wp1,
+        p_slugs: order,
+      })
+      expect(error).toBeNull()
+      expect(data).toHaveLength(order.length)
+
+      const rows = await a
+        .from('project_statuses')
+        .select('slug, position')
+        .eq('project_id', wp1)
+        .order('position')
+      expect(rows.data).toEqual(order.map((slug, i) => ({ slug, position: i + 1 })))
+    })
+
+    /**
+     * SECURITY INVOKER is the whole reason this is safe to publish as an RPC. Under
+     * DEFINER the function would run as the table owner and rewrite any tenant's board
+     * from a guessed project id. Asserting the order is UNCHANGED is the evidence —
+     * "the call did not raise" would pass even if it had scrambled every row.
+     */
+    it("a stranger's reorder call changes nothing", async () => {
+      const { data, error } = await b.rpc('reorder_project_statuses', {
+        p_project_id: wp1,
+        p_slugs: ['todo', 'done'],
+      })
+      expect(error).toBeNull() // B may EXECUTE it; statuses_owner_update matches no row.
+      expect(data).toEqual([])
+
+      const rows = await a
+        .from('project_statuses')
+        .select('slug')
+        .eq('project_id', wp1)
+        .order('position')
+      expect(rows.data!.map((r) => r.slug)).toEqual([
+        'qa',
+        'done',
+        'in_review',
+        'in_progress',
+        'todo',
+      ])
+    })
+
+    /**
+     * Functions are EXECUTE-to-public by default, so the migration's explicit
+     * `revoke ... from public, anon` is the only thing keeping an unauthenticated
+     * caller out. anonClient() performs no sign-in, so this costs the GoTrue rate
+     * limiter nothing.
+     */
+    it('an anonymous caller cannot execute the reorder RPC', async () => {
+      const { error } = await anonClient().rpc('reorder_project_statuses', {
+        p_project_id: wp1,
+        p_slugs: ['todo', 'done'],
+      })
+      expect(error).not.toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: permission denied for function.
+
+      const rows = await a
+        .from('project_statuses')
+        .select('slug')
+        .eq('project_id', wp1)
+        .order('position')
+      expect(rows.data![0]!.slug).toBe('qa') // and the order is untouched
     })
   })
 })
