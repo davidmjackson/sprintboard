@@ -102,8 +102,10 @@ create trigger on_project_created
 -- separate board_columns table: the mapping is 1:1 today, a second table would
 -- carry no data, and the Rung 3 split is purely additive when it is wanted.
 --
--- SERVER-OWNED in this slice (SPRIN-79): clients may SELECT only. See the policy
--- block at the foot of this file for why that departs from every other table.
+-- OWNER-WRITABLE as of SPRIN-77, but NOT the way every other table is. Clients may
+-- SELECT, INSERT and UPDATE (three columns only) — and may NOT DELETE at all. See the
+-- policy block at the foot of this file; the split by verb IS the security model here,
+-- not an accident of how it was written.
 --
 -- text + check, never an enum.
 create table project_statuses (
@@ -247,10 +249,18 @@ create table tickets (
   type           text not null default 'story'
                    check (type in ('epic','story','bug','task')),
   -- Validated by tickets_status_fk below, NOT by a check constraint: the status
-  -- vocabulary is per-project, and a CHECK body may not contain a subquery. The
-  -- default stays a bare literal, which is safe only while the vocabulary is
-  -- immutable to clients (see statuses_owner_read). SPRIN-80 must replace it with
-  -- is_initial resolution in the same story that allows a status to be deleted.
+  -- vocabulary is per-project, and a CHECK body may not contain a subquery.
+  --
+  -- The default stays a bare literal. SPRIN-77 made the vocabulary MUTABLE, so the
+  -- old justification ("safe while the vocabulary is immutable to clients") no longer
+  -- holds and has been replaced by a narrower one: what keeps this safe is that the
+  -- `todo` row cannot be REMOVED. There is no DELETE policy on project_statuses, and
+  -- `slug` is not in the column-level UPDATE grant — so no client can delete the row
+  -- this literal names, nor rename its slug out from under it. Adding a DELETE policy
+  -- or granting UPDATE(slug) without also fixing this default would break ticket
+  -- creation permanently, for every project it happened to.
+  --
+  -- SPRIN-80 owns both halves together: is_initial resolution here, and deletion there.
   status         text not null default 'todo',
   assignee_id    uuid references auth.users(id) on delete set null,
   story_points   int,
@@ -467,33 +477,121 @@ create policy counters_owner on project_counters
                  where p.id = project_counters.project_id
                    and p.owner_id = auth.uid()));
 
--- project_statuses: readable via an owned project, and READ-ONLY to every client.
+-- project_statuses: THREE policies, split by verb, and the split IS the security model.
 --
--- This is the one policy in this file that is not `for all`, and the departure is
--- deliberate. tickets.status used to be guarded by a global check constraint, so a
--- client could not invent a status at all. Replacing that with a per-project
--- vocabulary in a table that ALTER DEFAULT PRIVILEGES already grants anon and
--- authenticated full DML on means the policy is the ONLY guard left. A `for all`
--- policy would let any owner widen their own vocabulary and then write into it in
--- two ordinary PostgREST requests, while the board still renders four hard-coded
--- columns — the ticket would render in no column and vanish, with no test, type or
--- constraint going red. An owner deleting the `todo` row would permanently break
--- ticket creation, because tickets.status's default is a bare literal.
+-- This is the one table in this file not governed by a single `for all` policy, and the
+-- departure is deliberate and load-bearing. tickets.status used to be guarded by a global
+-- check constraint, so a client could not invent a status at all. SPRIN-79 replaced that
+-- with a per-project vocabulary in a table that ALTER DEFAULT PRIVILEGES already grants
+-- anon and authenticated full DML on — which makes these policies the ONLY guard left.
 --
--- Write access arrives with SPRIN-77, which is the story that also builds the UI to
--- render a changed vocabulary. Widening this is a story, not a tweak.
+-- SPRIN-77 opened writes, and opened exactly two verbs:
 --
--- DO NOT add `force row level security` to this table. It reads as hardening and is
--- the opposite: the seeding trigger is SECURITY DEFINER and runs as the table's owner
--- (postgres), which is exempt from RLS only while FORCE is off. Turn it on and there
--- is no INSERT policy for the trigger to satisfy, so EVERY project creation fails at
--- insert time, for every user. The same trap applies to the other tables here whose
--- triggers are definer-owned.
+--   * NO DELETE POLICY, deliberately. An owner deleting the `todo` row would permanently
+--     break ticket creation, because tickets.status's default is a bare literal naming it.
+--     A DELETE also strands every ticket sitting on the deleted status. SPRIN-80 owns both
+--     halves — the delete UI and the is_initial resolution that makes it safe — and until
+--     it lands, a DELETE from a client matches no policy, filters to zero rows, and changes
+--     nothing. Collapsing these three into one `for all` grants DELETE silently and reopens
+--     all of that. `rls.integration.test.ts` goes red if anyone does; that test exists for
+--     this exact reason.
+--
+--   * UPDATE IS COLUMN-RESTRICTED, and the restriction is NOT expressible as a policy.
+--     RLS has no access to the OLD row in a WITH CHECK, so "you may change name but not
+--     slug" has to be a privilege, not a predicate. See the grant below — and note the
+--     shape, because the obvious version of it does nothing at all.
+--
+-- DO NOT add `force row level security` to this table. It reads as hardening and is the
+-- opposite: the seeding trigger is SECURITY DEFINER and runs as the table's owner
+-- (postgres), which is exempt from RLS only while FORCE is off. Turn it on and there is no
+-- INSERT policy for the trigger to satisfy, so EVERY project creation fails at insert time,
+-- for every user. The same trap applies to the other tables here whose triggers are
+-- definer-owned.
 create policy statuses_owner_read on project_statuses
   for select
   using (exists (select 1 from projects p
                  where p.id = project_statuses.project_id
                    and p.owner_id = auth.uid()));
+
+create policy statuses_owner_insert on project_statuses
+  for insert
+  with check (exists (select 1 from projects p
+                      where p.id = project_statuses.project_id
+                        and p.owner_id = auth.uid()));
+
+create policy statuses_owner_update on project_statuses
+  for update
+  using      (exists (select 1 from projects p
+                      where p.id = project_statuses.project_id
+                        and p.owner_id = auth.uid()))
+  with check (exists (select 1 from projects p
+                      where p.id = project_statuses.project_id
+                        and p.owner_id = auth.uid()));
+
+-- The column restriction, and THE OBVIOUS FORM OF THIS IS A SILENT NO-OP.
+--
+-- `revoke update (slug) on project_statuses from authenticated` reads correctly and does
+-- NOTHING: Postgres does not let a column-level REVOKE carve a hole in a table-level grant,
+-- and ALTER DEFAULT PRIVILEGES gave authenticated table-wide `w` (measured: relacl was
+-- `authenticated=arwdDxtm/postgres`). The table privilege must be revoked OUTRIGHT and the
+-- permitted columns granted back.
+--
+-- `slug` is excluded because it is the fk target of tickets_status_fk: the fk is keyed on
+-- the slug precisely so no ticket row is rewritten when the vocabulary changes, and a
+-- movable slug would undo that. `is_initial` is excluded because
+-- project_statuses_one_initial_per_project prevents TWO initial statuses but not ZERO, and
+-- zero is a state SPRIN-80 must reach deliberately, not one an owner stumbles into.
+-- `position` IS granted because reorder_project_statuses below is SECURITY INVOKER and
+-- therefore writes that column as the caller.
+revoke update on project_statuses from authenticated, anon;
+grant  update (name, category, position) on project_statuses to authenticated;
+
+-- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
+-- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors
+-- project_statuses_name_nonempty, which already btrims: "Done", "done" and " Done " are one
+-- name to a user, so they are one name here. Scoped by project_id, so the same name in a
+-- DIFFERENT project stays legal — that half of AC4 is as load-bearing as the rejection half.
+create unique index project_statuses_project_name_unique
+  on project_statuses (project_id, lower(btrim(name)));
+
+-- Reorder, as a function, because project_statuses_project_position_unique is DEFERRABLE
+-- INITIALLY DEFERRED and that deferral only helps WITHIN ONE TRANSACTION. PostgREST wraps
+-- each request in its own, so N separate `PATCH position=` calls collide on the very first
+-- swap — moving row 2 to position 1 violates the constraint against the row already there,
+-- with no later statement in that transaction for the deferral to reach. One statement
+-- inside one function is the only shape where the deferral does the job it was written for.
+--
+-- SECURITY INVOKER, not definer: the caller's own rights apply, so statuses_owner_update
+-- still governs every row touched and a cross-tenant p_project_id updates nothing. Unlike
+-- seed_project_statuses(), this function is not trying to do anything the caller may not
+-- do, so it must not be granted the privilege to. The empty pinned search_path travels with
+-- it anyway — a public function published as a PostgREST RPC is reachable by any
+-- authenticated caller.
+--
+-- Callers pass the COMPLETE ordered slug list. ordinality assigns dense 1..N; a partial list
+-- would leave omitted rows on their old positions and could collide at commit.
+create or replace function reorder_project_statuses(p_project_id uuid, p_slugs text[])
+returns setof public.project_statuses
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  return query
+  update public.project_statuses s
+     set position = o.ord
+    from unnest(p_slugs) with ordinality as o(slug, ord)
+   where s.project_id = p_project_id
+     and s.slug = o.slug
+  returning s.*;
+end;
+$$;
+
+-- Functions are EXECUTE-to-public by default. Unlike seed_project_statuses() (a TRIGGER
+-- function, which needs no EXECUTE at all and so is revoked from everyone), this one is
+-- called directly, so authenticated must keep it.
+revoke execute on function reorder_project_statuses(uuid, text[]) from public, anon;
+grant  execute on function reorder_project_statuses(uuid, text[]) to authenticated;
 
 -- sprints: via owned project
 create policy sprints_owner on sprints

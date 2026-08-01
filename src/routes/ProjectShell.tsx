@@ -7,7 +7,7 @@ import type { ReadPhase } from '@/lib/project-reads'
 import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
-import { listProjectStatuses } from '@/lib/project-statuses'
+import { doneSlugs, listProjectStatuses } from '@/lib/project-statuses'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
@@ -48,6 +48,16 @@ export type ProjectShellContext = {
    *  same rows. */
   statuses: ProjectStatus[]
   statusesPhase: ReadPhase
+  /** A status was added from the Settings tab (SPRIN-77). Appended, because the write gives
+   *  it `max(position)+1` — so appending IS the board's column order, not a guess at it. */
+  onStatusCreated: (status: ProjectStatus) => void
+  /** A status was renamed. Replaces one row by id; no other row moves, and no ticket row
+   *  changes at all — `tickets_status_fk` references the slug, which a rename never touches. */
+  onStatusUpdated: (status: ProjectStatus) => void
+  /** The statuses were reordered. Takes the DATABASE's own post-update rows (the RPC's
+   *  `RETURNING`), not a locally computed guess — the same discipline as
+   *  `onSprintCompleted`'s `returnedTickets`. */
+  onStatusesReordered: (statuses: ProjectStatus[]) => void
   /** Re-runs ALL THREE reads for this project. Manual only — there is no automatic retry,
    *  backoff or polling — and it returns every phase to `loading` immediately, so a click
    *  is never mistaken for a no-op. */
@@ -59,7 +69,8 @@ export type ProjectShellContext = {
   /** Completing a sprint changes TWO of the shell's lists at once: the sprint's status and
    *  the `sprint_id` of every incomplete ticket that returned to the backlog. This applies
    *  both in one update so the count badge and the status badge never render out of step.
-   *  A local mutation from the DB's own returned rows, not a refetch. */
+   *  A local mutation from the DB's own returned rows, not a refetch. "Incomplete" is decided
+   *  by `doneSlugs(statuses)` — the status's CATEGORY, not the slug 'done' (SPRIN-77). */
   onSprintCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
   /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
    *  always exists) and shared, so a tab never reaches for the auth context itself and
@@ -152,21 +163,53 @@ export function ProjectShell() {
   // tickets. The ticket patch is NOT driven solely by `returnedTickets`: a prior attempt can
   // already have moved a ticket in the DB (returning it) and then failed on the status flip,
   // so the retry's bulk update matches zero rows and returns []. Deriving the move from the
-  // completed sprint itself — by the same rule the DB applies
-  // (`sprint_id=null where sprint_id=id and status<>'done'`) — makes the patch idempotent and
-  // correct on both the happy path and the retry path. Done tickets keep their sprint_id
+  // completed sprint itself — by the same rule the DB applies — makes the patch idempotent and
+  // correct on both the happy path and the retry path. Terminal tickets keep their sprint_id
   // (retained history), exactly as the DB leaves them.
+  //
+  // "The same rule" is literal, and as of SPRIN-77 it is load-bearing rather than incidental:
+  // `terminal` comes from `doneSlugs`, the SAME derivation `SprintsTab` handed to
+  // `completeSprint` for the database filter. This used to read `t.status !== 'done'`, which
+  // agreed with the DB only while the vocabulary was immutable — a user-added terminal status
+  // would have had its tickets painted back into the backlog here while the database kept
+  // them. Two independent derivations of "terminal" could drift; one cannot, and the
+  // idempotency argument above depends on them agreeing.
   //
   // Both lists are patched so the count badge and the status badge never render out of step.
   const onSprintCompleted = (updated: Sprint, returnedTickets: Ticket[]) => {
     sprintRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
+    const terminal = doneSlugs(statuses)
     const returnedById = new Map(returnedTickets.map((t) => [t.id, t]))
     ticketRead.patch(project.id, (ts) =>
       ts.map(
         (t) =>
           returnedById.get(t.id) ??
-          (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
+          (t.sprint_id === updated.id && !terminal.has(t.status) ? { ...t, sprint_id: null } : t),
       ),
+    )
+  }
+
+  // The three status reducers (SPRIN-77). Local mutations like every other one here, and for
+  // the same reason: an unguarded refetch resolving after a project switch clobbers the new
+  // project's list. They matter beyond this tab — `statuses` is what BoardTab renders its
+  // columns from, so patching it here is the whole of AC1 ("appears as a board column without
+  // a reload").
+  const onStatusCreated = (status: ProjectStatus) =>
+    statusRead.patch(project.id, (ss) => [...ss, status])
+
+  const onStatusUpdated = (updated: ProjectStatus) =>
+    statusRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
+
+  // Merged by id and re-sorted by `position` rather than swapped in place: `position` order IS
+  // the board's column order (`listProjectStatuses` sorts by it and nothing re-sorts
+  // downstream), and the RPC returns its rows in no guaranteed order. Merging rather than
+  // replacing the list wholesale keeps any row the RPC did not return — there are none today,
+  // since the caller sends the complete list and the write layer rejects a short result — so a
+  // future partial reorder degrades to "some rows moved", never to "the rest vanished".
+  const onStatusesReordered = (rows: ProjectStatus[]) => {
+    const byId = new Map(rows.map((s) => [s.id, s]))
+    statusRead.patch(project.id, (ss) =>
+      ss.map((s) => byId.get(s.id) ?? s).sort((a, b) => a.position - b.position),
     )
   }
 
@@ -210,6 +253,9 @@ export function ProjectShell() {
                 sprintsPhase,
                 statuses,
                 statusesPhase,
+                onStatusCreated,
+                onStatusUpdated,
+                onStatusesReordered,
                 onRetry,
                 onSprintCreated,
                 onSprintUpdated,

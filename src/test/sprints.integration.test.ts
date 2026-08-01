@@ -2,6 +2,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
+import type { ProjectStatus } from '@/lib/domain'
 import {
   assertCredentialsOrExplain,
   hasRlsCredentials,
@@ -139,6 +140,11 @@ describe.skipIf(!hasRlsCredentials)(
     let appClient: typeof import('@/lib/supabase').supabase
     let startSprint: typeof import('@/lib/sprints').startSprint
     let completeSprint: typeof import('@/lib/sprints').completeSprint
+    /** The project's terminal statuses, derived from the LIVE seeded rows by the SAME
+     *  `doneSlugs` the app uses — not a hand-written `new Set(['done'])`. SPRIN-77 made
+     *  "terminal" a category question, and this suite is the only place the resulting
+     *  PostgREST `not.in.(…)` filter is ever sent to a real database. */
+    let terminalSlugs: ReadonlySet<string>
 
     beforeAll(async () => {
       a = await signIn('A')
@@ -157,6 +163,21 @@ describe.skipIf(!hasRlsCredentials)(
       // hard error. Inside a skipIf'd beforeAll it only runs when credentials are present.
       ;({ supabase: appClient } = await import('@/lib/supabase'))
       ;({ startSprint, completeSprint } = await import('@/lib/sprints'))
+
+      // Read the rows `seed_project_statuses()` actually wrote and derive the terminal set
+      // through the real helper, so this suite proves the CATEGORY rule against the live
+      // vocabulary rather than restating the slug the seed happens to use.
+      const { doneSlugs } = await import('@/lib/project-statuses')
+      const { data: statusRows, error: statusErr } = await a
+        .from('project_statuses')
+        .select()
+        .eq('project_id', projectId)
+      if (statusErr) throw statusErr
+      terminalSlugs = doneSlugs((statusRows ?? []) as ProjectStatus[])
+      // The seed contract, asserted here because everything below depends on it: exactly one
+      // seeded status is categorised `done`, and an empty set would silently turn every
+      // "Done tickets are retained" assertion into a vacuous pass.
+      expect([...terminalSlugs]).toEqual(['done'])
 
       const { email, password } = RLS_USERS.A
       const { error: authErr } = await appClient.auth.signInWithPassword({
@@ -269,7 +290,7 @@ describe.skipIf(!hasRlsCredentials)(
       const doneId = await ticketInSprint(id, 'done')
       const todoId = await ticketInSprint(id, 'todo')
 
-      const result = await completeSprint(id)
+      const result = await completeSprint(id, terminalSlugs)
       expect(result.ok).toBe(true)
 
       // AC1: status complete.
@@ -290,6 +311,31 @@ describe.skipIf(!hasRlsCredentials)(
       expect(done!.status).toBe('done')
     }, 30_000)
 
+    // SPRIN-77's empty-set branch, and the only place it can be proven. A project with no
+    // done-category status has nothing terminal, so `completeSprint` OMITS its status filter
+    // rather than emitting `not.in.()` — which is malformed SQL. A unit test asserting
+    // "`not` was not called" cannot tell a correctly omitted filter from one PostgREST would
+    // have rejected; only a real request can.
+    it('returns EVERY ticket to the backlog when the caller names no terminal status', async () => {
+      const id = await newFutureSprint('Nothing terminal')
+      expect((await startSprint(id)).ok).toBe(true) // positive control
+
+      const doneId = await ticketInSprint(id, 'done')
+
+      const result = await completeSprint(id, new Set())
+      expect(result.ok).toBe(true)
+
+      // The 'done'-SLUGGED ticket came back too: the caller's set is the only rule, and this
+      // project's set is empty. Its status is untouched — completing never rewrites a status.
+      const { data: done } = await a
+        .from('tickets')
+        .select('sprint_id, status')
+        .eq('id', doneId)
+        .single()
+      expect(done!.sprint_id).toBeNull()
+      expect(done!.status).toBe('done')
+    }, 30_000)
+
     it("rejects completing another user's sprint: RLS scopes both writes, no cross-tenant mutation", async () => {
       const id = await newFutureSprint('Cross-tenant complete')
       await startSprint(id)
@@ -301,7 +347,7 @@ describe.skipIf(!hasRlsCredentials)(
         // The precondition read matches zero rows for B, so completeSprint now returns
         // 'unknown' before ANY write — strictly better than before, when the ticket move ran
         // and was filtered to zero rows by RLS. 'unknown' never leaks existence.
-        const result = await completeSprint(id)
+        const result = await completeSprint(id, terminalSlugs)
         expect(result).toEqual({ ok: false, error: 'unknown' })
       } finally {
         const asA = RLS_USERS.A
@@ -324,7 +370,7 @@ describe.skipIf(!hasRlsCredentials)(
       // having already returned its incomplete tickets to the backlog.
       const id = await newFutureSprint('Resurrect')
       expect((await startSprint(id)).ok).toBe(true)
-      expect((await completeSprint(id)).ok).toBe(true) // positive control: really complete
+      expect((await completeSprint(id, terminalSlugs)).ok).toBe(true) // positive control: really complete
 
       const result = await startSprint(id)
       expect(result).toEqual({ ok: false, error: 'stale' })
@@ -341,7 +387,7 @@ describe.skipIf(!hasRlsCredentials)(
       const id = await newFutureSprint('Never started')
       const todoId = await ticketInSprint(id, 'todo')
 
-      const result = await completeSprint(id)
+      const result = await completeSprint(id, terminalSlugs)
       expect(result).toEqual({ ok: false, error: 'stale' })
 
       const { data: s } = await a.from('sprints').select('status').eq('id', id).single()

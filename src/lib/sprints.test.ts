@@ -305,13 +305,21 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
 }
 
 describe('completeSprint', () => {
-  // tickets:    update({sprint_id:null}).eq('sprint_id',id).neq('status','done').select()
+  // tickets:    update({sprint_id:null}).eq('sprint_id',id)[.not('status','in',…)].select()
   // guard read: from('sprints').select('status').eq('id', id).single()
   // sprints:    update({status:'complete'}).eq('id',id).eq('status','active').select().single()
+  //
+  // `.eq()` exposes BOTH `not` and `select`, because the status filter is OMITTED entirely
+  // when the project has no terminal status — `in ()` is malformed SQL. A mock that only
+  // offered `not` would make that branch throw rather than assert.
   const ticketsSelect = vi.fn()
-  const ticketsNeq = vi.fn(() => ({ select: ticketsSelect }))
-  const ticketsEq = vi.fn(() => ({ neq: ticketsNeq }))
+  const ticketsNot = vi.fn(() => ({ select: ticketsSelect }))
+  const ticketsEq = vi.fn(() => ({ not: ticketsNot, select: ticketsSelect }))
   const ticketsUpdate = vi.fn(() => ({ eq: ticketsEq }))
+
+  /** Deliberately NOT the slug `done`. As of SPRIN-77 the CATEGORY makes a status terminal,
+   *  and a fixture that reused the old literal could not tell the two rules apart. */
+  const TERMINAL = new Set(['shipped'])
 
   const guardSingleC = vi.fn()
   const guardEq = vi.fn(() => ({ single: guardSingleC }))
@@ -332,8 +340,8 @@ describe('completeSprint', () => {
 
   beforeEach(() => {
     ticketsSelect.mockReset()
-    ticketsNeq.mockReset().mockReturnValue({ select: ticketsSelect })
-    ticketsEq.mockReset().mockReturnValue({ neq: ticketsNeq })
+    ticketsNot.mockReset().mockReturnValue({ select: ticketsSelect })
+    ticketsEq.mockReset().mockReturnValue({ not: ticketsNot, select: ticketsSelect })
     ticketsUpdate.mockReset().mockReturnValue({ eq: ticketsEq })
     guardSingleC.mockReset()
     guardEq.mockReset().mockReturnValue({ single: guardSingleC })
@@ -360,16 +368,16 @@ describe('completeSprint', () => {
     ticketsSelect.mockResolvedValue({ data: moved, error: null })
     sprintSingle.mockResolvedValue({ data: completed, error: null })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     // The guard read itself: pins `.eq('id', ...)` against a copy-paste to `.eq('project_id',
     // ...)`, which would still pass typecheck, lint and every other unit test — only the live
     // suite would catch it.
     expect(guardEq).toHaveBeenCalledWith('id', 's1')
-    // Step 1: bulk-null only the NOT-done tickets of this sprint.
+    // Step 1: bulk-null only the NOT-terminal tickets of this sprint.
     expect(ticketsUpdate).toHaveBeenCalledWith({ sprint_id: null })
     expect(ticketsEq).toHaveBeenCalledWith('sprint_id', 's1')
-    expect(ticketsNeq).toHaveBeenCalledWith('status', 'done')
+    expect(ticketsNot).toHaveBeenCalledWith('status', 'in', '(shipped)')
     // Step 2: flip status.
     expect(sprintUpdate).toHaveBeenCalledWith({ status: 'complete' })
     expect(sprintEq).toHaveBeenCalledWith('id', 's1')
@@ -378,11 +386,56 @@ describe('completeSprint', () => {
     expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: moved })
   })
 
+  // SPRIN-77. "Incomplete" is a CATEGORY question now, not the literal slug 'done', and the
+  // caller supplies the answer as a set of slugs derived once by `doneSlugs`.
+  it('excludes EVERY terminal slug the caller names, not just one', async () => {
+    guardReturns('active')
+    ticketsSelect.mockResolvedValue({ data: [], error: null })
+    sprintSingle.mockResolvedValue({ data: sprint({ status: 'complete' }), error: null })
+
+    await completeSprint('s1', new Set(['shipped', 'live']))
+
+    expect(ticketsNot).toHaveBeenCalledWith('status', 'in', '(shipped,live)')
+  })
+
+  // The point of the whole story. A project whose terminal status is slugged 'shipped' must
+  // keep 'shipped' tickets in the sprint — and a project where 'done' is NOT terminal must
+  // send 'done' tickets back to the backlog. Only the caller's set decides.
+  it('does not treat the slug done as terminal unless the caller says so', async () => {
+    guardReturns('active')
+    ticketsSelect.mockResolvedValue({ data: [], error: null })
+    sprintSingle.mockResolvedValue({ data: sprint({ status: 'complete' }), error: null })
+
+    await completeSprint('s1', new Set(['shipped']))
+
+    expect(ticketsNot).toHaveBeenCalledWith('status', 'in', '(shipped)')
+    expect(ticketsNot).not.toHaveBeenCalledWith('status', 'in', expect.stringContaining('done'))
+  })
+
+  // An EMPTY set is a real state, not an error: a project with no done-category status has
+  // nothing terminal, so every ticket is incomplete and every one returns to the backlog.
+  // `in ()` is malformed SQL, so the filter must be OMITTED — not emitted empty.
+  it('applies NO status filter at all when the project has no terminal status', async () => {
+    guardReturns('active')
+    const moved = [ticket({ id: 't1', sprint_id: null })]
+    const completed = sprint({ status: 'complete' })
+    ticketsSelect.mockResolvedValue({ data: moved, error: null })
+    sprintSingle.mockResolvedValue({ data: completed, error: null })
+
+    const result = await completeSprint('s1', new Set())
+
+    expect(ticketsNot).not.toHaveBeenCalled()
+    // And the write still ran, rather than the whole move being skipped along with it.
+    expect(ticketsEq).toHaveBeenCalledWith('sprint_id', 's1')
+    expect(ticketsSelect).toHaveBeenCalled()
+    expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: moved })
+  })
+
   it('does not flip the status if the ticket move fails (ordering is load-bearing)', async () => {
     guardReturns('active')
     ticketsSelect.mockResolvedValue({ data: null, error: { message: 'offline' } })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(sprintUpdate).not.toHaveBeenCalled()
     expect(result).toEqual({ ok: false, error: 'unknown' })
@@ -393,7 +446,7 @@ describe('completeSprint', () => {
     ticketsSelect.mockResolvedValue({ data: [], error: null })
     sprintSingle.mockResolvedValue({ data: null, error: { code: 'PGRST116' } })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: false, error: 'unknown' })
   })
@@ -404,7 +457,7 @@ describe('completeSprint', () => {
     ticketsSelect.mockResolvedValue({ data: [], error: null })
     sprintSingle.mockResolvedValue({ data: completed, error: null })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: true, sprint: completed, returnedTickets: [] })
   })
@@ -415,7 +468,7 @@ describe('completeSprint', () => {
     // report failure — worse than no guard at all.
     guardReturns('future')
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: false, error: 'stale' })
     expect(ticketsUpdate).not.toHaveBeenCalled()
@@ -425,7 +478,7 @@ describe('completeSprint', () => {
   it('refuses to re-complete an already-complete sprint and moves NO tickets', async () => {
     guardReturns('complete')
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: false, error: 'stale' })
     expect(ticketsUpdate).not.toHaveBeenCalled()
@@ -436,7 +489,7 @@ describe('completeSprint', () => {
     // Zero rows is a deleted sprint OR another owner's — never distinguished, never 'stale'.
     guardReturns(null, { code: 'PGRST116' })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: false, error: 'unknown' })
     expect(ticketsUpdate).not.toHaveBeenCalled()
@@ -448,7 +501,7 @@ describe('completeSprint', () => {
     // though `.single()` cannot produce it today.
     guardSingleC.mockResolvedValue({ data: null, error: null })
 
-    const result = await completeSprint('s1')
+    const result = await completeSprint('s1', TERMINAL)
 
     expect(result).toEqual({ ok: false, error: 'unknown' })
     expect(ticketsUpdate).not.toHaveBeenCalled()

@@ -5,6 +5,7 @@ import {
   DEFAULT_PROJECT_STATUSES,
   SPRINT_STATUSES,
   STATUS_CATEGORIES,
+  STATUS_CATEGORY_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   isSprintStatus,
@@ -283,6 +284,30 @@ describe('ticket type labels', () => {
 
   it('labels the four types in the expected words', () => {
     expect(TICKET_TYPE_LABELS).toEqual({ epic: 'Epic', story: 'Story', bug: 'Bug', task: 'Task' })
+  })
+})
+
+/**
+ * The same pair the ticket-type labels get, and for the same reason: `Record<StatusCategory,
+ * string>` makes a MISSING key a compile error and says nothing whatever about the value. An
+ * empty string, or `'ZZZ'`, type-checks — and these labels are the entire user-visible wording
+ * of a category, on a status row's badge and in the add form's `<option>` list, so a blank one
+ * ships a blank badge and a blank option with the gate green.
+ */
+describe('status category labels', () => {
+  it('has a non-empty label for every status category', () => {
+    for (const category of STATUS_CATEGORIES) {
+      expect(STATUS_CATEGORY_LABELS[category]).toBeTruthy()
+    }
+  })
+
+  // `in_progress` is the point of the map — a raw slug is not a thing to put in front of a user.
+  it('labels the three categories in the expected words', () => {
+    expect(STATUS_CATEGORY_LABELS).toEqual({
+      todo: 'To do',
+      in_progress: 'In progress',
+      done: 'Done',
+    })
   })
 })
 

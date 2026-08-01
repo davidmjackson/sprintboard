@@ -7,12 +7,18 @@ import { ProjectShell, type ProjectShellContext } from './ProjectShell'
 import { BoardTab } from './BoardTab'
 import { BacklogTab } from './BacklogTab'
 import { SprintsTab } from './SprintsTab'
+import { SettingsTab } from './SettingsTab'
 import type { ProjectsContext } from './AppLayout'
 import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
 import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
-import { listProjectStatuses } from '@/lib/project-statuses'
+import {
+  createProjectStatus,
+  listProjectStatuses,
+  renameProjectStatus,
+  reorderProjectStatuses,
+} from '@/lib/project-statuses'
 
 vi.mock('@/lib/auth-context', () => ({
   useAuth: () => ({ session: {}, user: { id: 'u1', email: 'a@example.com' }, loading: false }),
@@ -20,6 +26,9 @@ vi.mock('@/lib/auth-context', () => ({
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
   listProjectStatuses: vi.fn(),
+  createProjectStatus: vi.fn(),
+  renameProjectStatus: vi.fn(),
+  reorderProjectStatuses: vi.fn(),
 }))
 // Spread the real module so pure helpers (e.g. parseBlockReason, which the detail
 // dialog calls during render) stay real; only the network-touching functions are mocked.
@@ -67,6 +76,9 @@ beforeEach(() => {
   vi.mocked(startSprint).mockReset()
   vi.mocked(completeSprint).mockReset()
   mockListStatuses.mockReset().mockResolvedValue(SEEDED_STATUSES)
+  vi.mocked(createProjectStatus).mockReset()
+  vi.mocked(renameProjectStatus).mockReset()
+  vi.mocked(reorderProjectStatuses).mockReset()
 })
 
 const PROJECTS = [
@@ -206,6 +218,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="board" element={<BoardTab />} />
             <Route path="backlog" element={<BacklogTab />} />
             <Route path="sprints" element={<SprintsTab />} />
+            <Route path="settings" element={<SettingsTab />} />
             <Route path="probe" element={<SprintContextProbe />} />
             <Route path="ticket-probe" element={<TicketContextProbe />} />
             <Route path="crash" element={<CrashProbe />} />
@@ -222,7 +235,20 @@ describe('ProjectShell', () => {
     renderShell('/projects/p1')
     expect(screen.getByRole('link', { name: 'Board' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Backlog' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Sprints' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Apple/ })).toBeInTheDocument()
+  })
+
+  // The LINK, and the shell's ability to render a settings tab underneath it — NOT the app's
+  // route table. `renderShell` above builds its own `<Routes>`, settings route included, so
+  // nothing in this file can observe `src/App.tsx`: the real `<Route path="settings">` was
+  // deletable with every test here still green. `App.test.tsx` covers the real table.
+  it('opens the Settings tab from its nav link', async () => {
+    const user = userEvent.setup()
+    renderShell('/projects/p1')
+    await user.click(screen.getByRole('link', { name: 'Settings' }))
+    expect(await screen.findByRole('heading', { name: 'Statuses' })).toBeInTheDocument()
   })
 
   it('defaults to the Board tab (renders the four columns) with no tickets', async () => {
@@ -840,9 +866,83 @@ describe('ProjectShell', () => {
     expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
     // The returned ticket left the sprint: the count badge drops to 0. Local mutation only.
     expect(within(row).getByText('0')).toBeInTheDocument()
-    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1')
+    // The terminal set, derived by `doneSlugs` from the seeded rows the statuses read landed.
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set(['done']))
     expect(mockListSprints).toHaveBeenCalledTimes(1)
     expect(mockList).toHaveBeenCalledTimes(1)
+  })
+
+  // SPRIN-77, and the point of the whole story: the shell's optimistic reducer must ask the
+  // status's CATEGORY, not its slug. Both directions in one assertion, because a fix that read
+  // the category for one and the slug for the other would still pass a one-sided test.
+  //
+  // `returnedTickets: []` is deliberate — it forces the reducer to derive the move itself
+  // rather than copying the database's answer, which is the code path under test.
+  //
+  // The counts are DELIBERATELY LOPSIDED — two terminal tickets against one merely slugged
+  // 'done'. An even split leaves the badge reading 1 under both rules, so the first draft of
+  // this test passed against the unchanged `t.status !== 'done'` reducer: the count says how
+  // many stayed, never which ones. Two-against-one makes the two rules give different numbers.
+  it('keeps tickets on a terminal-CATEGORY status in the sprint and returns one merely slugged done', async () => {
+    const user = userEvent.setup()
+    // A vocabulary where the two rules disagree: 'shipped' is terminal, 'done' is not.
+    mockListStatuses.mockResolvedValue([
+      { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
+      { id: 'st2', slug: 'done', name: 'Done (not really)', category: 'in_progress', position: 2 },
+      { id: 'st3', slug: 'shipped', name: 'Shipped', category: 'done', position: 3 },
+    ] as unknown as ProjectStatus[])
+    mockList.mockResolvedValue([
+      { ...ticketA, id: 'tShipped1', key: 'APP-1', number: 1, sprint_id: 's1', status: 'shipped' },
+      { ...ticketB, id: 'tShipped2', key: 'APP-2', number: 2, sprint_id: 's1', status: 'shipped' },
+      { ...ticketB, id: 'tDone', key: 'APP-3', number: 3, sprint_id: 's1', status: 'done' },
+    ])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [],
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    expect(within(row).getByText('3')).toBeInTheDocument()
+
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    // Two stayed (categorised done), one left (categorised in_progress despite its slug). A
+    // reducer still reading the slug would leave exactly ONE attached instead.
+    expect(within(row).getByText('2')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set(['shipped']))
+  })
+
+  // A project with NO done-category status has nothing terminal, so every ticket comes back —
+  // including one whose slug happens to be 'done'. The empty set is a real state, not an error.
+  it('returns every ticket to the backlog when the project has no terminal status', async () => {
+    const user = userEvent.setup()
+    mockListStatuses.mockResolvedValue([
+      { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
+      { id: 'st2', slug: 'done', name: 'Done (not really)', category: 'in_progress', position: 2 },
+    ] as unknown as ProjectStatus[])
+    mockList.mockResolvedValue([{ ...ticketA, id: 'tDone', sprint_id: 's1', status: 'done' }])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [],
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    expect(within(row).getByText('0')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set())
   })
 
   it('completes a sprint on retry after a failed attempt already moved the ticket: badge still drops to 0', async () => {
@@ -912,6 +1012,105 @@ describe('ProjectShell', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'This sprint is no longer active. Refresh to see its current state.',
     )
+  })
+
+  // SPRIN-77. The three status reducers, driven through the REAL SettingsTab and the REAL
+  // StatusSettings, then read back off the REAL BoardTab — because the thing each one is for is
+  // not "the context callback ran", it is "the board changed without a reload". A test that
+  // asserted the callback fired would pass with the reducer patching nothing at all.
+  //
+  // Each also asserts `mockListStatuses` was called exactly ONCE across the whole interaction:
+  // a reducer "fixed" into a refetch would show the same board and reintroduce the stale-response
+  // race every other reducer in this file exists to avoid.
+  describe('managing statuses from the Settings tab', () => {
+    /** Board column headings, left to right — `position` order IS the column order. */
+    function columnNames(): string[] {
+      return screen
+        .getAllByRole('heading', { level: 2 })
+        .map((h) => h.textContent ?? '')
+        .filter((name) => name !== 'Statuses')
+    }
+
+    it('adds a status and it becomes a board column with no reload (AC1)', async () => {
+      const u = userEvent.setup()
+      const blocked = {
+        ...SEEDED_STATUSES[0]!,
+        id: 'b10c4ed0-0000-4000-8000-000000000000',
+        slug: 'blocked',
+        name: 'Blocked',
+        category: 'in_progress',
+        position: 5,
+        is_initial: false,
+      } as ProjectStatus
+      vi.mocked(createProjectStatus).mockResolvedValue({ ok: true, value: blocked })
+
+      renderShell('/projects/p1/settings')
+
+      await u.type(await screen.findByRole('textbox', { name: 'Name' }), 'Blocked')
+      await u.click(screen.getByRole('button', { name: 'Add status' }))
+      await waitFor(() => expect(vi.mocked(createProjectStatus)).toHaveBeenCalledTimes(1))
+
+      await u.click(screen.getByRole('link', { name: 'Board' }))
+
+      // Appended, so it is the LAST column — `max(position)+1` is what the write assigns.
+      expect(await screen.findByRole('heading', { name: 'Blocked' })).toBeInTheDocument()
+      expect(columnNames()).toEqual(['To Do', 'In Progress', 'In Review', 'Done', 'Blocked'])
+      expect(mockListStatuses).toHaveBeenCalledTimes(1)
+    })
+
+    it('renames a status and the board column heading follows', async () => {
+      const u = userEvent.setup()
+      const renamed = { ...SEEDED_STATUSES[0]!, name: 'Backlogged' }
+      vi.mocked(renameProjectStatus).mockResolvedValue({ ok: true, value: renamed })
+
+      renderShell('/projects/p1/settings')
+
+      await u.click(await screen.findByRole('button', { name: /edit name of To Do/i }))
+      const input = screen.getByRole('textbox', { name: /name of To Do/i })
+      await u.clear(input)
+      await u.type(input, 'Backlogged{Enter}')
+      await waitFor(() => expect(vi.mocked(renameProjectStatus)).toHaveBeenCalledTimes(1))
+
+      await u.click(screen.getByRole('link', { name: 'Board' }))
+
+      expect(await screen.findByRole('heading', { name: 'Backlogged' })).toBeInTheDocument()
+      expect(columnNames()).toEqual(['Backlogged', 'In Progress', 'In Review', 'Done'])
+      expect(mockListStatuses).toHaveBeenCalledTimes(1)
+    })
+
+    it('reorders the statuses and the board columns move with them', async () => {
+      const u = userEvent.setup()
+      // The RPC's own post-update rows, deliberately returned in an order that is NOT the new
+      // column order: the reducer must re-sort by `position`. Handed back shuffled, a reducer
+      // that merely spliced the array in the order it received would produce a different board.
+      const reordered = [
+        { ...SEEDED_STATUSES[3]!, position: 3 },
+        { ...SEEDED_STATUSES[2]!, position: 4 },
+        { ...SEEDED_STATUSES[0]!, position: 1 },
+        { ...SEEDED_STATUSES[1]!, position: 2 },
+      ] as ProjectStatus[]
+      vi.mocked(reorderProjectStatuses).mockResolvedValue({ ok: true, value: reordered })
+
+      renderShell('/projects/p1/settings')
+
+      await u.click(await screen.findByRole('button', { name: /move Done up/i }))
+      await waitFor(() =>
+        // The COMPLETE list, in the intended order — a partial one leaves the omitted rows on
+        // their old positions and can collide on the deferred unique index at commit.
+        expect(vi.mocked(reorderProjectStatuses)).toHaveBeenCalledWith('p1', [
+          'todo',
+          'in_progress',
+          'done',
+          'in_review',
+        ]),
+      )
+
+      await u.click(screen.getByRole('link', { name: 'Board' }))
+
+      expect(await screen.findByRole('heading', { name: 'To Do' })).toBeInTheDocument()
+      expect(columnNames()).toEqual(['To Do', 'In Progress', 'Done', 'In Review'])
+      expect(mockListStatuses).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('shows the stale Start message in the real shell composition, and it stays visible', async () => {

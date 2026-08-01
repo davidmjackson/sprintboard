@@ -40,11 +40,26 @@ export type TicketType = 'epic' | 'story' | 'bug' | 'task'
 
 /**
  * Jira's status category — the bucket a status belongs to regardless of its name.
- * This is where the "done is terminal" rule eventually lives; right now nothing
- * reads it, because the four seeded statuses make `'done'` unambiguous. SPRIN-77
- * must move `src/lib/sprints.ts`'s `.neq('status','done')` and
- * `src/routes/ProjectShell.tsx`'s `t.status !== 'done'` onto this column — BOTH of
- * them, together — before it opens write access to `project_statuses`.
+ *
+ * This IS the "done is terminal" rule as of SPRIN-77, which moved both sites that
+ * used to hardcode the slug `'done'` onto this column together: `completeSprint`'s
+ * database filter in `src/lib/sprints.ts` and the optimistic reducer in
+ * `src/routes/ProjectShell.tsx`. Neither move was useful alone — the filter without
+ * the reducer paints a ticket back into the backlog that the database kept, and the
+ * reducer without the filter does the reverse.
+ *
+ * Both read `doneSlugs` in `src/lib/project-statuses.ts`, and that single derivation
+ * is the point: `completeSprint`'s correctness argument is that the database's rule
+ * and the client's local patch are THE SAME RULE, so its patch is idempotent across
+ * the fail-then-retry path. Two independent derivations could drift; one cannot.
+ * **Re-inlining the slug `'done'` anywhere would compile, pass a seeded-vocabulary
+ * test, and silently break every user-added terminal status** — a project whose
+ * terminal status is called anything else would have its finished tickets dragged
+ * back to the backlog on sprint completion.
+ *
+ * The empty case is a real state, not an error: a project with no done-category
+ * status has nothing terminal, so every ticket is incomplete. See `completeSprint`,
+ * which omits its filter entirely rather than emitting a malformed `in ()`.
  */
 export type StatusCategory = 'todo' | 'in_progress' | 'done'
 /**
@@ -135,6 +150,22 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   task: 'Task',
 }
 
+/**
+ * Human-readable category labels, keyed by category — the settings surface (SPRIN-77) shows a
+ * status's category on its row and offers the three in the add form, and `in_progress` is not
+ * a thing to put in front of a user.
+ *
+ * Here rather than in the component for the same reason as every other label map above:
+ * status/type/column display names live in `domain.ts` and nowhere else, so a fourth category
+ * cannot ship without a label and two surfaces cannot drift on the wording. The exhaustive
+ * `Record<StatusCategory, string>` is what enforces the first half at compile time.
+ */
+export const STATUS_CATEGORY_LABELS: Record<StatusCategory, string> = {
+  todo: 'To do',
+  in_progress: 'In progress',
+  done: 'Done',
+}
+
 export const SPRINT_STATUS_LABELS: Record<SprintStatus, string> = {
   future: 'Future',
   active: 'Active',
@@ -183,6 +214,14 @@ export type AssertStatusCategoryColumn = Assignable<
   Tables<'project_statuses'>['category']
 >
 
+/** `ProjectStatusUpdate` mirrors a column-level GRANT (see its docblock), so its key set is the
+ *  assertion — `Assignable<>` would be vacuous, since a wider Pick of the same table is still
+ *  assignable to the generated update type. `Exact<>` is what makes adding `slug` back a
+ *  compile error rather than a silent re-widening. */
+export type AssertProjectStatusUpdateColumns = Expect<
+  Exact<keyof ProjectStatusUpdate, 'name' | 'category' | 'position'>
+>
+
 /* ------------------------------------------------------------------ *
  * Row types, with the text columns narrowed to the domain unions.
  * ------------------------------------------------------------------ */
@@ -195,9 +234,10 @@ export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus 
  * One project's status row. A board column IS one of these, ordered by `position` —
  * there is deliberately no separate board-columns table while the mapping is 1:1.
  *
- * Read-only to every client in this slice: `statuses_owner_read` is a SELECT-only
- * policy, so there is no Insert or Update counterpart to this type on purpose.
- * SPRIN-77 adds them together with the write policy.
+ * The UPDATE counterpart is `ProjectStatusUpdate` below. There is deliberately no
+ * INSERT counterpart: an insert legitimately carries `project_id`, `slug` and
+ * `is_initial`, so `TablesInsert<'project_statuses'>` is already the right shape and
+ * an alias would only restate it.
  */
 export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
   category: StatusCategory
@@ -276,6 +316,29 @@ export type SprintCreateInsert = Omit<SprintInsert, 'status'>
  * partial unique index, not here.
  */
 export type SprintStatusUpdate = Pick<TablesUpdate<'sprints'>, 'status'>
+
+/**
+ * The ONLY columns a client may UPDATE on `project_statuses` — and unlike every other write
+ * type here, this one mirrors a **column-level GRANT**, not a policy or a trigger.
+ *
+ * SPRIN-77's migration revoked the table-level UPDATE and granted it back on
+ * (name, category, position) alone, so Postgres refuses a patch touching `slug`, `is_initial`,
+ * `project_id`, `id` or `created_at` with a 42501 before any policy is consulted — `slug` above
+ * all, because `tickets_status_fk` references (project_id, slug) and moving it would strand
+ * every ticket sitting on that status.
+ *
+ * The generated `TablesUpdate<'project_statuses'>` cannot express that: it sees a table with
+ * updatable columns and offers all of them, so `.update({ slug })` compiled cleanly and failed
+ * only at runtime, against the live database, on a path a unit test with a mocked client never
+ * reaches. `Pick` makes the wrong write untypeable instead — the same move `TicketBlockUpdate`
+ * and `SprintStatusUpdate` make for their invariants. `AssertProjectStatusUpdateColumns` above
+ * pins the key set, so widening this alias is itself a compile error rather than a quiet
+ * loosening of the grant's client-side mirror.
+ */
+export type ProjectStatusUpdate = Pick<
+  TablesUpdate<'project_statuses'>,
+  'name' | 'category' | 'position'
+>
 
 /* ------------------------------------------------------------------ */
 

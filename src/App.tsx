@@ -9,12 +9,14 @@ import { ProjectShell } from '@/routes/ProjectShell'
 import { BoardTab } from '@/routes/BoardTab'
 import { BacklogTab } from '@/routes/BacklogTab'
 import { SprintsTab } from '@/routes/SprintsTab'
+import { SettingsTab } from '@/routes/SettingsTab'
 import { CrashFallback, ErrorBoundary } from '@/routes/ErrorBoundary'
 
 /**
  * The route table. Public auth routes, then the authenticated shell (`AppLayout`, with
  * the project nav) wrapping the project routes. Inside a project, the shell carries the
- * Board, Backlog and Sprints tabs as nested routes, so the chosen tab lives in the URL.
+ * Board, Backlog, Sprints and Settings tabs as nested routes, so the chosen tab lives in
+ * the URL.
  *
  * The app-scope `ErrorBoundary` is mounted here rather than in `main.tsx` because
  * `main.tsx` is an untested bootstrap, so a boundary placed there could never be
@@ -45,6 +47,7 @@ export default function App() {
               <Route path="board" element={<BoardTab />} />
               <Route path="backlog" element={<BacklogTab />} />
               <Route path="sprints" element={<SprintsTab />} />
+              <Route path="settings" element={<SettingsTab />} />
             </Route>
             {/* Unknown authed paths fall back to the home landing. */}
             <Route path="*" element={<Navigate to="/" replace />} />

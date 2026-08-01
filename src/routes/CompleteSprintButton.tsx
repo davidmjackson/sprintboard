@@ -26,9 +26,14 @@ import { Button } from '@/components/ui/button'
  */
 export function CompleteSprintButton({
   sprint,
+  terminalSlugs,
   onCompleted,
 }: {
   sprint: Sprint
+  /** The project's terminal statuses, by slug — `doneSlugs(statuses)`, derived once by
+   *  `SprintsTab`. Passed straight through: this button never decides what "complete" means,
+   *  and an EMPTY set is a legitimate project state (nothing terminal), not a missing prop. */
+  terminalSlugs: ReadonlySet<string>
   onCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
 }) {
   const [pending, setPending] = useState(false)
@@ -37,7 +42,7 @@ export function CompleteSprintButton({
   async function handleComplete() {
     setPending(true)
     setError(null)
-    const result = await completeSprint(sprint.id)
+    const result = await completeSprint(sprint.id, terminalSlugs)
     setPending(false)
     if (result.ok) {
       onCompleted(result.sprint, result.returnedTickets)

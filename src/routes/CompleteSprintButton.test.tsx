@@ -20,6 +20,11 @@ const sprint: Sprint = {
   created_at: '2026-07-15T00:00:00+00:00',
 }
 
+/** The project's terminal statuses, as `SprintsTab` derives them with `doneSlugs`.
+ *  Deliberately not the slug 'done': this button must pass through whatever it is given,
+ *  and a fixture reusing the old literal could not tell pass-through from a hardcode. */
+const TERMINAL: ReadonlySet<string> = new Set(['shipped'])
+
 beforeEach(() => mockComplete.mockReset())
 
 describe('CompleteSprintButton', () => {
@@ -29,10 +34,14 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: true, sprint: completed, returnedTickets })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(
+      <CompleteSprintButton sprint={sprint} terminalSlugs={TERMINAL} onCompleted={onCompleted} />,
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
-    expect(mockComplete).toHaveBeenCalledWith('s1')
+    // The terminal set is passed STRAIGHT through — this button never decides what is
+    // terminal, it only carries the answer `SprintsTab` derived from the project's statuses.
+    expect(mockComplete).toHaveBeenCalledWith('s1', TERMINAL)
     expect(onCompleted).toHaveBeenCalledWith(completed, returnedTickets)
   })
 
@@ -40,7 +49,9 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(
+      <CompleteSprintButton sprint={sprint} terminalSlugs={TERMINAL} onCompleted={onCompleted} />,
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -57,7 +68,7 @@ describe('CompleteSprintButton', () => {
       }),
     )
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={vi.fn()} />)
+    render(<CompleteSprintButton sprint={sprint} terminalSlugs={TERMINAL} onCompleted={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(screen.getByRole('button', { name: 'Completing…' })).toBeDisabled()
@@ -69,7 +80,9 @@ describe('CompleteSprintButton', () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
     const onCompleted = vi.fn()
 
-    render(<CompleteSprintButton sprint={sprint} onCompleted={onCompleted} />)
+    render(
+      <CompleteSprintButton sprint={sprint} terminalSlugs={TERMINAL} onCompleted={onCompleted} />,
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Complete' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
