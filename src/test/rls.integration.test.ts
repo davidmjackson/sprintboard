@@ -613,8 +613,11 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .single()
       expect(error).toBeNull()
       expect(data!.slug).toBe('qa')
-      // The column default, not something the caller asked for. is_initial is not
-      // client-writable at all (see below), so a new status can never steal it.
+      // The column DEFAULT, not something the caller asked for — this insert never mentions
+      // is_initial. It is NOT that the column is unwritable on insert: measured, `authenticated`
+      // does hold INSERT on it, and only project_statuses_one_initial_per_project stops a second
+      // initial status landing (its own test below). The UPDATE refusal further down is the one
+      // that is a privilege.
       expect(data!.is_initial).toBe(false)
 
       const rows = await a.from('project_statuses').select('slug').eq('project_id', wp1)
@@ -785,6 +788,111 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
       const rows = await a.from('project_statuses').select('slug').eq('project_id', wp1)
       expect(rows.data).toHaveLength(DEFAULT_PROJECT_STATUSES.length + 1) // neither landed
+    })
+
+    /**
+     * THE CONSTRAINT `src/lib/sprints.ts` LEANS ON, and nothing asserted it existed.
+     *
+     * `completeSprint` builds its "not on a terminal status" filter by string-joining
+     * slugs into a PostgREST `in (…)` list, and its docblock says that is safe BECAUSE
+     * project_statuses_slug_format constrains every slug to `^[a-z][a-z0-9_]{0,29}$` —
+     * no comma, paren or quote to escape. That was true and unpinned: drop the check
+     * and a slug containing a comma silently splits the list, so extra statuses are
+     * excluded from the filter and INCOMPLETE tickets stay attached to a completed
+     * sprint. No unit test can see it — the client never validates a slug it read back
+     * from a row. Follows projects_key_format's precedent in projects.integration.test.ts.
+     *
+     * Three probes, one per clause the join actually depends on: the comma is the
+     * separator, the closing paren terminates the list, and a leading digit is the
+     * check's `^[a-z]` anchor (which `slugForName`'s `s_` prefix exists to satisfy).
+     */
+    it.each([['q,a'], ['qa)'], ['1qa']])(
+      'rejects the slug %s — project_statuses_slug_format is what makes the sprint filter safe',
+      async (slug) => {
+        const { data, error } = await a
+          .from('project_statuses')
+          .insert({ project_id: wp2, slug, name: `Probe ${slug}`, position: 90 })
+          .select()
+        expect(data).toBeNull()
+        expect(error!.code).toBe('23514') // OBSERVED: check_violation.
+        expect(error!.message).toContain('project_statuses_slug_format')
+      },
+    )
+
+    /**
+     * `is_initial` IS client-writable on INSERT — measured, not assumed:
+     * `has_column_privilege('authenticated','project_statuses','is_initial','INSERT')`
+     * is true, and the insert below reaches the database rather than being refused at
+     * 42501 the way the UPDATE above is. The ONLY thing stopping a project from having
+     * two initial statuses is the partial unique index
+     * project_statuses_one_initial_per_project, and nothing asserted that either.
+     *
+     * Inert today (`createProjectStatus` always sends `is_initial: false`) and
+     * load-bearing at SPRIN-80, which replaces tickets.status's bare `default 'todo'`
+     * with an is_initial lookup — at which point "exactly one initial status" stops
+     * being tidiness and becomes the thing ticket creation resolves against.
+     *
+     * A stranger's attempt is paired in for the second half: the WITH CHECK refuses it
+     * at 42501 before the index is ever consulted, so the two guards are independently
+     * evidenced rather than covering for each other.
+     */
+    it('cannot insert a SECOND initial status, even though is_initial is insertable', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp2,
+          slug: 'kickoff',
+          name: 'Kickoff',
+          category: 'todo',
+          position: 91,
+          is_initial: true,
+        })
+        .select()
+      expect(data).toBeNull()
+      // NOT 42501: the column grant permits this write, the index refuses the row.
+      expect(error!.code).toBe('23505')
+      expect(error!.message).toContain('project_statuses_one_initial_per_project')
+
+      // The seeded initial status is untouched, and no second one landed.
+      const initial = await a
+        .from('project_statuses')
+        .select('slug')
+        .eq('project_id', wp2)
+        .eq('is_initial', true)
+      expect(initial.data).toEqual([{ slug: 'todo' }])
+    })
+
+    /**
+     * THE SENTENCE `project-statuses.ts` PARSES. Its `writeError` distinguishes a
+     * duplicate NAME from a duplicate POSITION — two 23505s with completely different
+     * remedies — and PostgREST gives it only one channel to do it on: `details` and
+     * `hint` are both null here, so the constraint name lives in `message` alone.
+     *
+     * Without this, renaming a constraint or a PostgREST upgrade that reworded the
+     * message would silently collapse every position collision back into "a status with
+     * that name already exists" — the exact false statement the mapping was written to
+     * remove, and one no mocked-client unit test can detect, because the unit tests
+     * supply the message themselves.
+     */
+    it('names the violated constraint in the message, which is how the client tells them apart', async () => {
+      // The LAST SEEDED position, so this collides wherever in the block it runs — a literal
+      // would tie it to whatever the tests around it happen to have inserted by then. The name
+      // and slug are unique in wp2, so position is the only constraint this row can violate.
+      const collision = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp2,
+          slug: 'position_probe',
+          name: 'Position probe',
+          category: 'todo',
+          position: DEFAULT_PROJECT_STATUSES.length,
+        })
+        .select()
+      expect(collision.data).toBeNull()
+      expect(collision.error!.code).toBe('23505')
+      expect(collision.error!.message).toContain('project_statuses_project_position_unique')
+      // And the name constraint is a DIFFERENT string, or the client could not separate them.
+      expect(collision.error!.message).not.toContain('project_statuses_project_name_unique')
     })
 
     /**

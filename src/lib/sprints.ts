@@ -203,7 +203,11 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * The raw join into the `in` list is safe because `project_statuses_slug_format` constrains
  * every slug to `^[a-z][a-z0-9_]{0,29}$`: there is no comma, paren or quote in a slug to
  * escape. The CHECK constraint is what makes this safe, not the caller's good manners — and
- * the slugs originate from database rows, never from user text.
+ * the slugs originate from database rows, never from user text. That constraint is asserted
+ * live in `rls.integration.test.ts`, because a claim about a database rule that no test
+ * exercises is a comment, not a control: were the check dropped, a slug containing a comma
+ * would split this list and quietly leave incomplete tickets attached to a completed sprint,
+ * with nothing on the client able to notice.
  *
  * A sprint can only be completed from `active`, and the gate has to precede the ticket move:
  * `requireSprintStatus` runs FIRST so a `future` or already-`complete` sprint is rejected
