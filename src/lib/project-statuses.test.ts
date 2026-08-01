@@ -1,15 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { listProjectStatuses, statusName, statusOptions } from './project-statuses'
+import {
+  createProjectStatus,
+  doneSlugs,
+  listProjectStatuses,
+  renameProjectStatus,
+  reorderProjectStatuses,
+  slugForName,
+  statusName,
+  statusOptions,
+  uniqueSlugForName,
+} from './project-statuses'
 import type { ProjectStatus } from './domain'
 import { supabase } from './supabase'
 
-vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
+vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn(), rpc: vi.fn() } }))
 
-// listProjectStatuses: from('project_statuses').select().eq(...).order(...)
+// Each PostgREST chain gets its OWN link functions rather than sharing one `select`/`eq`.
+// The three chains diverge after the same method name — `.select()` returns `{ eq }` when it
+// starts a read and `{ single }` when it terminates a write — so a shared mock could only
+// return one of them, and a test asserting on it could not say which call it saw.
+//
+//   listProjectStatuses:  from().select().eq().order()
+//   createProjectStatus:  from().insert().select().single()
+//   renameProjectStatus:  from().update().eq().select().single()
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
 const select = vi.fn(() => ({ eq }))
+
+const single = vi.fn()
+const selectInsert = vi.fn(() => ({ single }))
+const insert = vi.fn(() => ({ select: selectInsert }))
+const selectUpdate = vi.fn(() => ({ single }))
+const eqUpdate = vi.fn(() => ({ select: selectUpdate }))
+const update = vi.fn(() => ({ eq: eqUpdate }))
 
 beforeEach(() => {
   order.mockReset()
@@ -17,8 +41,22 @@ beforeEach(() => {
   eq.mockReturnValue({ order })
   select.mockReset()
   select.mockReturnValue({ eq })
+
+  single.mockReset()
+  selectInsert.mockReset()
+  selectInsert.mockReturnValue({ single })
+  insert.mockReset()
+  insert.mockReturnValue({ select: selectInsert })
+  selectUpdate.mockReset()
+  selectUpdate.mockReturnValue({ single })
+  eqUpdate.mockReset()
+  eqUpdate.mockReturnValue({ select: selectUpdate })
+  update.mockReset()
+  update.mockReturnValue({ eq: eqUpdate })
+
   vi.mocked(supabase.from).mockReset()
-  vi.mocked(supabase.from).mockReturnValue({ select } as never)
+  vi.mocked(supabase.from).mockReturnValue({ select, insert, update } as never)
+  vi.mocked(supabase.rpc).mockReset()
 })
 
 /** Deliberately NOT in position order, and NOT the seeded four: a fixture that already
@@ -81,5 +119,253 @@ describe('statusOptions', () => {
 
   it('does not duplicate the current status when it IS in the list', () => {
     expect(statusOptions(ROWS, 'shipped')).toHaveLength(2)
+  })
+})
+
+describe('slugForName', () => {
+  it('lowercases and joins words with underscores', () => {
+    expect(slugForName('Ready For QA')).toBe('ready_for_qa')
+  })
+
+  it('collapses runs of punctuation and strips the edges', () => {
+    expect(slugForName('  Ready -- for  QA!! ')).toBe('ready_for_qa')
+  })
+
+  it('truncates to the 30 characters the slug_format check allows', () => {
+    // The DB check is ^[a-z][a-z0-9_]{0,29}$ — 30 characters total.
+    const slug = slugForName('a'.repeat(50))
+    expect(slug).toHaveLength(30)
+  })
+
+  // Truncation must not leave a trailing underscore-run that the strip would have removed.
+  it('does not end in an underscore after truncating', () => {
+    expect(slugForName('abcdefghijklmnopqrstuvwxyzabc def')).not.toMatch(/_$/)
+  })
+
+  it('returns null when the name cannot produce a slug starting with a letter', () => {
+    expect(slugForName('42')).toBeNull()
+    expect(slugForName('!!!')).toBeNull()
+    expect(slugForName('   ')).toBeNull()
+  })
+})
+
+describe('uniqueSlugForName', () => {
+  it('returns the plain slug when nothing has taken it', () => {
+    expect(uniqueSlugForName('To Do', ['done'])).toBe('to_do')
+  })
+
+  // Two DIFFERENT names can derive to ONE slug ("To Do" / "To-Do"), and the
+  // duplicate-NAME index does not catch that — these are different names.
+  it('suffixes until free when a different name already took the slug', () => {
+    expect(uniqueSlugForName('To-Do', ['to_do'])).toBe('to_do_2')
+    expect(uniqueSlugForName('To-Do', ['to_do', 'to_do_2'])).toBe('to_do_3')
+  })
+
+  it('keeps the suffixed slug inside the 30-character limit', () => {
+    const taken = ['a'.repeat(30)]
+    const slug = uniqueSlugForName('a'.repeat(50), taken)
+    expect(slug!.length).toBeLessThanOrEqual(30)
+  })
+
+  it('returns null when the name has no derivable slug at all', () => {
+    expect(uniqueSlugForName('42', [])).toBeNull()
+  })
+})
+
+describe('doneSlugs', () => {
+  it('selects exactly the rows whose category is done, by slug', () => {
+    const rows = [
+      { slug: 'triage', category: 'todo' },
+      { slug: 'shipped', category: 'done' },
+      { slug: 'live', category: 'done' },
+    ] as unknown as ProjectStatus[]
+    expect(doneSlugs(rows)).toEqual(new Set(['shipped', 'live']))
+  })
+
+  // The empty set is a REAL state, not an error: a project with nothing terminal has
+  // nothing complete, so every ticket is incomplete. sprints.ts depends on this.
+  it('returns an empty set when no status is terminal', () => {
+    const rows = [{ slug: 'triage', category: 'todo' }] as unknown as ProjectStatus[]
+    expect(doneSlugs(rows).size).toBe(0)
+  })
+
+  // The slug 'done' is NOT what makes a status terminal — the category is. A renamed or
+  // re-categorised row must follow the category, which is the whole point of this story.
+  it('ignores a status whose SLUG is done but whose category is not', () => {
+    const rows = [{ slug: 'done', category: 'in_progress' }] as unknown as ProjectStatus[]
+    expect(doneSlugs(rows).size).toBe(0)
+  })
+})
+
+describe('createProjectStatus', () => {
+  const existing = [
+    { slug: 'todo', name: 'To Do', category: 'todo', position: 1 },
+    { slug: 'done', name: 'Done', category: 'done', position: 2 },
+  ] as unknown as ProjectStatus[]
+
+  it('appends at max(position) + 1 so an add never reorders the board', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+
+    await createProjectStatus({ projectId: 'p1', name: 'QA', category: 'in_progress', existing })
+
+    expect(supabase.from).toHaveBeenCalledWith('project_statuses')
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({ project_id: 'p1', slug: 'qa', name: 'QA', position: 3 }),
+    )
+  })
+
+  // NOT list length + 1. A project whose positions are 1,2,5 must not produce another 5 —
+  // and `existing.length + 1` would, which is exactly the reduce this kills.
+  it('appends past a GAP in the positions rather than colliding with the last row', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+    const gappy = [
+      { slug: 'todo', position: 1 },
+      { slug: 'done', position: 9 },
+    ] as unknown as ProjectStatus[]
+
+    await createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing: gappy })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ position: 10 }))
+  })
+
+  // A project with no statuses at all still has to land on a LEGAL position:
+  // project_statuses_position_positive requires >= 1, so the seed of the reduce is 0, not -1.
+  it('starts at position 1 when the project has no statuses yet', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+
+    await createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing: [] })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ position: 1 }))
+  })
+
+  // The slug must dodge the slugs ALREADY in the project, not just be well-formed: two
+  // different names ("Done" and "done!") derive to one slug and would earn a raw 23505.
+  it('derives a slug that avoids the ones the project has already taken', async () => {
+    single.mockResolvedValue({ data: { slug: 'done_2' }, error: null })
+
+    await createProjectStatus({ projectId: 'p1', name: 'Done!', category: 'done', existing })
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ slug: 'done_2' }))
+  })
+
+  it('sends the category it was given', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+    await createProjectStatus({ projectId: 'p1', name: 'QA', category: 'in_progress', existing })
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ category: 'in_progress' }))
+  })
+
+  // is_initial is sent EXPLICITLY, not left to the column default: the default is the thing
+  // SPRIN-80 changes, and this row must not silently follow it.
+  it('sends is_initial false explicitly', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa' }, error: null })
+    await createProjectStatus({ projectId: 'p1', name: 'QA', category: 'in_progress', existing })
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({ is_initial: false }))
+  })
+
+  it('returns the database row on success', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa', name: 'QA' }, error: null })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: true, value: { slug: 'qa', name: 'QA' } })
+  })
+
+  it('maps 23505 to duplicate, so the form can point at the name field', async () => {
+    single.mockResolvedValue({ data: null, error: { code: '23505', message: 'dup' } })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'Done', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'duplicate' })
+  })
+
+  it('maps any other error to unknown', async () => {
+    single.mockResolvedValue({ data: null, error: { code: '08006', message: 'boom' } })
+    await expect(
+      createProjectStatus({ projectId: 'p1', name: 'QA', category: 'todo', existing }),
+    ).resolves.toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('fails WITHOUT a request when the name yields no legal slug', async () => {
+    const result = await createProjectStatus({
+      projectId: 'p1',
+      name: '42',
+      category: 'todo',
+      existing,
+    })
+    expect(result).toEqual({ ok: false, error: 'unknown' })
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+})
+
+describe('renameProjectStatus', () => {
+  it('updates ONLY name — slug is the fk target and is not client-writable', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa', name: 'In QA' }, error: null })
+
+    await renameProjectStatus('s1', 'In QA')
+
+    expect(supabase.from).toHaveBeenCalledWith('project_statuses')
+    expect(update).toHaveBeenCalledWith({ name: 'In QA' })
+    expect(eqUpdate).toHaveBeenCalledWith('id', 's1')
+  })
+
+  it('returns the database row on success', async () => {
+    single.mockResolvedValue({ data: { slug: 'qa', name: 'In QA' }, error: null })
+    await expect(renameProjectStatus('s1', 'In QA')).resolves.toEqual({
+      ok: true,
+      value: { slug: 'qa', name: 'In QA' },
+    })
+  })
+
+  it('maps 23505 to duplicate', async () => {
+    single.mockResolvedValue({ data: null, error: { code: '23505', message: 'dup' } })
+    await expect(renameProjectStatus('s1', 'Done')).resolves.toEqual({
+      ok: false,
+      error: 'duplicate',
+    })
+  })
+
+  it('maps any other error to unknown', async () => {
+    single.mockResolvedValue({ data: null, error: { code: '42501', message: 'denied' } })
+    await expect(renameProjectStatus('s1', 'Done')).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
+  })
+})
+
+describe('reorderProjectStatuses', () => {
+  it('calls the RPC with the COMPLETE ordered slug list', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: [], error: null } as never)
+
+    await reorderProjectStatuses('p1', ['done', 'todo'])
+
+    expect(supabase.rpc).toHaveBeenCalledWith('reorder_project_statuses', {
+      p_project_id: 'p1',
+      p_slugs: ['done', 'todo'],
+    })
+  })
+
+  // One RPC, never N patches: project_statuses_project_position_unique is DEFERRABLE
+  // INITIALLY DEFERRED and PostgREST gives each request its own transaction, so N separate
+  // `PATCH position=` calls collide on the very first swap.
+  it('issues exactly one request and never a PostgREST table write', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: [], error: null } as never)
+
+    await reorderProjectStatuses('p1', ['done', 'todo'])
+
+    expect(supabase.rpc).toHaveBeenCalledTimes(1)
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it("returns the RPC's own post-update rows, not a guess", async () => {
+    const rows = [{ slug: 'done', position: 1 }]
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: rows, error: null } as never)
+    await expect(reorderProjectStatuses('p1', ['done'])).resolves.toEqual({ ok: true, value: rows })
+  })
+
+  it('maps an error to unknown', async () => {
+    vi.mocked(supabase.rpc).mockResolvedValue({ data: null, error: { message: 'boom' } } as never)
+    await expect(reorderProjectStatuses('p1', ['todo'])).resolves.toEqual({
+      ok: false,
+      error: 'unknown',
+    })
   })
 })

@@ -15,6 +15,12 @@
  * how it gets forgotten: `.from('project_statuses')` failing to type-check is the
  * only symptom.
  *
+ * `Functions` is no longer empty. SPRIN-77's migration added the
+ * `reorder_project_statuses` RPC, and unlike a column widening, an RPC DOES force
+ * this regeneration: `Functions` keys the only overload of `supabase.rpc`, so
+ * calling a function this file has never seen is a compile error rather than a
+ * silent `string`.
+ *
  * The narrowed domain unions live in `domain.ts`, which is hand-owned precisely so
  * that regenerating this file cannot clobber them.
  */
@@ -285,7 +291,25 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      reorder_project_statuses: {
+        Args: { p_project_id: string; p_slugs: string[] }
+        Returns: {
+          category: string
+          created_at: string
+          id: string
+          is_initial: boolean
+          name: string
+          position: number
+          project_id: string
+          slug: string
+        }[]
+        SetofOptions: {
+          from: '*'
+          to: 'project_statuses'
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
     }
     Enums: {
       [_ in never]: never
