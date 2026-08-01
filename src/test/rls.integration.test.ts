@@ -15,11 +15,26 @@ import {
 
 assertCredentialsOrExplain()
 
-/** A unique, schema-legal project key per run, so a failed cleanup cannot collide. */
+/**
+ * A unique, schema-legal project key per run, so a failed cleanup cannot collide.
+ *
+ * THREE random characters, not two. `projects_key_format` allows `^[A-Z][A-Z0-9]{1,3}$`,
+ * so two picks used a 1,296-key space where 46,656 was available — a 36x entropy loss for
+ * nothing, in the one suite whose teardown had already been observed to leak projects into
+ * the shared database. It duly collided on `projects_owner_key_unique` during SPRIN-77,
+ * against a leaked project from an earlier run, and read as a mysterious 23505 on a branch
+ * whose code was fine.
+ *
+ * `sprints.integration.test.ts` already used three. This was the outlier, not the pattern.
+ *
+ * Entropy is the second line of defence here, never the first: the teardown below deletes
+ * every fixture project BEFORE its first assertion precisely so leaked rows do not
+ * accumulate. This only bounds the damage when that fails anyway.
+ */
 function runKey(): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
   const pick = () => alphabet[Math.floor(Math.random() * alphabet.length)]!
-  return `T${pick()}${pick()}`
+  return `T${pick()}${pick()}${pick()}`
 }
 
 /**
