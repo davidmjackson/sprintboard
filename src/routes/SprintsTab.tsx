@@ -1,6 +1,7 @@
 import { useOutletContext } from 'react-router-dom'
 
 import { selectSprintTickets } from '@/lib/backlog'
+import { doneSlugs } from '@/lib/project-statuses'
 import { SPRINT_STATUS_LABELS } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CompleteSprintButton } from './CompleteSprintButton'
@@ -21,6 +22,9 @@ import { StartSprintButton } from './StartSprintButton'
  * both loading and failed, so `defaultSprintName` would otherwise number off an empty array —
  * a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the shell's
  * `onSprintCreated` guard drops it) if the read failed.
+ *
+ * The Complete trigger is gated on `statusesPhase` for the same class of reason (SPRIN-77) —
+ * see `canComplete` below, where the specific failure mode is spelled out.
  */
 export function SprintsTab() {
   const {
@@ -33,7 +37,25 @@ export function SprintsTab() {
     onRetry,
     tickets,
     ticketsPhase,
+    statuses,
+    statusesPhase,
   } = useOutletContext<ProjectShellContext>()
+
+  // Derived ONCE for every row, from the project's status rows by CATEGORY rather than by the
+  // slug 'done' (SPRIN-77). `doneSlugs` is the single derivation the sprint-completion DB
+  // filter and the shell's optimistic reducer both use — two independent derivations of
+  // "terminal" could drift, and the reducer's idempotency argument depends on them agreeing.
+  const terminalSlugs = doneSlugs(statuses)
+
+  // And the phase is consulted before the list, the same rule the create trigger below
+  // follows. This is not decoration: `statuses` is `[]` both while loading and when the read
+  // failed, which yields an EMPTY terminal set — indistinguishable from a project that has
+  // nothing terminal, in which case `completeSprint` omits its filter and returns EVERY
+  // ticket to the backlog, Done ones included. Before SPRIN-77 the rule was a hardcoded
+  // literal and could not be wrong; now that it is read, a degraded read must not be allowed
+  // to look like an answer. Hiding the button is the honest degradation — the same one the
+  // ticket-count badge makes — and the tab's own Retry restores it.
+  const canComplete = statusesPhase === 'loaded'
 
   return (
     <div className="space-y-4">
@@ -120,8 +142,12 @@ export function SprintsTab() {
               {sprint.status === 'future' ? (
                 <StartSprintButton sprint={sprint} onStarted={onSprintUpdated} />
               ) : null}
-              {sprint.status === 'active' ? (
-                <CompleteSprintButton sprint={sprint} onCompleted={onSprintCompleted} />
+              {sprint.status === 'active' && canComplete ? (
+                <CompleteSprintButton
+                  sprint={sprint}
+                  terminalSlugs={terminalSlugs}
+                  onCompleted={onSprintCompleted}
+                />
               ) : null}
             </li>
           ))}

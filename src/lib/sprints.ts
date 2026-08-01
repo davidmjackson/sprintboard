@@ -181,11 +181,29 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * matched). Flipping first would fail unsafe: a `complete` sprint with tickets still attached,
  * silently violating "incomplete tickets return to the backlog".
  *
- * `status <> 'done'` is the "incomplete" rule: Done tickets keep their `sprint_id` (that
- * retained id IS the sprint history AC3 asks for, and is why S5.1's `sprint_id is null`
- * backlog rule excludes them) and their Done status (we never touch them). The bulk UPDATE is
- * atomic across all matching rows and returns them via `.select()` for the UI's local patch —
- * these are the database's own post-update rows, not a guess.
+ * "Incomplete" means "not on one of this project's TERMINAL statuses", and as of SPRIN-77 that
+ * is a CATEGORY question rather than the literal slug `'done'`. The caller supplies the answer
+ * as `terminalSlugs`, derived once by `doneSlugs` in `project-statuses.ts` — the same single
+ * derivation the shell's optimistic reducer uses, because this function's correctness argument
+ * is that the database's rule and the client's local patch are THE SAME RULE. Before SPRIN-77
+ * both sites hardcoded `'done'`, which was only true while the vocabulary was immutable: a
+ * user-added terminal status would have had its tickets dragged back to the backlog here.
+ *
+ * Terminal tickets keep their `sprint_id` (that retained id IS the sprint history AC3 asks
+ * for, and is why S5.1's `sprint_id is null` backlog rule excludes them) and their status (we
+ * never touch them). The bulk UPDATE is atomic across all matching rows and returns them via
+ * `.select()` for the UI's local patch — these are the database's own post-update rows, not a
+ * guess.
+ *
+ * An EMPTY set is a real state, not an error: a project with no done-category status has
+ * nothing terminal, so every ticket is incomplete and every one returns to the backlog. `in ()`
+ * is malformed SQL, so the filter is OMITTED entirely in that case — which produces exactly
+ * that behaviour, rather than an error the user cannot act on.
+ *
+ * The raw join into the `in` list is safe because `project_statuses_slug_format` constrains
+ * every slug to `^[a-z][a-z0-9_]{0,29}$`: there is no comma, paren or quote in a slug to
+ * escape. The CHECK constraint is what makes this safe, not the caller's good manners — and
+ * the slugs originate from database rows, never from user text.
  *
  * A sprint can only be completed from `active`, and the gate has to precede the ticket move:
  * `requireSprintStatus` runs FIRST so a `future` or already-`complete` sprint is rejected
@@ -219,16 +237,21 @@ export type CompleteSprintResult =
   | { ok: false; error: 'stale' }
   | { ok: false; error: 'unknown' }
 
-export async function completeSprint(id: string): Promise<CompleteSprintResult> {
+export async function completeSprint(
+  id: string,
+  terminalSlugs: ReadonlySet<string>,
+): Promise<CompleteSprintResult> {
   const guard = await requireSprintStatus(id, 'active')
   if (!guard.ok) return guard
 
-  const { data: moved, error: ticketsError } = await supabase
+  const move = supabase
     .from('tickets')
     .update({ sprint_id: null } satisfies TicketUpdate)
     .eq('sprint_id', id)
-    .neq('status', 'done')
-    .select()
+  const incomplete =
+    terminalSlugs.size > 0 ? move.not('status', 'in', `(${[...terminalSlugs].join(',')})`) : move
+
+  const { data: moved, error: ticketsError } = await incomplete.select()
 
   if (ticketsError) return { ok: false, error: 'unknown' }
 

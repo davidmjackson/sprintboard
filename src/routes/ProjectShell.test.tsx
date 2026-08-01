@@ -840,9 +840,83 @@ describe('ProjectShell', () => {
     expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
     // The returned ticket left the sprint: the count badge drops to 0. Local mutation only.
     expect(within(row).getByText('0')).toBeInTheDocument()
-    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1')
+    // The terminal set, derived by `doneSlugs` from the seeded rows the statuses read landed.
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set(['done']))
     expect(mockListSprints).toHaveBeenCalledTimes(1)
     expect(mockList).toHaveBeenCalledTimes(1)
+  })
+
+  // SPRIN-77, and the point of the whole story: the shell's optimistic reducer must ask the
+  // status's CATEGORY, not its slug. Both directions in one assertion, because a fix that read
+  // the category for one and the slug for the other would still pass a one-sided test.
+  //
+  // `returnedTickets: []` is deliberate — it forces the reducer to derive the move itself
+  // rather than copying the database's answer, which is the code path under test.
+  //
+  // The counts are DELIBERATELY LOPSIDED — two terminal tickets against one merely slugged
+  // 'done'. An even split leaves the badge reading 1 under both rules, so the first draft of
+  // this test passed against the unchanged `t.status !== 'done'` reducer: the count says how
+  // many stayed, never which ones. Two-against-one makes the two rules give different numbers.
+  it('keeps tickets on a terminal-CATEGORY status in the sprint and returns one merely slugged done', async () => {
+    const user = userEvent.setup()
+    // A vocabulary where the two rules disagree: 'shipped' is terminal, 'done' is not.
+    mockListStatuses.mockResolvedValue([
+      { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
+      { id: 'st2', slug: 'done', name: 'Done (not really)', category: 'in_progress', position: 2 },
+      { id: 'st3', slug: 'shipped', name: 'Shipped', category: 'done', position: 3 },
+    ] as unknown as ProjectStatus[])
+    mockList.mockResolvedValue([
+      { ...ticketA, id: 'tShipped1', key: 'APP-1', number: 1, sprint_id: 's1', status: 'shipped' },
+      { ...ticketB, id: 'tShipped2', key: 'APP-2', number: 2, sprint_id: 's1', status: 'shipped' },
+      { ...ticketB, id: 'tDone', key: 'APP-3', number: 3, sprint_id: 's1', status: 'done' },
+    ])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [],
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    expect(within(row).getByText('3')).toBeInTheDocument()
+
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    // Two stayed (categorised done), one left (categorised in_progress despite its slug). A
+    // reducer still reading the slug would leave exactly ONE attached instead.
+    expect(within(row).getByText('2')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set(['shipped']))
+  })
+
+  // A project with NO done-category status has nothing terminal, so every ticket comes back —
+  // including one whose slug happens to be 'done'. The empty set is a real state, not an error.
+  it('returns every ticket to the backlog when the project has no terminal status', async () => {
+    const user = userEvent.setup()
+    mockListStatuses.mockResolvedValue([
+      { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
+      { id: 'st2', slug: 'done', name: 'Done (not really)', category: 'in_progress', position: 2 },
+    ] as unknown as ProjectStatus[])
+    mockList.mockResolvedValue([{ ...ticketA, id: 'tDone', sprint_id: 's1', status: 'done' }])
+    mockListSprints.mockResolvedValue([
+      { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'active' },
+    ])
+    vi.mocked(completeSprint).mockResolvedValue({
+      ok: true,
+      sprint: { ...sprintBase, id: 's1', name: 'Sprint 1', status: 'complete' },
+      returnedTickets: [],
+    })
+
+    renderShell('/projects/p1/sprints')
+
+    const row = (await screen.findByText('Sprint 1')).closest('li') as HTMLElement
+    await user.click(within(row).getByRole('button', { name: 'Complete' }))
+
+    expect(within(row).getByText('0')).toBeInTheDocument()
+    expect(vi.mocked(completeSprint)).toHaveBeenCalledWith('s1', new Set())
   })
 
   it('completes a sprint on retry after a failed attempt already moved the ticket: badge still drops to 0', async () => {

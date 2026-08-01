@@ -7,7 +7,7 @@ import type { ReadPhase } from '@/lib/project-reads'
 import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
-import { listProjectStatuses } from '@/lib/project-statuses'
+import { doneSlugs, listProjectStatuses } from '@/lib/project-statuses'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
@@ -59,7 +59,8 @@ export type ProjectShellContext = {
   /** Completing a sprint changes TWO of the shell's lists at once: the sprint's status and
    *  the `sprint_id` of every incomplete ticket that returned to the backlog. This applies
    *  both in one update so the count badge and the status badge never render out of step.
-   *  A local mutation from the DB's own returned rows, not a refetch. */
+   *  A local mutation from the DB's own returned rows, not a refetch. "Incomplete" is decided
+   *  by `doneSlugs(statuses)` — the status's CATEGORY, not the slug 'done' (SPRIN-77). */
   onSprintCompleted: (sprint: Sprint, returnedTickets: Ticket[]) => void
   /** The signed-in user. Resolved once here (the shell is inside `RequireAuth`, so it
    *  always exists) and shared, so a tab never reaches for the auth context itself and
@@ -152,20 +153,28 @@ export function ProjectShell() {
   // tickets. The ticket patch is NOT driven solely by `returnedTickets`: a prior attempt can
   // already have moved a ticket in the DB (returning it) and then failed on the status flip,
   // so the retry's bulk update matches zero rows and returns []. Deriving the move from the
-  // completed sprint itself — by the same rule the DB applies
-  // (`sprint_id=null where sprint_id=id and status<>'done'`) — makes the patch idempotent and
-  // correct on both the happy path and the retry path. Done tickets keep their sprint_id
+  // completed sprint itself — by the same rule the DB applies — makes the patch idempotent and
+  // correct on both the happy path and the retry path. Terminal tickets keep their sprint_id
   // (retained history), exactly as the DB leaves them.
+  //
+  // "The same rule" is literal, and as of SPRIN-77 it is load-bearing rather than incidental:
+  // `terminal` comes from `doneSlugs`, the SAME derivation `SprintsTab` handed to
+  // `completeSprint` for the database filter. This used to read `t.status !== 'done'`, which
+  // agreed with the DB only while the vocabulary was immutable — a user-added terminal status
+  // would have had its tickets painted back into the backlog here while the database kept
+  // them. Two independent derivations of "terminal" could drift; one cannot, and the
+  // idempotency argument above depends on them agreeing.
   //
   // Both lists are patched so the count badge and the status badge never render out of step.
   const onSprintCompleted = (updated: Sprint, returnedTickets: Ticket[]) => {
     sprintRead.patch(project.id, (ss) => ss.map((s) => (s.id === updated.id ? updated : s)))
+    const terminal = doneSlugs(statuses)
     const returnedById = new Map(returnedTickets.map((t) => [t.id, t]))
     ticketRead.patch(project.id, (ts) =>
       ts.map(
         (t) =>
           returnedById.get(t.id) ??
-          (t.sprint_id === updated.id && t.status !== 'done' ? { ...t, sprint_id: null } : t),
+          (t.sprint_id === updated.id && !terminal.has(t.status) ? { ...t, sprint_id: null } : t),
       ),
     )
   }

@@ -40,11 +40,26 @@ export type TicketType = 'epic' | 'story' | 'bug' | 'task'
 
 /**
  * Jira's status category — the bucket a status belongs to regardless of its name.
- * This is where the "done is terminal" rule eventually lives; right now nothing
- * reads it, because the four seeded statuses make `'done'` unambiguous. SPRIN-77
- * must move `src/lib/sprints.ts`'s `.neq('status','done')` and
- * `src/routes/ProjectShell.tsx`'s `t.status !== 'done'` onto this column — BOTH of
- * them, together — before it opens write access to `project_statuses`.
+ *
+ * This IS the "done is terminal" rule as of SPRIN-77, which moved both sites that
+ * used to hardcode the slug `'done'` onto this column together: `completeSprint`'s
+ * database filter in `src/lib/sprints.ts` and the optimistic reducer in
+ * `src/routes/ProjectShell.tsx`. Neither move was useful alone — the filter without
+ * the reducer paints a ticket back into the backlog that the database kept, and the
+ * reducer without the filter does the reverse.
+ *
+ * Both read `doneSlugs` in `src/lib/project-statuses.ts`, and that single derivation
+ * is the point: `completeSprint`'s correctness argument is that the database's rule
+ * and the client's local patch are THE SAME RULE, so its patch is idempotent across
+ * the fail-then-retry path. Two independent derivations could drift; one cannot.
+ * **Re-inlining the slug `'done'` anywhere would compile, pass a seeded-vocabulary
+ * test, and silently break every user-added terminal status** — a project whose
+ * terminal status is called anything else would have its finished tickets dragged
+ * back to the backlog on sprint completion.
+ *
+ * The empty case is a real state, not an error: a project with no done-category
+ * status has nothing terminal, so every ticket is incomplete. See `completeSprint`,
+ * which omits its filter entirely rather than emitting a malformed `in ()`.
  */
 export type StatusCategory = 'todo' | 'in_progress' | 'done'
 /**

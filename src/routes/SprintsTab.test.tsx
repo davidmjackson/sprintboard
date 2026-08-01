@@ -5,7 +5,8 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
-import type { Project, Sprint, Ticket } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
+import type { Project, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { completeSprint, startSprint } from '@/lib/sprints'
 
 vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn(), completeSprint: vi.fn() }))
@@ -86,6 +87,15 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
   }
 }
 
+/** A project whose statuses are NOT the seeded four: the terminal one is slugged 'shipped',
+ *  and a status slugged 'done' is deliberately categorised `in_progress`. A fixture that
+ *  reused the seeded vocabulary could not tell "reads the category" from "reads the slug". */
+const STATUSES = [
+  { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
+  { id: 'st2', slug: 'done', name: 'Done (not really)', category: 'in_progress', position: 2 },
+  { id: 'st3', slug: 'shipped', name: 'Shipped', category: 'done', position: 3 },
+] as unknown as ProjectStatus[]
+
 // The parent route's element is an `<Outlet context={...}>`, per the established pattern
 // in BoardTab.test.tsx — a bare `<div />` has no outlet, so the nested route could never
 // mount and the fixture would wire to nothing (the suite would pass vacuously).
@@ -103,23 +113,33 @@ function renderTab(
     onRetry?: () => void
     tickets?: Ticket[]
     ticketsPhase?: TicketsPhase
+    statuses?: ProjectStatus[]
+    statusesPhase?: ReadPhase
   } = {},
 ) {
-  // `ticketsPhase` defaults to 'loaded' — the landed state every other test here means.
-  // It has to be passed explicitly: the `as ProjectShellContext` cast below is an
-  // assertion, not a check, so omitting a field the component reads is not a type error.
-  // It would arrive as `undefined`, which is neither 'loading' nor 'loaded' — the count
-  // tests would pass for the wrong reason and the loading test could never fail.
+  // Every field the component reads is defaulted HERE, and `ctx` is spread over the top.
+  // Both phases default to 'loaded' — the landed state every other test here means — and
+  // both have to be supplied: the `as ProjectShellContext` cast is an assertion, not a
+  // check, so omitting a field the component reads is not a type error. It would arrive as
+  // `undefined`, which is neither 'loading' nor 'loaded' — the ticket-count tests would pass
+  // for the wrong reason, and the Complete button would be absent from every test because
+  // `statusesPhase !== 'loaded'`, not because the case under test made it so.
+  //
+  // Spread rather than a `??` per field: eleven of those put this function over T2's
+  // cyclomatic 10, and the defaults do not need a branch each.
   const context = {
     project,
-    sprints: ctx.sprints ?? [],
-    sprintsPhase: ctx.sprintsPhase ?? 'loaded',
-    onSprintCreated: ctx.onSprintCreated ?? vi.fn(),
-    onSprintUpdated: ctx.onSprintUpdated ?? vi.fn(),
-    onSprintCompleted: ctx.onSprintCompleted ?? vi.fn(),
-    onRetry: ctx.onRetry ?? vi.fn(),
-    tickets: ctx.tickets ?? [],
-    ticketsPhase: ctx.ticketsPhase ?? 'loaded',
+    sprints: [],
+    sprintsPhase: 'loaded',
+    onSprintCreated: vi.fn(),
+    onSprintUpdated: vi.fn(),
+    onSprintCompleted: vi.fn(),
+    onRetry: vi.fn(),
+    tickets: [],
+    ticketsPhase: 'loaded',
+    statuses: STATUSES,
+    statusesPhase: 'loaded',
+    ...ctx,
   } as ProjectShellContext
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
@@ -382,6 +402,62 @@ describe('SprintsTab', () => {
   // in `ProjectShell.test.tsx`. Kept here anyway because it still pins something real: the
   // message reaches the DOM through the actual `SprintsTab` → `CompleteSprintButton` wiring,
   // not just a component tested in isolation.
+  // SPRIN-77. The tab is the one place that turns the project's status ROWS into the terminal
+  // slug set, once, and hands it to every Complete button. `doneSlugs` reads the CATEGORY, so
+  // the fixture's `shipped` is terminal and its `done` — categorised `in_progress` — is not.
+  it('derives the terminal slugs from the statuses by CATEGORY and passes them to complete', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
+    const user = userEvent.setup()
+    renderTab({ sprints: [sprint({ id: 's1', status: 'active' })] })
+
+    await user.click(screen.getByRole('button', { name: 'Complete' }))
+
+    expect(mockComplete).toHaveBeenCalledWith('s1', new Set(['shipped']))
+  })
+
+  // A project with nothing terminal is a real state, not a broken one: the set is empty and
+  // `completeSprint` omits its filter, so every ticket returns to the backlog.
+  it('passes an EMPTY set when no status is in the done category', async () => {
+    mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
+    const user = userEvent.setup()
+    renderTab({
+      sprints: [sprint({ id: 's1', status: 'active' })],
+      statuses: STATUSES.filter((s) => s.category !== 'done'),
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Complete' }))
+
+    expect(mockComplete).toHaveBeenCalledWith('s1', new Set())
+  })
+
+  // The teeth on the derivation. `statuses` is `[]` both while loading and when the read
+  // failed, and an empty terminal set makes `completeSprint` omit its filter — so completing
+  // against a degraded read would return every Done ticket to the backlog too. Hiding the
+  // button is the honest degradation; Start is untouched, which is what proves the gate is
+  // about the STATUSES read and not about sprints.
+  it.each(['loading', 'failed'] as const)(
+    'hides Complete while the statuses read is %s, rather than completing with an empty set',
+    (statusesPhase) => {
+      renderTab({
+        sprints: [sprint({ id: 's1', name: 'Active one', status: 'active' })],
+        statusesPhase,
+      })
+
+      const row = screen.getByText('Active one').closest('li') as HTMLElement
+      expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+    },
+  )
+
+  it('still offers Start while the statuses read is failed — the gate is statuses-only', () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Future one', status: 'future' })],
+      statusesPhase: 'failed',
+    })
+
+    const row = screen.getByText('Future one').closest('li') as HTMLElement
+    expect(within(row).getByRole('button', { name: 'Start' })).toBeInTheDocument()
+  })
+
   it('shows the stale Complete message in the real SprintsTab composition, not a stubbed parent', async () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'stale' })
     const user = userEvent.setup()
