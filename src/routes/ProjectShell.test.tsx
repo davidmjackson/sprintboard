@@ -15,9 +15,11 @@ import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tic
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
 import {
   createProjectStatus,
+  deleteProjectStatus,
   listProjectStatuses,
   renameProjectStatus,
   reorderProjectStatuses,
+  ticketCountsByStatus,
 } from '@/lib/project-statuses'
 
 vi.mock('@/lib/auth-context', () => ({
@@ -29,6 +31,8 @@ vi.mock('@/lib/project-statuses', async (orig) => ({
   createProjectStatus: vi.fn(),
   renameProjectStatus: vi.fn(),
   reorderProjectStatuses: vi.fn(),
+  deleteProjectStatus: vi.fn(),
+  ticketCountsByStatus: vi.fn(),
 }))
 // Spread the real module so pure helpers (e.g. parseBlockReason, which the detail
 // dialog calls during render) stay real; only the network-touching functions are mocked.
@@ -79,6 +83,11 @@ beforeEach(() => {
   vi.mocked(createProjectStatus).mockReset()
   vi.mocked(renameProjectStatus).mockReset()
   vi.mocked(reorderProjectStatuses).mockReset()
+  vi.mocked(deleteProjectStatus).mockReset()
+  // Real StatusSettings now renders through this on every visit to the Settings tab (AC2), so
+  // every test that reaches it needs a default — not just the ones about deleting. `new Map()`
+  // mirrors "no counts fetched yet" the same way SettingsTab's own failure default does.
+  vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
 })
 
 const PROJECTS = [
@@ -1110,6 +1119,34 @@ describe('ProjectShell', () => {
       expect(await screen.findByRole('heading', { name: 'To Do' })).toBeInTheDocument()
       expect(columnNames()).toEqual(['To Do', 'In Progress', 'Done', 'In Review'])
       expect(mockListStatuses).toHaveBeenCalledTimes(1)
+    })
+
+    // SPRIN-80: the last of the four status reducers. Also proves the PROMOTION half of
+    // `onStatusDeleted` — not just that the deleted column vanishes, but that the database's
+    // AFTER DELETE trigger's promotion is mirrored locally: deleting 'To Do' (the seeded
+    // initial status) must make 'In Progress' (the lowest-position survivor) the new initial
+    // one, and the only place that is externally observable is the confirm dialog's hand-off
+    // sentence on a SUBSEQUENT delete of that promoted status.
+    it('deletes a status: it leaves the board with no reload, and promotes the next initial', async () => {
+      const u = userEvent.setup()
+      vi.mocked(deleteProjectStatus).mockResolvedValue({ ok: true, value: undefined })
+
+      renderShell('/projects/p1/settings')
+
+      await u.click(await screen.findByRole('button', { name: 'Delete To Do' }))
+      await u.click(await screen.findByRole('button', { name: /^delete$/i }))
+      await waitFor(() => expect(vi.mocked(deleteProjectStatus)).toHaveBeenCalledTimes(1))
+
+      await u.click(screen.getByRole('link', { name: 'Board' }))
+
+      expect(columnNames()).toEqual(['In Progress', 'In Review', 'Done'])
+      expect(mockListStatuses).toHaveBeenCalledTimes(1)
+
+      // 'In Progress' is now the initial status — `removeStatus`'s promotion, applied by the
+      // shell's local reducer, not a refetch (the read above already pinned that at 1 call).
+      await u.click(screen.getByRole('link', { name: 'Settings' }))
+      await u.click(await screen.findByRole('button', { name: 'Delete In Progress' }))
+      expect(await screen.findByRole('alertdialog')).toHaveTextContent(/will start in in review/i)
     })
   })
 

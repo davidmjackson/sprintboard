@@ -7,7 +7,7 @@ import type { ReadPhase } from '@/lib/project-reads'
 import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
-import { doneSlugs, listProjectStatuses } from '@/lib/project-statuses'
+import { doneSlugs, listProjectStatuses, removeStatus } from '@/lib/project-statuses'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
@@ -58,6 +58,12 @@ export type ProjectShellContext = {
    *  `RETURNING`), not a locally computed guess — the same discipline as
    *  `onSprintCompleted`'s `returnedTickets`. */
   onStatusesReordered: (statuses: ProjectStatus[]) => void
+  /** A status was deleted (SPRIN-80). Removes it from the shared list via `removeStatus`,
+   *  which ALSO applies the promotion `project_statuses_promote_initial()` performs when the
+   *  deleted status was the project's initial one — mirrored here rather than re-derived,
+   *  because `ProjectShell` is at cyclomatic 10 of 10 and a promotion branch in this file
+   *  would redden `npm run lint`. */
+  onStatusDeleted: (id: string) => void
   /** Re-runs ALL THREE reads for this project. Manual only — there is no automatic retry,
    *  backoff or polling — and it returns every phase to `loading` immediately, so a click
    *  is never mistaken for a no-op. */
@@ -213,6 +219,13 @@ export function ProjectShell() {
     )
   }
 
+  // Branch-free HERE on purpose: the promotion rule lives entirely in `removeStatus`, because
+  // a ternary in THIS file would push ProjectShell past its cyclomatic budget (10 of 10) and
+  // redden `npm run lint`. See `removeStatus`'s own docblock for why the rule is expressed
+  // twice (once in SQL, once there) rather than shared, and how that duplication is tested.
+  const onStatusDeleted = (id: string) =>
+    statusRead.patch(project.id, (ss) => removeStatus(ss, id))
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   return (
@@ -256,6 +269,7 @@ export function ProjectShell() {
                 onStatusCreated,
                 onStatusUpdated,
                 onStatusesReordered,
+                onStatusDeleted,
                 onRetry,
                 onSprintCreated,
                 onSprintUpdated,
