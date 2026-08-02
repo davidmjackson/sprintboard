@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
@@ -7,15 +7,48 @@ import { SettingsTab } from './SettingsTab'
 import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectStatus } from '@/lib/domain'
+import { ticketCountsByStatus } from '@/lib/project-statuses'
+
+// Only the counts read is network-touching from this tab's point of view; every pure helper
+// stays real.
+vi.mock('@/lib/project-statuses', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-statuses')>()),
+  ticketCountsByStatus: vi.fn(),
+}))
 
 // The list, the add form and the writes are exercised by `StatusSettings.test.tsx`. Here it is
 // a probe that reports the props the tab handed down, so this suite pins the SEAM — which
 // context fields reach the list — rather than re-testing the list.
+//
+// `counts` is rendered with `.has()`, deliberately NOT the real component's `?? 0` fallback:
+// this probe exists to pin what the TAB passes down, and `.has()` is the only rendering that
+// can tell "we fetched a real count" apart from "we have no data for this status at all" —
+// exactly the distinction the failed-fetch test below depends on.
 vi.mock('./StatusSettings', () => ({
-  StatusSettings: ({ projectId, statuses }: { projectId: string; statuses: ProjectStatus[] }) => (
-    <p>
-      settings for {projectId}: {statuses.map((s) => s.name).join(', ')}
-    </p>
+  StatusSettings: ({
+    projectId,
+    statuses,
+    counts,
+  }: {
+    projectId: string
+    statuses: ProjectStatus[]
+    counts: ReadonlyMap<string, number>
+  }) => (
+    <div>
+      <p>
+        settings for {projectId}: {statuses.map((s) => s.name).join(', ')}
+      </p>
+      <ul>
+        {statuses.map((s) => (
+          <li key={s.id}>
+            <span>{counts.has(s.slug) ? `${counts.get(s.slug)} tickets` : 'unknown count'}</span>
+            <button type="button" disabled={!counts.has(s.slug)}>
+              Delete {s.name}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   ),
 }))
 
@@ -36,6 +69,7 @@ function renderTab(
     onRetry: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
+    onStatusDeleted: vi.fn(),
     onStatusesReordered: vi.fn(),
     ...ctx,
   } as unknown as ProjectShellContext
@@ -52,10 +86,74 @@ function renderTab(
 }
 
 describe('SettingsTab', () => {
+  beforeEach(() => {
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+  })
+
   it("hands the project's own status rows to the list", () => {
     renderTab()
 
     expect(screen.getByText('settings for p1: Triage, Shipped')).toBeVisible()
+  })
+
+  // AC2: the count is shown BEFORE the user commits to a delete. Keyed on `project.id` and the
+  // status list — the tab's own set-state-in-effect fetch, not something `StatusSettings` does
+  // for itself (it has no project id to read `tickets` with beyond the one it already gets for
+  // `AddStatusForm`).
+  it('fetches ticket counts for the project statuses and passes them down', async () => {
+    vi.mocked(ticketCountsByStatus).mockResolvedValue(new Map([['triage', 3]]))
+
+    renderTab()
+
+    expect(await screen.findByText('3 tickets')).toBeInTheDocument()
+    expect(ticketCountsByStatus).toHaveBeenCalledWith('p1', STATUSES)
+  })
+
+  // The single most important behaviour in this task. `ticketCountsByStatus` THROWS rather
+  // than resolving a fabricated zero, and a `.catch` here that substituted zeros anyway would
+  // silently undo that: zero is the value that UNLOCKS a destructive delete, so a swallowed
+  // error becoming zero would offer a delete the database is about to refuse. The tab must
+  // default to an EMPTY map instead — this probe's `.has()` rendering is what makes that
+  // observable, since the real component's own fallback for a genuinely fresh status looks
+  // the same as "no data" from the outside.
+  //
+  // THE REJECTION IS SETTLED BY HAND, AND THAT IS THE WHOLE POINT OF THE SHAPE BELOW.
+  // The first version of this test used `mockRejectedValue` plus `waitFor`, and was VACUOUS:
+  // `useState(new Map())` means the PRE-FETCH render already blocks every Delete, and
+  // `waitFor` resolves on its first synchronous check — before the rejection had settled. It
+  // therefore observed the initial render and never the `.catch` branch at all. Proven by
+  // mutation: rewriting the `.catch` to `setCounts(new Map(statuses.map((s) => [s.slug, 0])))`
+  // — the exact fabricated-zero bug this test is named for — left it green. So: control the
+  // promise, reject it, flush to the far side of the `.catch`, and only then assert.
+  it('does not claim a count of zero when the count read fails', async () => {
+    let fail!: (reason: Error) => void
+    vi.mocked(ticketCountsByStatus).mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject
+      }),
+    )
+
+    renderTab()
+    const deletes = () => screen.getAllByRole('button', { name: /^delete /i })
+
+    // In flight, nothing is deletable either — so the assertions after the flush are the
+    // only ones that can distinguish the `.catch` from this render.
+    expect(deletes().every((b) => b.hasAttribute('disabled'))).toBe(true)
+
+    // A macrotask drains every pending microtask, so the component's `.then`-then-`.catch`
+    // chain has fully run and repainted by the time this resolves.
+    await act(async () => {
+      fail(new Error('down'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    // Delete stays blocked rather than unlocking on a count we do not have…
+    expect(deletes().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    // …because the map is still EMPTY, not full of zeros. `unknown count` for every status
+    // is what the probe renders for "no entry"; a single "N tickets" here would mean the
+    // failure had been turned into a number.
+    expect(screen.getAllByText('unknown count')).toHaveLength(STATUSES.length)
+    expect(screen.queryByText(/\d+ ticket/)).toBeNull()
   })
 
   // The phase-before-empty rule every other tab follows. `statuses` is `[]` during BOTH

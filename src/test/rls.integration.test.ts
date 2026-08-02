@@ -81,6 +81,23 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   let projectB: string
   let statusA: string
 
+  /**
+   * Shared by the SPRIN-77 and SPRIN-80 blocks below — both are project-status suites
+   * that need a disposable project of their own rather than reusing `projectA`, whose
+   * teardown assertions (above) are written against a fixed 4-status fixture. Hoisted
+   * out of SPRIN-77's `describe` to this outer scope so both siblings share one copy
+   * instead of a pasted duplicate.
+   */
+  async function throwawayProject(name: string): Promise<string> {
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name, key: runKey() })
+      .select('id')
+      .single()
+    if (error) throw new Error(`Fixture: could not create "${name}": ${error.message}`)
+    return data.id
+  }
+
   beforeAll(async () => {
     a = await signIn('A')
     b = await signIn('B')
@@ -164,10 +181,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // on the line above. When SPRIN-77 made statuses insertable and a test planted
       // a fifth, that expect threw — and the deletes below never ran. Each such run
       // stranded a project (plus its sprint, tickets, counter and statuses) and B's
-      // project in the SHARED live database, where nothing can reach them afterwards:
-      // project_statuses has no DELETE policy at all. Five orphaned pairs accumulated
-      // before anyone looked. An assertion in teardown is a REPORT; the delete is an
-      // OBLIGATION, and the obligation goes first.
+      // project in the SHARED live database, where nothing could reach them afterwards —
+      // at the time, project_statuses had no DELETE policy at all. Five orphaned pairs
+      // accumulated before anyone looked. SPRIN-80 has since added a DELETE policy, so a
+      // stranded STATUS is now reachable in principle; the stranded PROJECT is not, because
+      // no later run signs in as the owner that created it. An assertion in teardown is a
+      // REPORT; the delete is an OBLIGATION, and the obligation goes first.
       //
       // Owner-scoped RLS means each client can only delete its own rows — which is
       // exactly the guarantee under test, so cleanup is also a final assertion. A
@@ -286,8 +305,9 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
           is_initial: s.is_initial,
         })),
       )
-      // Where new tickets land must equal tickets.status's column default, or
-      // ticket creation and the board disagree about the starting column.
+      // Where new tickets land. SPRIN-80 removed tickets.status's column default and made
+      // resolve_initial_ticket_status read this flag instead, so this row IS the starting
+      // column now rather than merely agreeing with a literal that sat beside it.
       expect(data!.find((s) => s.is_initial)!.slug).toBe('todo')
     })
 
@@ -297,18 +317,19 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * did-nothing-land control, so an extra insert here would break it from a
      * distance. That coupling is why this asserts rather than creates.
      *
-     * NOTE what this does NOT prove. `tickets.status`'s default is the bare literal
-     * 'todo', not a lookup on `is_initial`, so this would still pass if `is_initial`
-     * were seeded on `done`. The genuine is_initial coverage is the seeding test
-     * above (which asserts the flag lands on `todo`) and `domain.test.ts`'s
-     * agreement check against the column default. Reuniting the two is SPRIN-80's
-     * job, in the story that lets a status be deleted.
+     * The two were reunited by SPRIN-80. `tickets.status` USED TO carry the bare literal
+     * `default 'todo'` alongside the `is_initial` flag, so this test would once have passed
+     * even if `is_initial` had been seeded on `done`. That default is gone: the column has
+     * none, and resolve_initial_ticket_status fills an omitted status from the project's
+     * `is_initial` row. So the value below now comes from the same place the seeding test
+     * above asserts, and a mis-seeded flag lands here.
      */
-    it('a ticket still defaults to todo now the check constraint is gone', async () => {
+    it('a ticket resolves to todo from the seeded is_initial status', async () => {
       const { data, error } = await a.from('tickets').select('status').eq('id', ticketA).single()
       expect(error).toBeNull()
-      // Still 'todo', but for a NEW reason: it now resolves against a
-      // project_statuses row through tickets_status_fk, not a check constraint.
+      // Still 'todo', but for a THIRD reason: not a check constraint (SPRIN-79 removed it),
+      // and no longer a column default (SPRIN-80 removed that) — a BEFORE INSERT trigger
+      // reading is_initial, with tickets_status_fk keeping the result honest.
       expect(data!.status).toBe('todo')
     })
 
@@ -485,12 +506,28 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * so RLS is the only thing emptying this result.
      */
     it('an anonymous caller sees no statuses at all', async () => {
-      const { data, error } = await anonClient().from('project_statuses').select('id')
+      const anon = anonClient()
+      const { data, error } = await anon.from('project_statuses').select('id')
       expect(error).toBeNull()
       expect(data).toEqual([])
 
       const asA = await a.from('project_statuses').select('id').eq('project_id', projectA)
       expect(asA.data).toHaveLength(4) // positive control: the rows do exist
+
+      // AND ANON HOLDS NO DELETE PRIVILEGE, which is a DIFFERENT guard from the empty read
+      // above and had no coverage at all. ALTER DEFAULT PRIVILEGES had granted `anon`
+      // table-level DELETE on this table (measured against relacl); SPRIN-80 revoked it in
+      // the same migration that opened DELETE to the owner. Without the revoke, RLS would
+      // be the only thing standing between an unauthenticated caller and this table for
+      // that verb — and RLS FILTERS rather than raising, so its failure mode is silent.
+      // 42501 is the privilege refusing before any policy is consulted; a zero-row delete
+      // with `error === null` would be the revoke having been undone.
+      const wiped = await anon.from('project_statuses').delete().eq('project_id', projectA).select()
+      expect(wiped.data).toBeNull()
+      expect(wiped.error!.code).toBe('42501') // OBSERVED: permission denied for table.
+
+      const survivors = await a.from('project_statuses').select('id').eq('project_id', projectA)
+      expect(survivors.data).toHaveLength(4)
     })
 
     /**
@@ -537,21 +574,31 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
    * SPRIN-77 opened `project_statuses` to the owner, and the shape of what it opened
    * is the thing worth pinning. The migration replaced ONE select-only policy with
    * THREE — select, insert, update — and deliberately no DELETE, because deleting a
-   * status strands the tickets sitting on it and deleting `todo` permanently breaks
-   * ticket creation (tickets.status's default is still the bare literal 'todo').
-   * SPRIN-80 owns deletion. Collapsing those three back into one `for all` would look
-   * like a tidy-up and would silently reopen that hole; the DELETE test below is what
-   * goes red when someone tries.
+   * status strands the tickets sitting on it and deleting `todo` permanently broke ticket
+   * creation, because tickets.status defaulted to the bare literal 'todo'. SPRIN-80 owns
+   * deletion: it added the fourth policy, replaced that default with an `is_initial`
+   * lookup, and guarded the delete with a trigger and a foreign key.
+   *
+   * KEEP THE FOUR POLICIES APART — BUT NO TEST IN THIS FILE ENFORCES THAT, and an earlier
+   * version of this docblock said one did. All four predicates are identical, so a single
+   * `for all` policy behaves identically through PostgREST: INSERT ignores USING, UPDATE
+   * gets both, SELECT and DELETE get USING. PostgREST cannot read pg_policy, so no Vitest
+   * test can see policy SHAPE at all. The only pin is the post-state assertion in
+   * `docs/migrations/sprin-80-status-deletes.sql`, which runs when a human re-applies that
+   * file, never in CI. What the tests below DO cover is behaviour: who can delete what,
+   * and what the guards refuse.
    *
    * UPDATE is narrowed a second time, by PRIVILEGE rather than by policy: the
    * table-level grant is revoked and re-granted on (name, category, position) alone,
    * so `slug` — the fk target of tickets_status_fk — and `is_initial` cannot move.
    * A policy cannot express that, so no policy test can catch its loss.
    *
-   * WHY ITS OWN PROJECTS. Every test here writes, and there is no DELETE policy, so a
-   * status planted in the shared fixture project could never be removed again. Two
-   * throwaway projects are created here and dropped whole in afterAll — the cascade
-   * is the only way these rows can leave the database. It also keeps `projectA` and
+   * WHY ITS OWN PROJECTS. Every test here writes, and when this block was written there
+   * was no DELETE policy at all, so a status planted in the shared fixture project could
+   * never be removed again. SPRIN-80 added one, but the reasoning survives it: these
+   * projects are still dropped whole in afterAll, because the cascade removes the counter,
+   * sprint and tickets too and nothing else in this suite is signed in as their owner. It
+   * also keeps `projectA` and
    * `projectB` on exactly their seeded four, which is what the cross-tenant read tests
    * above count.
    *
@@ -564,16 +611,6 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     let wp1: string
     let wp2: string
 
-    async function throwawayProject(name: string): Promise<string> {
-      const { data, error } = await a
-        .from('projects')
-        .insert({ owner_id: userAId, name, key: runKey() })
-        .select('id')
-        .single()
-      if (error) throw new Error(`Fixture: could not create "${name}": ${error.message}`)
-      return data.id
-    }
-
     beforeAll(async () => {
       wp1 = await throwawayProject('Status writes')
       wp2 = await throwawayProject('Status writes, second project')
@@ -582,9 +619,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     afterAll(async () => {
       // DELETE FIRST, ASSERT AFTERWARDS — the same rule as the suite-level teardown,
       // and it bites harder here: these two projects are the only reachable handle on
-      // every status this block writes. project_statuses has no DELETE policy, so a
-      // skipped cascade leaves rows that no client of this application can ever
-      // remove.
+      // every status this block writes. SPRIN-80 gave project_statuses a DELETE
+      // policy, so an owner CAN now remove a status row directly — but only via the
+      // owning project's client, and only while signed in as that owner. A skipped
+      // cascade here would still leak the rows: `a` (this describe's fixture owner)
+      // goes out of scope with the block, and nothing else in this suite is signed in
+      // as the owner of `wp1`/`wp2` to reach them afterwards.
       const one = wp1 ? await settled(a.from('projects').delete().eq('id', wp1).select()) : null
       const two = wp2 ? await settled(a.from('projects').delete().eq('id', wp2).select()) : null
 
@@ -712,25 +752,43 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
-     * THE ONE THAT KEEPS SPRIN-80'S DOOR SHUT. If anyone ever "simplifies" the three
-     * policies into a single `for all`, this is what goes red.
+     * SPRIN-80 gave `project_statuses` a DELETE policy, so "nobody can delete a
+     * status — not even the owner" is no longer true and this test used to assert
+     * exactly that. Only the STRANGER half survives: an owner deleting their OWN
+     * status is now the feature, and five tests below this one (duplicate name,
+     * position collision, same-name-in-another-project, both reorders, the
+     * anonymous-RPC probe) all depend on `qa` still being in `wp1` afterwards. So
+     * this test proves the owner CAN delete by giving itself a throwaway row to
+     * delete rather than spending `qa` on the proof — `qa` is never touched here.
      *
-     * A DELETE matching zero rows is NOT an error — there is no DELETE policy, so RLS
-     * filters the row out of the command's view and Postgres reports a successful
-     * delete of nothing. `expect(error).toBeNull()` therefore proves nothing here and
-     * `expect(data).toEqual([])` proves only that nothing came back. Re-selecting the
-     * whole vocabulary and finding every row still in place is the only honest
-     * evidence, and it is why the assertion below names all five slugs in order.
+     * A stranger's delete matching zero rows is still NOT an error — RLS filters the
+     * row out of the command's view rather than raising, so `expect(error).toBeNull()`
+     * proves nothing on its own and `expect(data).toEqual([])` proves only that
+     * nothing came back. Re-selecting the whole vocabulary and finding every row
+     * (including `qa`) still in place is the only honest evidence, which is why the
+     * assertion below still names all five slugs in order.
      */
-    it('nobody can delete a status — not a stranger, and not even the owner', async () => {
-      const asOwner = await a
+    it('the owner can delete their OWN status; a stranger still cannot touch qa', async () => {
+      // position 99: deliberately far outside every other position this describe block
+      // uses in wp1 (up to 6, for the duplicate-name probes further down), so a failed
+      // delete leaving this row behind — the expected pre-migration state — cannot also
+      // collide with project_statuses_project_position_unique and mask a later test's
+      // assertion behind the WRONG unique-constraint name.
+      const { data: added } = await a
         .from('project_statuses')
-        .delete()
-        .eq('project_id', wp1)
-        .eq('slug', 'qa')
+        .insert({
+          project_id: wp1,
+          slug: 'tmp_del',
+          name: 'Temporary, deleted below',
+          category: 'in_progress',
+          position: 99,
+        })
         .select()
-      expect(asOwner.error).toBeNull() // it does not raise...
-      expect(asOwner.data).toEqual([]) // ...it filters.
+        .single()
+
+      const asOwner = await a.from('project_statuses').delete().eq('id', added!.id).select()
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1) // the owner's own throwaway row is really gone.
 
       const asStranger = await b
         .from('project_statuses')
@@ -1007,6 +1065,250 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .eq('project_id', wp1)
         .order('position')
       expect(rows.data![0]!.slug).toBe('qa') // and the order is untouched
+    })
+  })
+
+  describe('the owner can delete a status, safely (SPRIN-80)', () => {
+    let dp: string
+
+    beforeAll(async () => {
+      dp = await throwawayProject('Status deletes')
+    }, 30_000)
+
+    afterAll(async () => {
+      const gone = dp ? await settled(a.from('projects').delete().eq('id', dp).select()) : null
+      expect(gone?.error).toBeNull()
+      expect(gone?.data).toHaveLength(1)
+    }, 30_000)
+
+    /**
+     * POSITIVE CONTROL, first: every refusal below only means something if this passes.
+     *
+     * WHAT THIS TEST DOES NOT PROVE: AC3. Two earlier versions claimed it did, and neither
+     * claim survived. AC3 — "after a status is deleted, no ticket references a status that
+     * no longer exists" — is STRUCTURALLY guaranteed here rather than independently
+     * observable, because the only status this design will ever delete is an EMPTY one. The
+     * stranded-row query below therefore returns [] whatever `tickets_status_fk` is set to.
+     * The second attempt added the bystander ticket and said a misconfigured fk would damage
+     * it; that is disprovable and was rejected on review — the delete targets `qa`, so
+     * CASCADE or SET NULL could only ever touch rows keyed (project_id, 'qa'), and the
+     * bystander is keyed (project_id, 'todo'). AC3's real guard is the 23503 refusal test
+     * below, where a ticket DOES sit on the status being deleted. See its docblock.
+     *
+     * WHAT IT DOES PROVE, which is worth keeping: the delete removes exactly its own row and
+     * nothing else in the project. The bystander pins that an over-broad delete — a policy or
+     * a filter matching more than the targeted id — cannot pass unnoticed, and it sits on a
+     * DIFFERENT status deliberately, so it does not trigger the fk refusal that is the next
+     * test's subject.
+     */
+    it('deletes an EMPTY status and touches no other row in the project (AC1)', async () => {
+      const { data: added } = await a
+        .from('project_statuses')
+        .insert({
+          project_id: dp,
+          slug: 'qa',
+          name: 'Ready for QA',
+          category: 'in_progress',
+          position: 9,
+        })
+        .select()
+        .single()
+
+      const { data: bystander } = await a
+        .from('tickets')
+        .insert({ project_id: dp, summary: 'Bystander on todo', type: 'story' })
+        .select('id, status')
+        .single()
+      expect(bystander!.status).toBe('todo') // not 'qa': the delete below must not touch it
+
+      try {
+        const { data, error } = await a
+          .from('project_statuses')
+          .delete()
+          .eq('id', added!.id)
+          .select()
+        expect(error).toBeNull()
+        expect(data).toHaveLength(1)
+
+        // Nothing is left pointing at the removed slug. Read through adminClient(), which
+        // bypasses RLS, so a row cannot hide behind a policy — but note this is the query
+        // the docblock calls structurally satisfied: `qa` was empty before the delete, so
+        // [] is the only answer it can give. It is kept as the cheap shape of the claim,
+        // NOT as its evidence.
+        const { data: stranded } = await adminClient()
+          .from('tickets')
+          .select('id')
+          .eq('project_id', dp)
+          .eq('status', 'qa')
+        expect(stranded).toHaveLength(0)
+
+        // THE ASSERTION THAT EARNS ITS PLACE: nothing was collateral. The bystander is still
+        // there, still on 'todo'.
+        const { data: survivor } = await adminClient()
+          .from('tickets')
+          .select('status')
+          .eq('id', bystander!.id)
+        expect(survivor).toHaveLength(1)
+        expect(survivor![0]!.status).toBe('todo')
+      } finally {
+        // The next test counts on `dp` holding only the ticket IT creates.
+        const cleared = await settled(a.from('tickets').delete().eq('id', bystander!.id).select())
+        expect(cleared.error).toBeNull()
+        expect(cleared.data).toHaveLength(1)
+      }
+    })
+
+    /**
+     * THIS IS WHERE AC3 IS ENFORCED — "after a status is deleted, no ticket references a
+     * status that no longer exists" — and it is the only place it can be. Under this design
+     * an occupied status is never deleted at all, so the property is upheld by REFUSAL, not
+     * by cleanup: the fk is `on delete no action`, and the refusal IS the mechanism.
+     *
+     * Which is why the two assertions below are one claim in two halves and neither may be
+     * dropped. The 23503 says the delete was refused; the survivor says the ticket is still
+     * there AND still on `todo`. Set `tickets_status_fk` to `on delete cascade` and the first
+     * half goes quiet (no error at all) while the second finds no row; set it to `set null`
+     * and the ticket survives pointing at nothing. Both mutations are visible from here and
+     * from nowhere else in this suite.
+     */
+    it('REFUSES to delete a status holding tickets, and that ticket survives intact (AC2, AC3, AC5)', async () => {
+      const { data: t } = await a
+        .from('tickets')
+        .insert({ project_id: dp, summary: 'Sits on todo', type: 'story' })
+        .select()
+        .single()
+
+      const { data: todo } = await a
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', dp)
+        .eq('slug', 'todo')
+        .single()
+
+      const { error } = await a.from('project_statuses').delete().eq('id', todo!.id).select()
+      expect(error?.code).toBe('23503')
+
+      // The interrupted-delete path: the ticket is still there, still on its status…
+      const { data: survivor } = await adminClient()
+        .from('tickets')
+        .select('status')
+        .eq('id', t!.id)
+        .single()
+      expect(survivor!.status).toBe('todo')
+
+      // …and the status it points at is still there to point at. Read through adminClient()
+      // so a surviving row cannot be mistaken for one hidden by a policy.
+      const { data: stillThere } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('id', todo!.id)
+      expect(stillThere).toHaveLength(1)
+
+      await a.from('tickets').delete().eq('id', t!.id)
+    })
+
+    it('REFUSES to delete the last remaining status (AC4)', async () => {
+      const solo = await throwawayProject('Only one status left')
+      try {
+        const { data: rows } = await a
+          .from('project_statuses')
+          .select('id, is_initial')
+          .eq('project_id', solo)
+        const keep = rows!.find((r) => r.is_initial)!
+        for (const r of rows!.filter((r) => r.id !== keep.id)) {
+          await a.from('project_statuses').delete().eq('id', r.id)
+        }
+
+        const { error } = await a.from('project_statuses').delete().eq('id', keep.id).select()
+        expect(error?.code).toBe('SB001')
+
+        const { data: left } = await a.from('project_statuses').select('id').eq('project_id', solo)
+        expect(left).toHaveLength(1)
+      } finally {
+        // DELETE FIRST, ASSERT AFTERWARDS. An unasserted teardown that silently removes
+        // zero rows leaks the project into the SHARED live database, where nothing can
+        // reach it again — the failure mode that stranded ten fixture projects once
+        // already. settled() keeps a teardown failure from masking the real one above.
+        const gone = await settled(a.from('projects').delete().eq('id', solo).select())
+        expect(gone.error).toBeNull()
+        expect(gone.data).toHaveLength(1)
+      }
+    })
+
+    /**
+     * Pins the DATABASE's promotion rule against the same expectation `removeStatus`'s unit test
+     * pins for the client's. The two derivations cannot be shared across SQL and TypeScript, so
+     * this is what stops them drifting.
+     *
+     * GENERIC by design: it reads whichever slug is currently `is_initial` and computes the
+     * expected survivor from position, rather than hard-coding `todo`/`in_progress`. That is
+     * what makes it the right place to pin the PROMOTION RULE itself. The trailing ticket-insert
+     * assertion here only proves the promotion is "real" (something later reads it), which is a
+     * different, narrower claim than `tickets.integration.test.ts`'s "resolves a new ticket's
+     * status from the promoted initial status" — that test fixes the scenario (delete `todo`,
+     * expect `in_progress`) specifically so a reader can verify it against
+     * `DEFAULT_PROJECT_STATUSES` without also trusting this test's own row-position query. Both
+     * are kept; neither substitutes for the other.
+     */
+    it('promotes the lowest-position survivor when the initial status is deleted', async () => {
+      const p = await throwawayProject('Promotion')
+      try {
+        const { data: rows } = await a
+          .from('project_statuses')
+          .select('id, slug, position, is_initial')
+          .eq('project_id', p)
+          .order('position')
+
+        const wasInitial = rows!.find((r) => r.is_initial)!
+        const expected = rows!
+          .filter((r) => r.id !== wasInitial.id)
+          .sort((x, y) => x.position - y.position)[0]!
+
+        const { error } = await a.from('project_statuses').delete().eq('id', wasInitial.id).select()
+        expect(error).toBeNull()
+
+        const { data: after } = await a
+          .from('project_statuses')
+          .select('id, slug, is_initial')
+          .eq('project_id', p)
+        expect(after!.filter((r) => r.is_initial)).toHaveLength(1)
+        expect(after!.find((r) => r.is_initial)!.id).toBe(expected.id)
+
+        // And the promotion is REAL: a ticket created now lands on the promoted status,
+        // proving the BEFORE INSERT resolution and the AFTER DELETE promotion together.
+        const { data: fresh } = await a
+          .from('tickets')
+          .insert({ project_id: p, summary: 'After promotion', type: 'story' })
+          .select('status')
+          .single()
+        expect(fresh!.status).toBe(expected.slug)
+      } finally {
+        // DELETE FIRST, ASSERT AFTERWARDS — see the note in the AC4 test above. This one
+        // also carries a ticket, so a silent zero-row teardown strands more than a project.
+        const gone = await settled(a.from('projects').delete().eq('id', p).select())
+        expect(gone.error).toBeNull()
+        expect(gone.data).toHaveLength(1)
+      }
+    })
+
+    it("user B cannot delete user A's status — zero rows, and no error", async () => {
+      const { data: todo } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', dp)
+        .eq('slug', 'in_review')
+        .single()
+
+      // RLS FILTERS rather than raising. The row COUNT is the only evidence.
+      const { data, error } = await b.from('project_statuses').delete().eq('id', todo!.id).select()
+      expect(error).toBeNull()
+      expect(data).toHaveLength(0)
+
+      const { data: still } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('id', todo!.id)
+      expect(still).toHaveLength(1)
     })
   })
 })

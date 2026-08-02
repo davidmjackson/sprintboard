@@ -162,7 +162,7 @@ export function doneSlugs(statuses: readonly ProjectStatus[]): Set<string> {
  */
 export type StatusWriteResult<T> = { ok: true; value: T } | { ok: false; error: StatusWriteError }
 
-type StatusWriteError = 'duplicate' | 'stale' | 'unknown'
+type StatusWriteError = 'duplicate' | 'stale' | 'unknown' | 'has_tickets' | 'last'
 
 /** Postgres `unique_violation`. */
 const UNIQUE_VIOLATION = '23505'
@@ -332,4 +332,147 @@ export async function reorderProjectStatuses(
   const rows = (data ?? []) as ProjectStatus[]
   if (rows.length !== orderedSlugs.length) return { ok: false, error: 'unknown' }
   return { ok: true, value: rows }
+}
+
+/**
+ * Where new tickets start, by slug. The single client-side derivation of "initial", mirroring
+ * `doneSlugs`'s role for "terminal" — the confirm dialog's copy reads it rather than
+ * re-deriving. `null` when the project has no initial status, which the database's
+ * `project_statuses_one_initial_per_project` plus SPRIN-80's promotion trigger make
+ * unreachable; it is typed anyway because the client cannot prove that locally.
+ */
+export function initialSlug(statuses: readonly ProjectStatus[]): string | null {
+  return statuses.find((s) => s.is_initial)?.slug ?? null
+}
+
+/**
+ * The list after a status is deleted, INCLUDING the promotion the database performs.
+ *
+ * This mirrors `project_statuses_promote_initial()`: deleting the initial status promotes the
+ * lowest-`position` survivor. The rule is therefore expressed twice — once in SQL, once here —
+ * which is the drift this codebase warns about with `doneSlugs`. It cannot be shared across the
+ * two languages, so it is closed by test instead: `rls.integration.test.ts` asserts the DATABASE
+ * promotes by this same rule, so a trigger rewritten to promote differently goes red.
+ *
+ * A pure function rather than logic in the shell's reducer, because `ProjectShell` is at
+ * cyclomatic 10 of 10 and a promotion branch there would redden `npm run lint`.
+ */
+export function removeStatus(statuses: readonly ProjectStatus[], id: string): ProjectStatus[] {
+  const removed = statuses.find((s) => s.id === id)
+  const rest = statuses.filter((s) => s.id !== id)
+  if (!removed?.is_initial) return rest
+
+  const promoted = rest.reduce<ProjectStatus | null>(
+    (lowest, s) => (lowest === null || s.position < lowest.position ? s : lowest),
+    null,
+  )
+  return rest.map((s) => (s.id === promoted?.id ? { ...s, is_initial: true } : s))
+}
+
+/**
+ * Why this status cannot be deleted, or `null` if it can — AC4's "the reason is stated in the
+ * UI". Derived from data the tab already holds, so the control explains itself BEFORE the user
+ * clicks rather than after the database refuses.
+ *
+ * The database is the real control; this only decides what to render. A stale count therefore
+ * degrades to a wrong sentence, never to a wrong delete.
+ *
+ * `ticketCount` is `number | undefined` rather than defaulting a missing count to `0` at the
+ * caller: `0` is the one value that UNLOCKS this button, so a caller that could not learn the
+ * real count (a failed `ticketCountsByStatus`) must never be able to manufacture it here by
+ * omission. `undefined` is therefore its OWN outcome, checked before the ticket-count branch,
+ * with its own sentence — never silently folded into "0 tickets, deletable".
+ *
+ * Precedence: last-ness first (unchanged — a last status holding tickets is blocked for a
+ * reason the user cannot fix by moving tickets, so naming the count would send them to do work
+ * that would not unblock the button), THEN an unknown count, THEN the count itself. Last-ness
+ * wins over "unknown" too: a project's only status is still un-deletable even if its count
+ * could not be read, and that is the more actionable of the two true statements.
+ */
+export function deleteBlockReason(ticketCount: number | undefined, isLast: boolean): string | null {
+  if (isLast) return 'A project must keep at least one status.'
+  if (ticketCount === undefined) {
+    return 'Ticket counts are unavailable, so this status cannot be deleted safely.'
+  }
+  if (ticketCount > 0) {
+    const plural = ticketCount === 1 ? 'ticket' : 'tickets'
+    return `This status holds ${ticketCount} ${plural}. Move them to another status first.`
+  }
+  return null
+}
+
+/** Postgres `foreign_key_violation` — here, always `tickets_status_fk`. */
+const FK_VIOLATION = '23503'
+
+/** Raised by `project_statuses_delete_guard()`. A custom SQLSTATE rather than the `P0001`
+ *  default, so the client keys off a code that cannot be reworded. */
+const LAST_STATUS = 'SB001'
+
+/**
+ * Delete a status.
+ *
+ * Three refusals, three tags, three different remedies — which is the whole reason this does not
+ * collapse to a boolean:
+ *
+ *   * `has_tickets` — the fk refused it. Move the tickets, then retry.
+ *   * `last`        — the guard trigger refused it. Nothing to retry; add a status first.
+ *   * `stale`       — the delete matched NO row and did not error.
+ *
+ * That last one is the trap. **RLS FILTERS a DELETE rather than raising on it**, so a row
+ * belonging to another tenant, or one another tab already deleted, returns exactly
+ * `error: null, data: []` — a delete that changed nothing, indistinguishable from one that
+ * worked unless the row COUNT is checked. `.select()` supplies that count, and this is the same
+ * defect `reorderProjectStatuses` guards against for the same reason.
+ *
+ * The non-empty refusal is the EXISTING `tickets_status_fk`, not a new trigger. One rule, one
+ * control: a second guard checking the same thing would mean removing either still goes red, and
+ * the suite would stop being able to say which one works.
+ */
+export async function deleteProjectStatus(id: string): Promise<StatusWriteResult<void>> {
+  const { data, error } = await supabase.from('project_statuses').delete().eq('id', id).select('id')
+
+  if (error) return { ok: false, error: deleteError(error) }
+  if ((data ?? []).length !== 1) return { ok: false, error: 'stale' }
+  return { ok: true, value: undefined }
+}
+
+function deleteError(error: { code?: string }): StatusWriteError {
+  if (error.code === FK_VIOLATION) return 'has_tickets'
+  if (error.code === LAST_STATUS) return 'last'
+  return 'unknown'
+}
+
+/**
+ * How many tickets sit on each of the project's statuses (AC2 — the count is shown BEFORE the
+ * user commits).
+ *
+ * One `head: true, count: 'exact'` request per status, in parallel: exact, bounded by the number
+ * of statuses, and no dependency on PostgREST's `select=status,count()` aggregate, which needs
+ * `db-aggregates-enabled` and could not be verified from here.
+ *
+ * It THROWS rather than resolving to zero on error — and on a MISSING count, treated the same
+ * way — for the same reason `listProjectStatuses` throws instead of returning `[]`: zero is a
+ * meaningful value here — it is what UNLOCKS the Delete button — so either a failed count or a
+ * response that carries no count at all reported as zero would offer a delete the database is
+ * about to refuse.
+ */
+export async function ticketCountsByStatus(
+  projectId: string,
+  statuses: readonly ProjectStatus[],
+): Promise<Map<string, number>> {
+  const entries = await Promise.all(
+    statuses.map(async (s) => {
+      const { count, error } = await supabase
+        .from('tickets')
+        .select('id', { count: 'exact', head: true })
+        .eq('project_id', projectId)
+        .eq('status', s.slug)
+      if (error) throw new Error(`Could not count tickets: ${error.message}`)
+      if (count === null || count === undefined) {
+        throw new Error(`Could not count tickets on "${s.slug}": the response carried no count.`)
+      }
+      return [s.slug, count] as const
+    }),
+  )
+  return new Map(entries)
 }

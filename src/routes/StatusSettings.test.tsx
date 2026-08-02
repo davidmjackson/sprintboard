@@ -6,22 +6,26 @@ import { StatusSettings } from './StatusSettings'
 import type { ProjectStatus } from '@/lib/domain'
 import {
   createProjectStatus,
+  deleteProjectStatus,
   renameProjectStatus,
   reorderProjectStatuses,
 } from '@/lib/project-statuses'
 
 // Spread the real module: `status-schemas.ts` calls `slugForName` from it during validation,
-// and `doneSlugs`/`statusName` are pure. Only the three network-touching writes are mocked.
+// and `doneSlugs`/`statusName`/`removeStatus`/`deleteBlockReason` are pure. Only the four
+// network-touching writes are mocked.
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
   createProjectStatus: vi.fn(),
   renameProjectStatus: vi.fn(),
   reorderProjectStatuses: vi.fn(),
+  deleteProjectStatus: vi.fn(),
 }))
 
 const mockCreate = vi.mocked(createProjectStatus)
 const mockRename = vi.mocked(renameProjectStatus)
 const mockReorder = vi.mocked(reorderProjectStatuses)
+const mockDelete = vi.mocked(deleteProjectStatus)
 
 /**
  * A vocabulary that is NOT the seeded four, and whose names never equal a CATEGORY label.
@@ -64,27 +68,44 @@ const STATUSES = [TRIAGE, BUILDING, SHIPPED]
 function renderSettings(
   props: {
     statuses?: ProjectStatus[]
+    counts?: Map<string, number>
     onCreated?: (s: ProjectStatus) => void
     onUpdated?: (s: ProjectStatus) => void
     onReordered?: (s: ProjectStatus[]) => void
+    onDeleted?: (id: string) => void
   } = {},
 ) {
   const handlers = {
     onCreated: vi.fn(),
     onUpdated: vi.fn(),
     onReordered: vi.fn(),
+    onDeleted: vi.fn(),
     ...props,
   }
   render(
     <StatusSettings
       projectId="p1"
       statuses={props.statuses ?? STATUSES}
+      counts={props.counts ?? new Map()}
       onCreated={handlers.onCreated}
       onUpdated={handlers.onUpdated}
       onReordered={handlers.onReordered}
+      onDeleted={handlers.onDeleted}
     />,
   )
   return handlers
+}
+
+/** The row containing a given status's controls, anchored on the Delete button's
+ *  `aria-label` — one text node, one element, no composed name — then scoped with `within`.
+ *  Deliberately NOT `getByRole('listitem', { name })`: a listitem's accessible name is
+ *  composed from its children, which is precisely the jsdom-vs-browser fusion SPRIN-67
+ *  established is not real. */
+function deleteRowFor(name: string): HTMLElement {
+  const button = screen.getByRole('button', { name: `Delete ${name}` })
+  const row = button.closest('li')
+  if (!row) throw new Error(`No row found for "${name}"`)
+  return row
 }
 
 /** The row for a status, found by the name it renders. Scoping every DOM-text assertion to
@@ -112,6 +133,7 @@ beforeEach(() => {
   mockCreate.mockReset()
   mockRename.mockReset()
   mockReorder.mockReset()
+  mockDelete.mockReset()
 })
 
 describe('StatusSettings', () => {
@@ -408,6 +430,136 @@ describe('StatusSettings', () => {
       // "Please try again" message the user cannot act on. Asserting the message alone reads
       // as though it covers the recovery; it does not.
       expect(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i })).toBeEnabled()
+    })
+  })
+
+  describe('deleting a status', () => {
+    // A KNOWN zero for every row — distinct from the default `renderSettings()` map, which is
+    // EMPTY and (since the fix below) means "we do not know", not "zero". Tests in this block
+    // that are about something other than the availability gate itself use this so they are not
+    // incidentally blocked by it.
+    const KNOWN_ZERO_COUNTS = new Map([
+      ['triage', 0],
+      ['building', 0],
+      ['shipped', 0],
+    ])
+
+    it("shows each status's ticket count", () => {
+      renderSettings({ counts: new Map([['triage', 4]]) })
+
+      expect(within(deleteRowFor('Triage')).getByText('4 tickets')).toBeInTheDocument()
+    })
+
+    it('disables Delete on a status holding tickets, and states the reason', () => {
+      renderSettings({ counts: new Map([['triage', 4]]) })
+
+      const row = deleteRowFor('Triage')
+      expect(within(row).getByRole('button', { name: 'Delete Triage' })).toBeDisabled()
+      expect(within(row).getByText(/holds 4 tickets/i)).toBeInTheDocument()
+    })
+
+    it('disables Delete on the last remaining status, and states the reason', () => {
+      renderSettings({ statuses: [TRIAGE], counts: new Map([['triage', 0]]) })
+
+      const row = deleteRowFor('Triage')
+      expect(within(row).getByRole('button', { name: 'Delete Triage' })).toBeDisabled()
+      expect(within(row).getByText(/at least one status/i)).toBeInTheDocument()
+    })
+
+    // THE ONE THAT MATTERS for this fix. An EMPTY counts map means the caller does not know
+    // ANY status's count — e.g. `ticketCountsByStatus` failed — and that must block every
+    // Delete, not read as "0 tickets, deletable" the way `?? 0` used to make it read.
+    it('blocks every Delete and states the reason when the counts map is empty', () => {
+      renderSettings({ counts: new Map() })
+
+      for (const status of STATUSES) {
+        const row = deleteRowFor(status.name)
+        expect(within(row).getByRole('button', { name: `Delete ${status.name}` })).toBeDisabled()
+        // Scoped to the REASON sentence specifically — the count span above it also renders
+        // "count unavailable", so an unscoped /unavailable/i would match twice in the same row.
+        expect(within(row).getByText(/cannot be deleted safely/i)).toBeInTheDocument()
+      }
+    })
+
+    it('names the status that will take over when deleting the initial one', async () => {
+      const u = userEvent.setup()
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      // TRIAGE is the initial status; BUILDING is the lowest-position survivor, so
+      // `removeStatus` promotes it — the dialog must name it, not re-derive the rule itself.
+      await u.click(screen.getByRole('button', { name: 'Delete Triage' }))
+
+      const dialog = await screen.findByRole('alertdialog')
+      expect(dialog).toHaveTextContent(/will start in/i)
+      expect(dialog).toHaveTextContent('Building')
+    })
+
+    // The MIRROR of the test above, and the one that pins the `status.is_initial` guard in
+    // front of the promotion lookup. Without it, `removeStatus(...).find(s => s.is_initial)`
+    // still returns the CURRENT initial status for a delete that does not touch it, and the
+    // dialog tells the user "New tickets will start in Triage instead." on a delete that
+    // changes nothing about where tickets start — an untrue sentence, on a destructive
+    // confirmation. Dropping the guard leaves every other test in this file green.
+    it('says nothing about where new tickets start when the status is not the initial one', async () => {
+      const u = userEvent.setup()
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      // BUILDING is not initial; TRIAGE is, and survives this delete as the initial status.
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+
+      const dialog = await screen.findByRole('alertdialog')
+      expect(dialog).toHaveTextContent(/can’t be undone/i)
+      expect(dialog).not.toHaveTextContent(/will start in/i)
+      expect(within(dialog).queryByText(/triage/i)).toBeNull()
+    })
+
+    it('calls onDeleted after a successful delete', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: true, value: undefined })
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      // Scoped to the dialog: an unscoped /delete/i would also match every row's button.
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('st2'))
+    })
+
+    it('surfaces a has_tickets refusal without calling onDeleted', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'has_tickets' })
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/move them/i)
+      expect(onDeleted).not.toHaveBeenCalled()
+    })
+
+    // The same class of bug `StatusRow`'s rename already fixed, on the other control. The
+    // dialog's error state outlives a close, because only Radix's content unmounts — so a
+    // cancelled failure would still be on screen when the dialog is reopened, describing a
+    // request this open has not sent.
+    it('clears a failed delete’s message when the dialog is reopened', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'has_tickets' })
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(/move them/i)
+
+      await u.click(within(dialog).getByRole('button', { name: /^cancel$/i }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const reopened = await screen.findByRole('alertdialog')
+      expect(within(reopened).queryByRole('alert')).toBeNull()
+      expect(within(reopened).queryByText(/move them/i)).toBeNull()
     })
   })
 

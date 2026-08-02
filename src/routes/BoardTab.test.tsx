@@ -67,6 +67,7 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     statusesPhase: 'loaded',
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
+    onStatusDeleted: vi.fn(),
     onStatusesReordered: vi.fn(),
     onRetry: vi.fn(),
     onSprintCreated: vi.fn(),
