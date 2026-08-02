@@ -149,12 +149,36 @@ control the raise, so we do not repeat it.
 - **`initialSlug(statuses)`** → the single exported derivation of "where new tickets start",
   mirroring `doneSlugs()`. The confirm dialog's copy reads from it rather than re-deriving.
 
-### After a successful delete, refetch
+### Reflecting the promotion locally, not by refetching
 
-The client calls `listProjectStatuses` and replaces its list. This is not laziness: an `AFTER
-DELETE` promotion changes a **different** row's `is_initial`, which no delete response can carry
-back. Without the refetch the client's `is_initial` goes stale and the *next* confirm dialog names
-the wrong status.
+An `AFTER DELETE` promotion changes a **different** row's `is_initial`, which no delete response
+can carry back. Left alone, the client's `is_initial` goes stale and the *next* confirm dialog
+names the wrong status.
+
+An earlier draft of this spec resolved that by refetching. That was wrong on two counts, both
+load-bearing:
+
+- **`ProjectShell` states that every reducer is a LOCAL mutation, never a refetch** — an
+  unguarded refetch resolving after a project switch clobbers the new project's list.
+- **`ProjectShell` is at cyclomatic 10 of 10.** A promotion ternary inside the reducer adds a
+  branch and reddens `npm run lint`.
+
+So the client mirrors the promotion with a **pure exported function**,
+`removeStatus(statuses, id)` in `project-statuses.ts`: it drops the row and, when the dropped row
+was `is_initial`, marks the lowest-`position` survivor. The shell's new reducer is then
+branch-free and adds nothing to its complexity:
+
+```ts
+const onStatusDeleted = (id: string) =>
+  statusRead.patch(project.id, (ss) => removeStatus(ss, id))
+```
+
+That does leave the promotion rule expressed **twice** — once in the trigger, once in
+`removeStatus` — which is exactly the drift this codebase warns about with `doneSlugs`. The rule
+cannot literally be shared across SQL and TypeScript, so it is closed by test instead: the live
+integration test deletes an initial status and asserts **the database** promoted the
+lowest-`position` survivor, pinning the same expectation the unit test pins for the TypeScript
+side. A trigger rewritten to promote by some other rule goes red.
 
 ### UI
 
