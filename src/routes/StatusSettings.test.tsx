@@ -494,6 +494,25 @@ describe('StatusSettings', () => {
       expect(dialog).toHaveTextContent('Building')
     })
 
+    // The MIRROR of the test above, and the one that pins the `status.is_initial` guard in
+    // front of the promotion lookup. Without it, `removeStatus(...).find(s => s.is_initial)`
+    // still returns the CURRENT initial status for a delete that does not touch it, and the
+    // dialog tells the user "New tickets will start in Triage instead." on a delete that
+    // changes nothing about where tickets start — an untrue sentence, on a destructive
+    // confirmation. Dropping the guard leaves every other test in this file green.
+    it('says nothing about where new tickets start when the status is not the initial one', async () => {
+      const u = userEvent.setup()
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      // BUILDING is not initial; TRIAGE is, and survives this delete as the initial status.
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+
+      const dialog = await screen.findByRole('alertdialog')
+      expect(dialog).toHaveTextContent(/can’t be undone/i)
+      expect(dialog).not.toHaveTextContent(/will start in/i)
+      expect(within(dialog).queryByText(/triage/i)).toBeNull()
+    })
+
     it('calls onDeleted after a successful delete', async () => {
       const u = userEvent.setup()
       mockDelete.mockResolvedValue({ ok: true, value: undefined })
@@ -518,6 +537,29 @@ describe('StatusSettings', () => {
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/move them/i)
       expect(onDeleted).not.toHaveBeenCalled()
+    })
+
+    // The same class of bug `StatusRow`'s rename already fixed, on the other control. The
+    // dialog's error state outlives a close, because only Radix's content unmounts — so a
+    // cancelled failure would still be on screen when the dialog is reopened, describing a
+    // request this open has not sent.
+    it('clears a failed delete’s message when the dialog is reopened', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'has_tickets' })
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(/move them/i)
+
+      await u.click(within(dialog).getByRole('button', { name: /^cancel$/i }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const reopened = await screen.findByRole('alertdialog')
+      expect(within(reopened).queryByRole('alert')).toBeNull()
+      expect(within(reopened).queryByText(/move them/i)).toBeNull()
     })
   })
 

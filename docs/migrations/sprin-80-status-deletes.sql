@@ -127,9 +127,38 @@ begin
   -- one project queues behind the same row while deletes across different projects stay
   -- fully parallel.
   --
-  -- Order is stable and deadlock-free: the executor has already taken the row lock on the
-  -- status tuple before firing this trigger, so every caller takes status-then-project,
-  -- never the reverse.
+  -- LOCK ORDER: NOT SETTLED, AND THIS COMMENT NO LONGER PRETENDS IT IS. It used to read
+  -- "Order is stable and deadlock-free: the executor has already taken the row lock on the
+  -- status tuple before firing this trigger, so every caller takes status-then-project" —
+  -- a mechanism offered as the REASON no deadlock can form. It cannot carry that weight.
+  --
+  --   * CERTAIN: a BEFORE ROW DELETE trigger runs before the target tuple is DELETED. It may
+  --     cancel the row operation by returning NULL, which is only meaningful while the
+  --     removal has not happened. That is the documented BEFORE-trigger contract.
+  --   * NOT CERTAIN: whether that tuple is already LOCKED when this body runs. Locking and
+  --     deleting are different acts, so the contract above decides nothing about it — and
+  --     PostgreSQL's ExecBRDeleteTriggers appears to take an exclusive tuple lock (through
+  --     GetTupleForTrigger) BEFORE invoking the trigger, which would make the original claim
+  --     right about the lock and wrong about nothing else. NOTHING HERE HAS TESTED EITHER
+  --     READING: there is no local PostgreSQL to reproduce it against, and the agents that
+  --     wrote and reviewed this have read-only access to the live database.
+  --
+  -- So read "deadlock-free" as UNPROVEN, not established. If the tuple is locked first, a
+  -- concurrent `delete from projects` runs the REVERSE order — it locks the project row, then
+  -- its RI cascade reaches these rows — and a circular wait between the two is possible.
+  -- PostgreSQL detects that and aborts one side with 40P01: a clean rollback, not corruption,
+  -- and it needs a status delete racing a delete of that same project. Worth knowing; not
+  -- worth a lock-ordering scheme on this evidence.
+  --
+  -- The CASCADE path cannot deadlock against this guard, and that part does NOT depend on any
+  -- of the above: by the time the cascade reaches here the parent project row is already gone
+  -- WITHIN that transaction, so the lookup below finds nothing and returns at the escape hatch
+  -- without ever waiting on `projects` — and that transaction holds the project's own lock in
+  -- any case.
+  --
+  -- ALL OF THIS IS REASONED, NOT TESTED. No test in this repo opens two concurrent sessions,
+  -- so neither the deadlock question nor the mutual exclusion `for update` exists to provide
+  -- has any coverage: step 6's smoke block stays entirely green with the `for update` removed.
   perform 1 from public.projects p where p.id = old.project_id for update;
   if not found then
     return old;

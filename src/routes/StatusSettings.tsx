@@ -222,7 +222,11 @@ function StatusDeleteDialog({
   const [error, setError] = useState<string | null>(null)
 
   // `removeStatus` is the single source of the promotion rule (mirrors the DB trigger) — this
-  // reads its result rather than re-deciding who takes over.
+  // reads its result rather than re-deciding who takes over. Guarded on `status.is_initial`
+  // because `removeStatus` returns the survivors' `is_initial` unchanged when the removed
+  // status was not the initial one: without the guard the lookup finds the status that is
+  // ALREADY initial, and the dialog promises a change of starting status on a delete that
+  // does not affect where tickets start.
   const promoted = status.is_initial
     ? removeStatus(statuses, status.id).find((s) => s.is_initial)
     : undefined
@@ -242,8 +246,17 @@ function StatusDeleteDialog({
   return (
     <AlertDialog
       open={open}
+      // The error is cleared on the way OUT, which is what makes the next way IN clean —
+      // `StatusRow`'s rename fixed the same class of bug from the other side. This component
+      // is NOT unmounted when the dialog closes (only Radix's content is), so without this a
+      // cancelled failure is still on screen when the same dialog is reopened, presenting
+      // 'This status still holds tickets' as the answer to a request this open never sent.
+      // Clearing here rather than on open covers every exit — Cancel, Escape, the overlay —
+      // because `open` only ever becomes true through the parent's button, never through here.
       onOpenChange={(next) => {
-        if (!deleting) onOpenChange(next)
+        if (deleting) return
+        setError(null)
+        onOpenChange(next)
       }}
     >
       <AlertDialogContent>

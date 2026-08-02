@@ -1084,20 +1084,24 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     /**
      * POSITIVE CONTROL, first: every refusal below only means something if this passes.
      *
-     * THE BYSTANDER TICKET IS NOT NOISE — DO NOT DELETE IT. AC3 is "after a status is
-     * deleted, no ticket references a status that no longer exists", and the only way to
-     * observe that failing is to have a ticket in the project WHILE the delete happens.
-     * An earlier version of this test ran its stranded-row query against a project holding
-     * no tickets at all (the first one is created by the NEXT test), so it returned [] no
-     * matter what the database did — it would still have passed with tickets_status_fk
-     * switched to `on delete cascade`, which is precisely the change that destroys rows.
+     * WHAT THIS TEST DOES NOT PROVE: AC3. Two earlier versions claimed it did, and neither
+     * claim survived. AC3 — "after a status is deleted, no ticket references a status that
+     * no longer exists" — is STRUCTURALLY guaranteed here rather than independently
+     * observable, because the only status this design will ever delete is an EMPTY one. The
+     * stranded-row query below therefore returns [] whatever `tickets_status_fk` is set to.
+     * The second attempt added the bystander ticket and said a misconfigured fk would damage
+     * it; that is disprovable and was rejected on review — the delete targets `qa`, so
+     * CASCADE or SET NULL could only ever touch rows keyed (project_id, 'qa'), and the
+     * bystander is keyed (project_id, 'todo'). AC3's real guard is the 23503 refusal test
+     * below, where a ticket DOES sit on the status being deleted. See its docblock.
      *
-     * The ticket sits on a DIFFERENT status from the one being deleted, so it does not
-     * trigger the fk's 23503 refusal (that path is the next test's job). It is here to be
-     * collateral damage if the fk is ever misconfigured: under CASCADE it would vanish,
-     * under SET NULL it would be left pointing at nothing.
+     * WHAT IT DOES PROVE, which is worth keeping: the delete removes exactly its own row and
+     * nothing else in the project. The bystander pins that an over-broad delete — a policy or
+     * a filter matching more than the targeted id — cannot pass unnoticed, and it sits on a
+     * DIFFERENT status deliberately, so it does not trigger the fk refusal that is the next
+     * test's subject.
      */
-    it('deletes an EMPTY status while a ticket sits on another, and strands nothing (AC1, AC3)', async () => {
+    it('deletes an EMPTY status and touches no other row in the project (AC1)', async () => {
       const { data: added } = await a
         .from('project_statuses')
         .insert({
@@ -1126,9 +1130,11 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         expect(error).toBeNull()
         expect(data).toHaveLength(1)
 
-        // AC3 asserted DIRECTLY against the database, not inferred from the UI looking
-        // right. adminClient() bypasses RLS, so neither a stranded row nor a destroyed one
-        // can hide behind a policy.
+        // Nothing is left pointing at the removed slug. Read through adminClient(), which
+        // bypasses RLS, so a row cannot hide behind a policy — but note this is the query
+        // the docblock calls structurally satisfied: `qa` was empty before the delete, so
+        // [] is the only answer it can give. It is kept as the cheap shape of the claim,
+        // NOT as its evidence.
         const { data: stranded } = await adminClient()
           .from('tickets')
           .select('id')
@@ -1136,7 +1142,8 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
           .eq('status', 'qa')
         expect(stranded).toHaveLength(0)
 
-        // …and nothing was collateral. The bystander is still there, still on 'todo'.
+        // THE ASSERTION THAT EARNS ITS PLACE: nothing was collateral. The bystander is still
+        // there, still on 'todo'.
         const { data: survivor } = await adminClient()
           .from('tickets')
           .select('status')
@@ -1151,7 +1158,20 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       }
     })
 
-    it('REFUSES to delete a status holding tickets, and the tickets survive (AC2, AC5)', async () => {
+    /**
+     * THIS IS WHERE AC3 IS ENFORCED — "after a status is deleted, no ticket references a
+     * status that no longer exists" — and it is the only place it can be. Under this design
+     * an occupied status is never deleted at all, so the property is upheld by REFUSAL, not
+     * by cleanup: the fk is `on delete no action`, and the refusal IS the mechanism.
+     *
+     * Which is why the two assertions below are one claim in two halves and neither may be
+     * dropped. The 23503 says the delete was refused; the survivor says the ticket is still
+     * there AND still on `todo`. Set `tickets_status_fk` to `on delete cascade` and the first
+     * half goes quiet (no error at all) while the second finds no row; set it to `set null`
+     * and the ticket survives pointing at nothing. Both mutations are visible from here and
+     * from nowhere else in this suite.
+     */
+    it('REFUSES to delete a status holding tickets, and that ticket survives intact (AC2, AC3, AC5)', async () => {
       const { data: t } = await a
         .from('tickets')
         .insert({ project_id: dp, summary: 'Sits on todo', type: 'story' })
@@ -1168,13 +1188,21 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const { error } = await a.from('project_statuses').delete().eq('id', todo!.id).select()
       expect(error?.code).toBe('23503')
 
-      // The interrupted-delete path: the ticket is still there, still on its status.
+      // The interrupted-delete path: the ticket is still there, still on its status…
       const { data: survivor } = await adminClient()
         .from('tickets')
         .select('status')
         .eq('id', t!.id)
         .single()
       expect(survivor!.status).toBe('todo')
+
+      // …and the status it points at is still there to point at. Read through adminClient()
+      // so a surviving row cannot be mistaken for one hidden by a policy.
+      const { data: stillThere } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('id', todo!.id)
+      expect(stillThere).toHaveLength(1)
 
       await a.from('tickets').delete().eq('id', t!.id)
     })

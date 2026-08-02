@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
@@ -116,15 +116,44 @@ describe('SettingsTab', () => {
   // default to an EMPTY map instead — this probe's `.has()` rendering is what makes that
   // observable, since the real component's own fallback for a genuinely fresh status looks
   // the same as "no data" from the outside.
+  //
+  // THE REJECTION IS SETTLED BY HAND, AND THAT IS THE WHOLE POINT OF THE SHAPE BELOW.
+  // The first version of this test used `mockRejectedValue` plus `waitFor`, and was VACUOUS:
+  // `useState(new Map())` means the PRE-FETCH render already blocks every Delete, and
+  // `waitFor` resolves on its first synchronous check — before the rejection had settled. It
+  // therefore observed the initial render and never the `.catch` branch at all. Proven by
+  // mutation: rewriting the `.catch` to `setCounts(new Map(statuses.map((s) => [s.slug, 0])))`
+  // — the exact fabricated-zero bug this test is named for — left it green. So: control the
+  // promise, reject it, flush to the far side of the `.catch`, and only then assert.
   it('does not claim a count of zero when the count read fails', async () => {
-    vi.mocked(ticketCountsByStatus).mockRejectedValue(new Error('down'))
+    let fail!: (reason: Error) => void
+    vi.mocked(ticketCountsByStatus).mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject
+      }),
+    )
 
     renderTab()
+    const deletes = () => screen.getAllByRole('button', { name: /^delete /i })
 
-    // Delete stays blocked rather than unlocking on a count we do not have.
-    await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: /^delete /i })[0]).toBeDisabled(),
-    )
+    // In flight, nothing is deletable either — so the assertions after the flush are the
+    // only ones that can distinguish the `.catch` from this render.
+    expect(deletes().every((b) => b.hasAttribute('disabled'))).toBe(true)
+
+    // A macrotask drains every pending microtask, so the component's `.then`-then-`.catch`
+    // chain has fully run and repainted by the time this resolves.
+    await act(async () => {
+      fail(new Error('down'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    // Delete stays blocked rather than unlocking on a count we do not have…
+    expect(deletes().every((b) => b.hasAttribute('disabled'))).toBe(true)
+    // …because the map is still EMPTY, not full of zeros. `unknown count` for every status
+    // is what the probe renders for "no entry"; a single "N tickets" here would mean the
+    // failure had been turned into a number.
+    expect(screen.getAllByText('unknown count')).toHaveLength(STATUSES.length)
+    expect(screen.queryByText(/\d+ ticket/)).toBeNull()
   })
 
   // The phase-before-empty rule every other tab follows. `statuses` is `[]` during BOTH
