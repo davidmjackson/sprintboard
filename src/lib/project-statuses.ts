@@ -443,10 +443,11 @@ function deleteError(error: { code?: string }): StatusWriteError {
  * of statuses, and no dependency on PostgREST's `select=status,count()` aggregate, which needs
  * `db-aggregates-enabled` and could not be verified from here.
  *
- * It THROWS rather than resolving to zero on error, for the same reason `listProjectStatuses`
- * throws instead of returning `[]`: zero is a meaningful value here — it is what UNLOCKS the
- * Delete button — so a failed count reported as zero would offer a delete the database is about
- * to refuse.
+ * It THROWS rather than resolving to zero on error — and on a MISSING count, treated the same
+ * way — for the same reason `listProjectStatuses` throws instead of returning `[]`: zero is a
+ * meaningful value here — it is what UNLOCKS the Delete button — so either a failed count or a
+ * response that carries no count at all reported as zero would offer a delete the database is
+ * about to refuse.
  */
 export async function ticketCountsByStatus(
   projectId: string,
@@ -460,7 +461,10 @@ export async function ticketCountsByStatus(
         .eq('project_id', projectId)
         .eq('status', s.slug)
       if (error) throw new Error(`Could not count tickets: ${error.message}`)
-      return [s.slug, count ?? 0] as const
+      if (count === null || count === undefined) {
+        throw new Error(`Could not count tickets on "${s.slug}": the response carried no count.`)
+      }
+      return [s.slug, count] as const
     }),
   )
   return new Map(entries)

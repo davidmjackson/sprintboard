@@ -723,6 +723,16 @@ describe('ticketCountsByStatus', () => {
       ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })]),
     ).rejects.toThrow(/could not count/i)
   })
+
+  // A MISSING count is not an error, but reading it as zero is the same inversion: zero
+  // unlocks the Delete button, so a response that carries no count at all must refuse too,
+  // not silently stand in for "no tickets".
+  it('throws when a count query succeeds with no error but no count either', async () => {
+    eqStatus.mockResolvedValue({ count: null, error: null })
+    await expect(
+      ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })]),
+    ).rejects.toThrow(/could not count/i)
+  })
 })
 
 function status(over: Partial<ProjectStatus> & { id: string }): ProjectStatus {
