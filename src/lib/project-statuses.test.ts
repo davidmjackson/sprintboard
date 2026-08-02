@@ -2,8 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createProjectStatus,
+  deleteBlockReason,
   doneSlugs,
+  initialSlug,
   listProjectStatuses,
+  removeStatus,
   renameProjectStatus,
   reorderProjectStatuses,
   slugForName,
@@ -603,5 +606,95 @@ describe('reorderProjectStatuses', () => {
       ok: false,
       error: 'unknown',
     })
+  })
+})
+
+function status(over: Partial<ProjectStatus> & { id: string }): ProjectStatus {
+  return {
+    id: over.id,
+    project_id: 'p1',
+    slug: over.slug ?? over.id,
+    name: over.name ?? over.id,
+    category: over.category ?? 'todo',
+    position: over.position ?? 1,
+    is_initial: over.is_initial ?? false,
+    created_at: '2026-08-02T00:00:00Z',
+    ...over,
+  } as ProjectStatus
+}
+
+describe('initialSlug', () => {
+  it('returns the slug of the initial status', () => {
+    expect(
+      initialSlug([status({ id: 'a' }), status({ id: 'b', is_initial: true, slug: 'triage' })]),
+    ).toBe('triage')
+  })
+
+  it('returns null when no status is initial', () => {
+    expect(initialSlug([status({ id: 'a' })])).toBeNull()
+  })
+})
+
+describe('removeStatus', () => {
+  it('drops the row and leaves the rest untouched', () => {
+    const rows = [
+      status({ id: 'a', position: 1, is_initial: true }),
+      status({ id: 'b', position: 2 }),
+    ]
+    expect(removeStatus(rows, 'b')).toEqual([rows[0]])
+  })
+
+  // The promotion rule, mirroring the AFTER DELETE trigger. Pinned on BOTH sides:
+  // rls.integration.test.ts asserts the DATABASE promotes by this same rule.
+  it('promotes the lowest-position survivor when the initial status is removed', () => {
+    const rows = [
+      status({ id: 'a', position: 1, is_initial: true }),
+      status({ id: 'c', position: 3 }),
+      status({ id: 'b', position: 2 }),
+    ]
+    const next = removeStatus(rows, 'a')
+    expect(next.find((s) => s.is_initial)?.id).toBe('b')
+    expect(next).toHaveLength(2)
+  })
+
+  it('promotes nobody when the removed status was not initial', () => {
+    const rows = [
+      status({ id: 'a', position: 1, is_initial: true }),
+      status({ id: 'b', position: 2 }),
+    ]
+    expect(removeStatus(rows, 'b').filter((s) => s.is_initial)).toHaveLength(1)
+  })
+
+  it('is a no-op for an id the list does not hold', () => {
+    const rows = [status({ id: 'a', position: 1, is_initial: true })]
+    expect(removeStatus(rows, 'nope')).toEqual(rows)
+  })
+})
+
+describe('deleteBlockReason', () => {
+  it('blocks the last status, and says why', () => {
+    expect(deleteBlockReason(0, true)).toBe('A project must keep at least one status.')
+  })
+
+  it('blocks a status holding tickets, naming the count', () => {
+    expect(deleteBlockReason(7, false)).toBe(
+      'This status holds 7 tickets. Move them to another status first.',
+    )
+  })
+
+  it('says "1 ticket", not "1 tickets"', () => {
+    expect(deleteBlockReason(1, false)).toBe(
+      'This status holds 1 ticket. Move them to another status first.',
+    )
+  })
+
+  // Last-ness wins: a last status holding tickets is blocked for the reason the user
+  // cannot resolve by moving tickets.
+  it('reports last-ness ahead of the ticket count', () => {
+    expect(deleteBlockReason(7, true)).toBe('A project must keep at least one status.')
+  })
+
+  it('returns null when the status can be deleted', () => {
+    expect(deleteBlockReason(0, false)).toBeNull()
   })
 })

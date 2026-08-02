@@ -333,3 +333,59 @@ export async function reorderProjectStatuses(
   if (rows.length !== orderedSlugs.length) return { ok: false, error: 'unknown' }
   return { ok: true, value: rows }
 }
+
+/**
+ * Where new tickets start, by slug. The single client-side derivation of "initial", mirroring
+ * `doneSlugs`'s role for "terminal" — the confirm dialog's copy reads it rather than
+ * re-deriving. `null` when the project has no initial status, which the database's
+ * `project_statuses_one_initial_per_project` plus SPRIN-80's promotion trigger make
+ * unreachable; it is typed anyway because the client cannot prove that locally.
+ */
+export function initialSlug(statuses: readonly ProjectStatus[]): string | null {
+  return statuses.find((s) => s.is_initial)?.slug ?? null
+}
+
+/**
+ * The list after a status is deleted, INCLUDING the promotion the database performs.
+ *
+ * This mirrors `project_statuses_promote_initial()`: deleting the initial status promotes the
+ * lowest-`position` survivor. The rule is therefore expressed twice — once in SQL, once here —
+ * which is the drift this codebase warns about with `doneSlugs`. It cannot be shared across the
+ * two languages, so it is closed by test instead: `rls.integration.test.ts` asserts the DATABASE
+ * promotes by this same rule, so a trigger rewritten to promote differently goes red.
+ *
+ * A pure function rather than logic in the shell's reducer, because `ProjectShell` is at
+ * cyclomatic 10 of 10 and a promotion branch there would redden `npm run lint`.
+ */
+export function removeStatus(statuses: readonly ProjectStatus[], id: string): ProjectStatus[] {
+  const removed = statuses.find((s) => s.id === id)
+  const rest = statuses.filter((s) => s.id !== id)
+  if (!removed?.is_initial) return rest
+
+  const promoted = rest.reduce<ProjectStatus | null>(
+    (lowest, s) => (lowest === null || s.position < lowest.position ? s : lowest),
+    null,
+  )
+  return rest.map((s) => (s.id === promoted?.id ? { ...s, is_initial: true } : s))
+}
+
+/**
+ * Why this status cannot be deleted, or `null` if it can — AC4's "the reason is stated in the
+ * UI". Derived from data the tab already holds, so the control explains itself BEFORE the user
+ * clicks rather than after the database refuses.
+ *
+ * The database is the real control; this only decides what to render. A stale count therefore
+ * degrades to a wrong sentence, never to a wrong delete.
+ *
+ * Last-ness is reported ahead of the ticket count deliberately: a last status holding tickets is
+ * blocked for a reason the user cannot fix by moving tickets, so naming the count would send
+ * them to do work that would not unblock the button.
+ */
+export function deleteBlockReason(ticketCount: number, isLast: boolean): string | null {
+  if (isLast) return 'A project must keep at least one status.'
+  if (ticketCount > 0) {
+    const plural = ticketCount === 1 ? 'ticket' : 'tickets'
+    return `This status holds ${ticketCount} ${plural}. Move them to another status first.`
+  }
+  return null
+}
