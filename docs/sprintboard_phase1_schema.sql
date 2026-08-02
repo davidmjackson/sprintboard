@@ -634,9 +634,19 @@ create policy counters_owner on project_counters
 --     slug" has to be a privilege, not a predicate. See the grant below — and note the
 --     shape, because the obvious version of it does nothing at all.
 --
--- Collapsing the four into one `for all` would silently widen every one of those
--- distinctions at once. `rls.integration.test.ts` goes red if anyone does; that test
--- exists for this exact reason.
+-- KEEP THE FOUR APART — BUT NOTHING IN CI WILL TELL YOU IF YOU DO NOT. All four
+-- predicates are identical today, so a single `for all` policy is behaviourally
+-- indistinguishable through PostgREST: INSERT ignores USING, UPDATE gets both, SELECT and
+-- DELETE get USING. The narrowing that genuinely bites is the column UPDATE privilege
+-- above, which is not a policy and survives a collapse untouched. An earlier version of
+-- this comment claimed `rls.integration.test.ts` goes red on a collapse; it does not, and
+-- it cannot — PostgREST has no access to pg_policy. The one pin is the post-state
+-- assertion in `docs/migrations/sprin-80-status-deletes.sql`, which runs when a human
+-- re-applies that file and NOT on any PR.
+--
+-- The split is still wanted: SPRIN-75's membership model is where these predicates start
+-- to differ per verb (read broader than write), and re-splitting a collapsed policy in the
+-- middle of a security rewrite is strictly worse than keeping them apart now.
 --
 -- DO NOT add `force row level security` to this table. It reads as hardening and is the
 -- opposite: the seeding trigger is SECURITY DEFINER and runs as the table's owner

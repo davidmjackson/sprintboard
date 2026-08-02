@@ -75,7 +75,8 @@ type DeleteStatusError = Extract<
  * without the compiler noticing.
  */
 const DELETE_FAILURE_COPY: Record<DeleteStatusError, string> = {
-  has_tickets: 'This status still holds tickets. Move them to another status first, then try again.',
+  has_tickets:
+    'This status still holds tickets. Move them to another status first, then try again.',
   last: 'A project must keep at least one status.',
   stale: 'This status no longer exists — refresh the page to see the current list.',
   duplicate: GENERIC_CREATE_ERROR,
@@ -301,7 +302,9 @@ function StatusDeleteControl({
     <div className="flex shrink-0 flex-col items-end gap-0.5">
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground text-xs">
-          {count === undefined ? 'count unavailable' : `${count} ${count === 1 ? 'ticket' : 'tickets'}`}
+          {count === undefined
+            ? 'count unavailable'
+            : `${count} ${count === 1 ? 'ticket' : 'tickets'}`}
         </span>
         <Button
           size="sm"

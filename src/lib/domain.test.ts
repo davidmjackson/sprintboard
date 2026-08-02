@@ -241,7 +241,7 @@ describe('domain vocabulary matches the database check constraints', () => {
   // also opened DELETE on `project_statuses`. Deleting this test instead of repinning it would
   // leave "how does a new ticket get its initial status" unguarded by anything but the live
   // integration suite, which does not run here.
-  it("exactly one seeded status is the initial one, and tickets.status resolves it via a trigger — NOT a column default", () => {
+  it('exactly one seeded status is the initial one, and tickets.status resolves it via a trigger — NOT a column default', () => {
     const initial = seededProjectStatuses().filter((s) => s.is_initial)
     expect(initial).toHaveLength(1)
     expect(initial[0]?.slug).toBe('todo')

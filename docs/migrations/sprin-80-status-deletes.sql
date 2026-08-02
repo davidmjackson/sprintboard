@@ -38,8 +38,20 @@ begin
 end $$;
 
 -- 2. The DELETE policy. project_statuses now carries FOUR policies split by verb:
---    read, insert, update, delete. NEVER collapse them into `for all` — the split is
---    the security model and a live test goes red.
+--    read, insert, update, delete. Keep the split — but be honest about what enforces it.
+--
+--    ALL FOUR PREDICATES ARE IDENTICAL, so a single `for all` policy would be
+--    BEHAVIOURALLY INDISTINGUISHABLE: INSERT ignores USING, UPDATE gets both, SELECT and
+--    DELETE get USING. The narrowing that genuinely bites — an owner cannot write
+--    `is_initial` or `slug` — is a column PRIVILEGE, not a policy, and survives a collapse
+--    untouched. So no Vitest test can go red on it: PostgREST cannot read pg_policy, and
+--    an earlier draft of this comment (and of the schema file and rls.integration.test.ts)
+--    claimed one does. The ONLY thing pinning the four-way split is step 7's post-state
+--    assertion in this file, which runs at APPLY time and not in CI.
+--
+--    The split is still wanted: it is the shape SPRIN-75's membership model will diverge
+--    the predicates within, and re-splitting a collapsed policy under a live security
+--    rewrite is strictly worse than keeping them apart now.
 --
 --    `(select auth.uid())` rather than a bare `auth.uid()` is DELIBERATE and differs
 --    from the surrounding policies: it keeps this policy out of the auth_rls_initplan
@@ -88,11 +100,45 @@ begin
   -- the project row is already gone. "Keep at least one status" is vacuous for a
   -- project that no longer exists, so returning early is correct on its own terms and
   -- not merely a workaround. Step 6 (f) is the test — it deletes the smoke projects and
-  -- requires three rows to go.
-  if not exists (select 1 from public.projects p where p.id = old.project_id) then
+  -- requires four rows to go.
+  --
+  -- AND THE SAME LOOKUP IS THE CONCURRENCY LOCK. `for update` is not decoration: without
+  -- it this guard is a check-then-act across two transactions and BOTH of its invariants
+  -- can be broken by two concurrent PostgREST requests, each of which is its own READ
+  -- COMMITTED transaction:
+  --
+  --   (a) ZERO STATUSES. A project down to two statuses; T1 deletes one and T2 deletes
+  --       the other. An uncommitted delete is still visible as PRESENT to the other
+  --       snapshot, so each counts 2, each passes, both commit, and the project ends with
+  --       none — SB002 on every subsequent ticket insert.
+  --   (b) ZERO INITIAL STATUSES. Statuses A(initial, pos 1), B(pos 2), C(pos 3). T1
+  --       deletes A while T2 deletes B. T1's promotion (step 4) resolves the
+  --       lowest-position survivor to B; T2 commits first; T1's `update ... where id = B`
+  --       then matches no row and nothing is initial afterwards.
+  --
+  -- NEITHER IS RECOVERABLE FROM THE UI: `is_initial` is outside the column UPDATE grant
+  -- and createProjectStatus hardcodes `is_initial: false`, so a bricked project needs SQL.
+  --
+  -- THE LOCK IS ON `projects`, NOT ON `project_statuses`, AND THAT IS THE POINT. Locking
+  -- the outgoing status row would be free — the DELETE already holds it — and would
+  -- serialise nothing, because (a) and (b) are races between deletes of DIFFERENT rows.
+  -- What both need is a mutex over the whole per-project vocabulary, and the parent row
+  -- is the only object every delete for that project already touches. So every delete for
+  -- one project queues behind the same row while deletes across different projects stay
+  -- fully parallel.
+  --
+  -- Order is stable and deadlock-free: the executor has already taken the row lock on the
+  -- status tuple before firing this trigger, so every caller takes status-then-project,
+  -- never the reverse.
+  perform 1 from public.projects p where p.id = old.project_id for update;
+  if not found then
     return old;
   end if;
 
+  -- Counted AFTER the lock, and the ordering is what makes the count trustworthy. plpgsql
+  -- SPI queries are not read-only, so under READ COMMITTED this statement takes a snapshot
+  -- at the moment it runs — i.e. after any transaction we queued behind has committed. A
+  -- count taken before the lock would be exactly the stale read race (a) exploits.
   if (select count(*) from public.project_statuses s
        where s.project_id = old.project_id) <= 1 then
     raise exception 'A project must keep at least one status.'
@@ -118,6 +164,24 @@ create trigger project_statuses_delete_guard
 --    collides immediately. After the delete there is nothing to collide with.
 --
 --    The guard in step 3 has already run, so a survivor is guaranteed to exist.
+--
+--    IT ALSO INHERITS THE GUARD'S LOCK, and that is what closes race (b) — do not read
+--    this function as unsynchronised just because it takes no lock of its own. The BEFORE
+--    trigger has already taken `for update` on the parent project, and a row lock is held
+--    to end of transaction, so this AFTER trigger runs with every other delete for that
+--    project queued behind it. Its subquery is a plpgsql SPI query, not read-only, so
+--    under READ COMMITTED it takes a fresh snapshot at the moment it runs: any sibling a
+--    transaction we queued behind removed is already gone from it, and the promotion
+--    lands on a row that still exists. DO NOT MOVE THE LOCK OUT OF STEP 3 — the two
+--    functions are one critical section, and only one of them takes it.
+--
+--    `order by position limit 1` is deterministic only because
+--    project_statuses_project_position_unique exists. That constraint is DEFERRABLE
+--    INITIALLY DEFERRED, so inside a multi-statement transaction two rows CAN transiently
+--    share a position; the tie would then be broken arbitrarily. Nothing does that today
+--    (the reorder RPC is the only writer that relies on the deferral, and it does not
+--    delete), but a future caller that deletes and reorders in one transaction turns this
+--    into a coin toss.
 --
 --    No cascade escape hatch is needed here, unlike step 3: AFTER ROW triggers fire at
 --    the END of their statement, so during a project cascade every sibling is already
@@ -200,7 +264,20 @@ alter table public.tickets alter column status drop default;
 --      (d) deleting the initial status promotes the lowest-position survivor, and a
 --          ticket inserted with no `status` then lands on it.
 --      (e) tickets.status carries no column default any more.
---      (f) a project delete still cascades — the guard does not block its own teardown.
+--      (f) the guard still refuses the last status while the caller already holds the
+--          parent project's row lock — the guard's own `for update` is re-entrant and
+--          does not turn a refusal into an error or a self-deadlock.
+--      (g) a project delete still cascades — the guard does not block its own teardown,
+--          and the added lock does not change that (the parent row is already gone, so
+--          the escape hatch returns before any lock is attempted).
+--
+--    WHAT IT CANNOT PROVE. The guard's lock exists to serialise CONCURRENT transactions,
+--    and a single-transaction smoke block has no second session. (f) and (g) pin the
+--    lock's side effects — that it does not break a legitimate refusal or the cascade —
+--    and nothing here pins the mutual exclusion itself. Do not add a step that pretends
+--    to; the honest coverage is that removing `for update` leaves every assertion below
+--    green, and only step 7's shape checks and this comment stand between a "tidy-up" and
+--    the two races step 3 describes.
 -- -----------------------------------------------------------------------------
 do $$
 declare
@@ -208,6 +285,7 @@ declare
   v_p1     uuid;
   v_p2     uuid;
   v_p3     uuid;
+  v_p4     uuid;
   v_ticket uuid;
   v_n      int;
   v_slug   text;
@@ -222,6 +300,17 @@ begin
   perform set_config('request.jwt.claims',
                      json_build_object('sub', v_owner, 'role', 'authenticated')::text, true);
   perform set_config('role', 'authenticated', true);
+
+  -- THE ROLE SWITCH IS A PRECONDITION OF EVERY ASSERTION BELOW, NOT A FORMALITY. If
+  -- set_config('role', …) ever no-ops — a renamed role, a future GUC change, a
+  -- copy-paste that drops the line — this block runs on as the migration's superuser,
+  -- which BYPASSES RLS entirely. Step (a) would then pass without the DELETE policy
+  -- existing at all, and the whole smoke test would be evidence of nothing.
+  if current_user <> 'authenticated' then
+    raise exception 'SPRIN-80 SMOKE FAIL: running as %, expected authenticated. The role '
+                    'switch did not take, so every RLS assertion below would be vacuous.',
+                    current_user;
+  end if;
 
   insert into public.projects (owner_id, name, key)
   values (v_owner, 'SPRIN-80 smoke: deletes',
@@ -359,13 +448,52 @@ begin
     raise exception 'SPRIN-80 SMOKE FAIL: tickets.status still carries a column default.';
   end if;
 
-  -- (f) Teardown IS the cascade test. project_statuses now has a BEFORE DELETE guard, and
-  --     the naive form of that guard blocks the last row of the cascade and makes deleting
-  --     a project impossible — see the escape hatch in step 3. Three rows must go.
-  delete from public.projects where id in (v_p1, v_p2, v_p3);
+  -- (f) The guard under an ALREADY-HELD parent row lock. Step 3 added `for update` to the
+  --     guard's parent lookup, so a caller that has itself locked the project row now
+  --     re-enters that lock from inside the trigger. Same transaction, so it is granted
+  --     immediately — but a lock clause that could not be re-entered (or that raised
+  --     rather than waited) would turn a legitimate delete into an error and the SB001
+  --     refusal into something no client maps. Both halves are checked: the three
+  --     non-initial deletes must SUCCEED and the last must still raise SB001.
+  insert into public.projects (owner_id, name, key)
+  values (v_owner, 'SPRIN-80 smoke: locked parent',
+          'V' || upper(substr(md5(random()::text), 1, 3)))
+  returning id into v_p4;
+
+  perform 1 from public.projects p where p.id = v_p4 for update;
+
+  delete from public.project_statuses where project_id = v_p4 and not is_initial;
   get diagnostics v_n = row_count;
   if v_n <> 3 then
-    raise exception 'SPRIN-80 SMOKE FAIL: smoke project teardown removed % row(s), expected 3. '
+    raise exception 'SPRIN-80 SMOKE FAIL: with the parent row already locked, clearing the '
+                    '3 non-initial statuses removed % row(s). The guard''s FOR UPDATE is '
+                    'not re-entrant.', v_n;
+  end if;
+
+  begin
+    delete from public.project_statuses where project_id = v_p4;
+    raise exception 'SPRIN-80 SMOKE FAIL: with the parent row already locked, deleting the '
+                    'LAST status was ALLOWED. The guard did not fire.';
+  exception when sqlstate 'SB001' then
+    null;  -- expected: the lock changed nothing about the refusal.
+  end;
+
+  select count(*) into v_n from public.project_statuses where project_id = v_p4;
+  if v_n <> 1 then
+    raise exception 'SPRIN-80 SMOKE FAIL: % statuses remain on the locked-parent project, '
+                    'expected 1', v_n;
+  end if;
+
+  -- (g) Teardown IS the cascade test. project_statuses now has a BEFORE DELETE guard, and
+  --     the naive form of that guard blocks the last row of the cascade and makes deleting
+  --     a project impossible — see the escape hatch in step 3. The lock does not change
+  --     that: the RI cascade runs as an AFTER trigger on `projects`, so the parent row is
+  --     already gone and the escape hatch returns before `for update` is ever reached.
+  --     Four rows must go.
+  delete from public.projects where id in (v_p1, v_p2, v_p3, v_p4);
+  get diagnostics v_n = row_count;
+  if v_n <> 4 then
+    raise exception 'SPRIN-80 SMOKE FAIL: smoke project teardown removed % row(s), expected 4. '
                     'If this is 0, the delete guard is blocking the projects cascade.', v_n;
   end if;
 
@@ -374,7 +502,8 @@ begin
   raise notice
     'SPRIN-80 SMOKE OK: empty-status delete, non-empty refusal with the ticket intact, '
     'last-status SB001 refusal, promotion of the lowest-position survivor, is_initial '
-    'resolution on insert, no column default, and the projects cascade all pass.';
+    'resolution on insert, no column default, the same refusal under an already-held '
+    'parent row lock, and the projects cascade all pass.';
 end $$;
 
 -- -----------------------------------------------------------------------------
@@ -388,6 +517,11 @@ begin
   select string_agg(polcmd::text, ',' order by polcmd::text) into v_cmds
     from pg_policy where polrelid = 'public.project_statuses'::regclass;
   -- r select, a insert, w update, d delete. No '*' (for all).
+  --
+  -- THIS ASSERTION IS THE ONLY THING PINNING THE FOUR-WAY SPLIT, and it runs here, at
+  -- apply time, NOT in CI. No Vitest test can stand in for it: PostgREST has no access to
+  -- pg_catalog, and all four predicates are identical today, so a collapsed `for all`
+  -- policy would behave the same through the API and every live suite would stay green.
   if v_cmds is distinct from 'a,d,r,w' then
     raise exception 'SPRIN-80: project_statuses policies are (%), expected exactly '
                     'select+insert+update+delete. A `for all` policy has appeared.', v_cmds;

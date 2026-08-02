@@ -719,9 +719,9 @@ describe('ticketCountsByStatus', () => {
   // A failed count must not read as zero: zero unlocks the Delete button.
   it('throws when a count query fails', async () => {
     mockCountError('network down')
-    await expect(
-      ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })]),
-    ).rejects.toThrow(/could not count/i)
+    await expect(ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })])).rejects.toThrow(
+      /could not count/i,
+    )
   })
 
   // A MISSING count is not an error, but reading it as zero is the same inversion: zero
@@ -729,9 +729,9 @@ describe('ticketCountsByStatus', () => {
   // not silently stand in for "no tickets".
   it('throws when a count query succeeds with no error but no count either', async () => {
     eqStatus.mockResolvedValue({ count: null, error: null })
-    await expect(
-      ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })]),
-    ).rejects.toThrow(/could not count/i)
+    await expect(ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })])).rejects.toThrow(
+      /could not count/i,
+    )
   })
 })
 

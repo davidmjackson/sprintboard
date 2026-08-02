@@ -429,11 +429,7 @@ const LAST_STATUS = 'SB001'
  * the suite would stop being able to say which one works.
  */
 export async function deleteProjectStatus(id: string): Promise<StatusWriteResult<void>> {
-  const { data, error } = await supabase
-    .from('project_statuses')
-    .delete()
-    .eq('id', id)
-    .select('id')
+  const { data, error } = await supabase.from('project_statuses').delete().eq('id', id).select('id')
 
   if (error) return { ok: false, error: deleteError(error) }
   if ((data ?? []).length !== 1) return { ok: false, error: 'stale' }

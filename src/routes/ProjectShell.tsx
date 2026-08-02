@@ -223,8 +223,7 @@ export function ProjectShell() {
   // a ternary in THIS file would push ProjectShell past its cyclomatic budget (10 of 10) and
   // redden `npm run lint`. See `removeStatus`'s own docblock for why the rule is expressed
   // twice (once in SQL, once there) rather than shared, and how that duplication is tested.
-  const onStatusDeleted = (id: string) =>
-    statusRead.patch(project.id, (ss) => removeStatus(ss, id))
+  const onStatusDeleted = (id: string) => statusRead.patch(project.id, (ss) => removeStatus(ss, id))
 
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
