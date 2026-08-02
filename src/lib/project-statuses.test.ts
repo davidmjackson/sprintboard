@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createProjectStatus,
   deleteBlockReason,
+  deleteProjectStatus,
   doneSlugs,
   initialSlug,
   listProjectStatuses,
@@ -12,6 +13,7 @@ import {
   slugForName,
   statusName,
   statusOptions,
+  ticketCountsByStatus,
   uniqueSlugForName,
 } from './project-statuses'
 import type { ProjectStatus } from './domain'
@@ -20,13 +22,15 @@ import { supabase } from './supabase'
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn(), rpc: vi.fn() } }))
 
 // Each PostgREST chain gets its OWN link functions rather than sharing one `select`/`eq`.
-// The three chains diverge after the same method name — `.select()` returns `{ eq }` when it
+// The chains diverge after the same method name — `.select()` returns `{ eq }` when it
 // starts a read and `{ single }` when it terminates a write — so a shared mock could only
 // return one of them, and a test asserting on it could not say which call it saw.
 //
-//   listProjectStatuses:  from().select().eq().order()
-//   createProjectStatus:  from().insert().select().single()
-//   renameProjectStatus:  from().update().eq().select().single()
+//   listProjectStatuses:   from().select().eq().order()
+//   createProjectStatus:   from().insert().select().single()
+//   renameProjectStatus:   from().update().eq().select().single()
+//   deleteProjectStatus:   from().delete().eq().select()
+//   ticketCountsByStatus:  from().select().eq().eq()   (on the 'tickets' table, not this one)
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
 const select = vi.fn(() => ({ eq }))
@@ -37,6 +41,16 @@ const insert = vi.fn(() => ({ select: selectInsert }))
 const selectUpdate = vi.fn(() => ({ single }))
 const eqUpdate = vi.fn(() => ({ select: selectUpdate }))
 const update = vi.fn(() => ({ eq: eqUpdate }))
+
+const selectDelete = vi.fn()
+const eqDelete = vi.fn(() => ({ select: selectDelete }))
+const del = vi.fn(() => ({ eq: eqDelete }))
+
+// ticketCountsByStatus queries 'tickets', a different table from every other function in this
+// module, so supabase.from() dispatches on the table name rather than returning one fixed chain.
+const eqStatus = vi.fn()
+const eqProject = vi.fn(() => ({ eq: eqStatus }))
+const selectCount = vi.fn(() => ({ eq: eqProject }))
 
 beforeEach(() => {
   order.mockReset()
@@ -57,8 +71,25 @@ beforeEach(() => {
   update.mockReset()
   update.mockReturnValue({ eq: eqUpdate })
 
+  selectDelete.mockReset()
+  eqDelete.mockReset()
+  eqDelete.mockReturnValue({ select: selectDelete })
+  del.mockReset()
+  del.mockReturnValue({ eq: eqDelete })
+
+  eqStatus.mockReset()
+  eqProject.mockReset()
+  eqProject.mockReturnValue({ eq: eqStatus })
+  selectCount.mockReset()
+  selectCount.mockReturnValue({ eq: eqProject })
+
   vi.mocked(supabase.from).mockReset()
-  vi.mocked(supabase.from).mockReturnValue({ select, insert, update } as never)
+  vi.mocked(supabase.from).mockImplementation(
+    (table: string) =>
+      (table === 'tickets'
+        ? { select: selectCount }
+        : { select, insert, update, delete: del }) as never,
+  )
   vi.mocked(supabase.rpc).mockReset()
 })
 
@@ -609,9 +640,93 @@ describe('reorderProjectStatuses', () => {
   })
 })
 
+/** Thin wrapper over `selectDelete`, matching how `single.mockResolvedValue` stands in for the
+ *  other chains above. */
+function mockDelete(result: { data: unknown; error: { code?: string; message?: string } | null }) {
+  selectDelete.mockResolvedValue(result)
+}
+
+/** One count per slug, keyed the same way the code keys its Map: by slug. */
+function mockCounts(counts: Record<string, number>) {
+  eqStatus.mockImplementation((_col: string, slug: string) =>
+    Promise.resolve({ count: counts[slug] ?? 0, error: null }),
+  )
+}
+
+function mockCountError(message: string) {
+  eqStatus.mockResolvedValue({ count: null, error: { message } })
+}
+
+describe('deleteProjectStatus', () => {
+  it('reports has_tickets when the fk refuses the delete', async () => {
+    mockDelete({ data: null, error: { code: '23503', message: 'tickets_status_fk' } })
+    await expect(deleteProjectStatus('s1')).resolves.toEqual({ ok: false, error: 'has_tickets' })
+  })
+
+  it('reports last when the guard trigger refuses the delete', async () => {
+    mockDelete({ data: null, error: { code: 'SB001', message: 'at least one status' } })
+    await expect(deleteProjectStatus('s1')).resolves.toEqual({ ok: false, error: 'last' })
+  })
+
+  /**
+   * THE ONE THAT MATTERS. RLS FILTERS a DELETE rather than raising on it, so a row that is not
+   * ours comes back as exactly `error: null, data: []` — a delete that removed nothing, and
+   * indistinguishable from success unless the row count is checked.
+   */
+  it('reports stale when the delete matched no row and did not error', async () => {
+    mockDelete({ data: [], error: null })
+    await expect(deleteProjectStatus('s1')).resolves.toEqual({ ok: false, error: 'stale' })
+  })
+
+  it('succeeds when exactly one row came back', async () => {
+    mockDelete({ data: [{ id: 's1' }], error: null })
+    await expect(deleteProjectStatus('s1')).resolves.toEqual({ ok: true, value: undefined })
+  })
+
+  it('falls back to unknown for an unrecognised error code', async () => {
+    mockDelete({ data: null, error: { code: '42501', message: 'denied' } })
+    await expect(deleteProjectStatus('s1')).resolves.toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('sends the delete to project_statuses, filtered by id, asking back the row count', async () => {
+    mockDelete({ data: [{ id: 's1' }], error: null })
+
+    await deleteProjectStatus('s1')
+
+    expect(supabase.from).toHaveBeenCalledWith('project_statuses')
+    expect(eqDelete).toHaveBeenCalledWith('id', 's1')
+    expect(selectDelete).toHaveBeenCalledWith('id')
+  })
+})
+
+describe('ticketCountsByStatus', () => {
+  it('maps each status slug to its exact ticket count', async () => {
+    mockCounts({ todo: 4, done: 0 })
+    const counts = await ticketCountsByStatus('p1', [
+      status({ id: 'a', slug: 'todo' }),
+      status({ id: 'b', slug: 'done' }),
+    ])
+    expect(counts.get('todo')).toBe(4)
+    expect(counts.get('done')).toBe(0)
+  })
+
+  it('scopes the count to the given project', async () => {
+    mockCounts({ todo: 1 })
+    await ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })])
+    expect(eqProject).toHaveBeenCalledWith('project_id', 'p1')
+  })
+
+  // A failed count must not read as zero: zero unlocks the Delete button.
+  it('throws when a count query fails', async () => {
+    mockCountError('network down')
+    await expect(
+      ticketCountsByStatus('p1', [status({ id: 'a', slug: 'todo' })]),
+    ).rejects.toThrow(/could not count/i)
+  })
+})
+
 function status(over: Partial<ProjectStatus> & { id: string }): ProjectStatus {
   return {
-    id: over.id,
     project_id: 'p1',
     slug: over.slug ?? over.id,
     name: over.name ?? over.id,
