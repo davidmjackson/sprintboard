@@ -102,10 +102,15 @@ create trigger on_project_created
 -- separate board_columns table: the mapping is 1:1 today, a second table would
 -- carry no data, and the Rung 3 split is purely additive when it is wanted.
 --
--- OWNER-WRITABLE as of SPRIN-77, but NOT the way every other table is. Clients may
--- SELECT, INSERT and UPDATE (three columns only) — and may NOT DELETE at all. See the
--- policy block at the foot of this file; the split by verb IS the security model here,
--- not an accident of how it was written.
+-- OWNER-WRITABLE as of SPRIN-77 and SPRIN-80, but NOT the way every other table is.
+-- Clients may SELECT, INSERT, UPDATE (three columns only) and DELETE — FOUR policies,
+-- one per verb. See the policy block at the foot of this file; the split by verb IS the
+-- security model here, not an accident of how it was written.
+--
+-- DELETE is bounded by two things that are not policies and cannot be: a project must
+-- keep at least one status (project_statuses_delete_guard, below — a statement about
+-- SIBLING rows, which no constraint can see), and tickets_status_fk refuses a status
+-- that still holds tickets. Those two refusals are the only ones the client models.
 --
 -- text + check, never an enum.
 create table project_statuses (
@@ -130,10 +135,14 @@ create table project_statuses (
   -- Board order. Dense 1..N per project.
   position    int  not null,
 
-  -- Where new tickets land. NOT derived from position: under a position-derived
-  -- default, dragging Done to the front of the board would silently start creating
-  -- tickets in Done. Seeded true on `todo`, which is also tickets.status's column
-  -- default — the integration suite asserts those two agree.
+  -- Where new tickets land, and as of SPRIN-80 that is literal rather than nominal:
+  -- resolve_initial_ticket_status() reads this column to fill a new ticket's status, and
+  -- tickets.status no longer carries a column default that could disagree with it.
+  --
+  -- NOT derived from position: under a position-derived default, dragging Done to the
+  -- front of the board would silently start creating tickets in Done. Exactly one row per
+  -- project carries it — project_statuses_one_initial_per_project prevents TWO, and the
+  -- delete guard plus the promotion trigger below are what prevent ZERO.
   is_initial  boolean not null default false,
 
   created_at  timestamptz not null default now(),
@@ -207,6 +216,90 @@ create trigger on_project_created_statuses
   after insert on projects
   for each row execute function seed_project_statuses();
 
+-- ------------------------------------------------------------
+-- Status deletion guards (SPRIN-80)
+-- ------------------------------------------------------------
+-- A project must keep at least one status. This is a statement about the SIBLING rows,
+-- which no constraint can see, so it has to be a trigger.
+--
+-- SECURITY DEFINER so the count is of ALL sibling rows rather than the rows the caller's
+-- policies happen to expose. Under SPRIN-75's membership model, where read may be broader
+-- or narrower than write, an invoker-side count would silently start guarding the wrong
+-- thing. SB001 is a custom SQLSTATE rather than the P0001 default so the client keys off
+-- a code that cannot be reworded — see deleteError() in src/lib/project-statuses.ts.
+create or replace function project_statuses_delete_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  -- THE CASCADE ESCAPE HATCH, AND IT IS LOAD-BEARING — WITHOUT IT, DELETING A PROJECT
+  -- FAILS. `projects` cascades to `project_statuses`, and that cascade is ONE statement
+  -- removing every row. This BEFORE ROW trigger fires per row, and a plpgsql SPI query is
+  -- not read-only, so it takes a FRESH snapshot with a bumped command id: the siblings
+  -- this very statement has already removed are INVISIBLE to the count below. On the last
+  -- row the count reads 1 and the guard aborts a delete that was always legitimate.
+  --
+  -- The parent lookup is the discriminator, and it is exact rather than heuristic: the RI
+  -- cascade runs as an AFTER trigger on `projects`, so by the time it reaches here the
+  -- project row is already gone. "Keep at least one status" is vacuous for a project that
+  -- no longer exists, so returning early is correct on its own terms.
+  if not exists (select 1 from public.projects p where p.id = old.project_id) then
+    return old;
+  end if;
+
+  if (select count(*) from public.project_statuses s
+       where s.project_id = old.project_id) <= 1 then
+    raise exception 'A project must keep at least one status.'
+      using errcode = 'SB001';
+  end if;
+  return old;
+end;
+$$;
+
+revoke execute on function public.project_statuses_delete_guard() from public, anon, authenticated;
+
+create trigger project_statuses_delete_guard
+  before delete on project_statuses
+  for each row execute function project_statuses_delete_guard();
+
+-- Deleting the initial status promotes the lowest-position survivor.
+--
+-- AFTER, NOT BEFORE, and that is forced rather than stylistic:
+-- project_statuses_one_initial_per_project is a PARTIAL unique index, a partial index
+-- cannot be a constraint, and only a constraint can be DEFERRABLE. During a BEFORE DELETE
+-- the outgoing row still holds is_initial = true, so setting it on another row collides
+-- immediately. After the delete there is nothing to collide with.
+--
+-- The guard above has already run, so a survivor is guaranteed to exist. No cascade escape
+-- hatch is needed here: AFTER ROW triggers fire at the END of their statement, so during a
+-- project cascade every sibling is already gone and the update touches no rows.
+create or replace function project_statuses_promote_initial()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if old.is_initial then
+    update public.project_statuses
+       set is_initial = true
+     where id = (select s.id from public.project_statuses s
+                  where s.project_id = old.project_id
+                  order by s.position asc
+                  limit 1);
+  end if;
+  return null;
+end;
+$$;
+
+revoke execute on function public.project_statuses_promote_initial() from public, anon, authenticated;
+
+create trigger project_statuses_promote_initial
+  after delete on project_statuses
+  for each row execute function project_statuses_promote_initial();
+
 -- ============================================================
 -- sprints
 -- ============================================================
@@ -251,17 +344,18 @@ create table tickets (
   -- Validated by tickets_status_fk below, NOT by a check constraint: the status
   -- vocabulary is per-project, and a CHECK body may not contain a subquery.
   --
-  -- The default stays a bare literal. SPRIN-77 made the vocabulary MUTABLE, so the
-  -- old justification ("safe while the vocabulary is immutable to clients") no longer
-  -- holds and has been replaced by a narrower one: what keeps this safe is that the
-  -- `todo` row cannot be REMOVED. There is no DELETE policy on project_statuses, and
-  -- `slug` is not in the column-level UPDATE grant — so no client can delete the row
-  -- this literal names, nor rename its slug out from under it. Adding a DELETE policy
-  -- or granting UPDATE(slug) without also fixing this default would break ticket
-  -- creation permanently, for every project it happened to.
+  -- NO COLUMN DEFAULT, AND THAT IS THE POINT (SPRIN-80). It used to default to the bare
+  -- literal 'todo', which was safe only while the `todo` row could not be REMOVED. SPRIN-80
+  -- opened DELETE on project_statuses, so it removed the default in the same migration —
+  -- the two halves were never safe apart, because a NEW project's `todo` holds no tickets
+  -- and so is deletable even under the "refuse a non-empty status" rule.
   --
-  -- SPRIN-80 owns both halves together: is_initial resolution here, and deletion there.
-  status         text not null default 'todo',
+  -- NOT NULL with no default therefore relies on resolve_initial_ticket_status(), a BEFORE
+  -- INSERT trigger that fills a NULL status from the project's is_initial row. BEFORE
+  -- triggers run ahead of the NOT NULL check, so an insert that omits `status` is filled
+  -- rather than rejected; an insert that NAMES one is left alone. Restoring a literal
+  -- default here would re-break exactly what that trigger exists to fix.
+  status         text not null,
   assignee_id    uuid references auth.users(id) on delete set null,
   story_points   int,
   acceptance_criteria text,
@@ -377,6 +471,45 @@ create trigger on_ticket_insert
   for each row execute function assign_ticket_key();
 
 -- ============================================================
+-- New ticket status resolution  (SPRIN-80)
+--
+-- Replaces tickets.status's old bare `default 'todo'`. A BEFORE INSERT trigger fires
+-- before the NOT NULL check, so an insert that omits `status` arrives here as NULL and
+-- leaves with the project's initial slug; an insert that NAMES a status is left alone.
+--
+-- SECURITY DEFINER for the same reason as project_statuses_delete_guard(): this read must
+-- not depend on statuses_owner_read staying broad enough for whoever is inserting. SB002
+-- is the "no initial status" case, which the delete guard and promotion trigger are
+-- supposed to make unreachable — it is a loud failure, not a fallback.
+-- ============================================================
+create or replace function resolve_initial_ticket_status()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.status is null then
+    select s.slug into new.status
+      from public.project_statuses s
+     where s.project_id = new.project_id and s.is_initial;
+
+    if new.status is null then
+      raise exception 'Project % has no initial status.', new.project_id
+        using errcode = 'SB002';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke execute on function public.resolve_initial_ticket_status() from public, anon, authenticated;
+
+create trigger resolve_initial_ticket_status
+  before insert on tickets
+  for each row execute function resolve_initial_ticket_status();
+
+-- ============================================================
 -- Ticket key immutability
 --
 -- assign_ticket_key only fires BEFORE INSERT, so nothing stopped an owner (or a
@@ -477,7 +610,7 @@ create policy counters_owner on project_counters
                  where p.id = project_counters.project_id
                    and p.owner_id = auth.uid()));
 
--- project_statuses: THREE policies, split by verb, and the split IS the security model.
+-- project_statuses: FOUR policies, split by verb, and the split IS the security model.
 --
 -- This is the one table in this file not governed by a single `for all` policy, and the
 -- departure is deliberate and load-bearing. tickets.status used to be guarded by a global
@@ -485,21 +618,25 @@ create policy counters_owner on project_counters
 -- with a per-project vocabulary in a table that ALTER DEFAULT PRIVILEGES already grants
 -- anon and authenticated full DML on — which makes these policies the ONLY guard left.
 --
--- SPRIN-77 opened writes, and opened exactly two verbs:
+-- SPRIN-77 opened INSERT and UPDATE; SPRIN-80 opened DELETE. Two of the four carry rules
+-- that no policy can express, so do not read the policy list as the whole model:
 --
---   * NO DELETE POLICY, deliberately. An owner deleting the `todo` row would permanently
---     break ticket creation, because tickets.status's default is a bare literal naming it.
---     A DELETE also strands every ticket sitting on the deleted status. SPRIN-80 owns both
---     halves — the delete UI and the is_initial resolution that makes it safe — and until
---     it lands, a DELETE from a client matches no policy, filters to zero rows, and changes
---     nothing. Collapsing these three into one `for all` grants DELETE silently and reopens
---     all of that. `rls.integration.test.ts` goes red if anyone does; that test exists for
---     this exact reason.
+--   * DELETE IS BOUNDED BY TRIGGERS AND A FOREIGN KEY, not by its policy. The policy only
+--     answers "is this your project". What stops the damage is tickets_status_fk (a status
+--     still holding tickets raises 23503) and project_statuses_delete_guard (the last
+--     status of a project raises SB001). SPRIN-80 shipped this policy in the SAME migration
+--     that removed tickets.status's bare `default 'todo'`, because either alone is unsafe:
+--     the default named a row that had become deletable, and a NEW project's `todo` holds
+--     no tickets, so the fk would not have refused it.
 --
 --   * UPDATE IS COLUMN-RESTRICTED, and the restriction is NOT expressible as a policy.
 --     RLS has no access to the OLD row in a WITH CHECK, so "you may change name but not
 --     slug" has to be a privilege, not a predicate. See the grant below — and note the
 --     shape, because the obvious version of it does nothing at all.
+--
+-- Collapsing the four into one `for all` would silently widen every one of those
+-- distinctions at once. `rls.integration.test.ts` goes red if anyone does; that test
+-- exists for this exact reason.
 --
 -- DO NOT add `force row level security` to this table. It reads as hardening and is the
 -- opposite: the seeding trigger is SECURITY DEFINER and runs as the table's owner
@@ -528,6 +665,25 @@ create policy statuses_owner_update on project_statuses
                       where p.id = project_statuses.project_id
                         and p.owner_id = auth.uid()));
 
+-- `(select auth.uid())`, not the bare `auth.uid()` the three policies above use, and the
+-- inconsistency is DELIBERATE. Wrapped in a scalar subquery the call plans as an InitPlan,
+-- evaluated once per query instead of once per row, which keeps this policy out of
+-- Supabase's auth_rls_initplan advisor. The other eight warnings are pre-existing and are
+-- SPRIN-75's to fix together, when every policy here is rewritten to a membership check;
+-- SPRIN-80's job was to add none. Do not "make it consistent" in the wrong direction.
+create policy statuses_owner_delete on project_statuses
+  for delete
+  using (exists (select 1 from projects p
+                 where p.id = project_statuses.project_id
+                   and p.owner_id = (select auth.uid())));
+
+-- ALTER DEFAULT PRIVILEGES already granted both roles table-level DELETE (measured:
+-- relacl read `authenticated=ardDxtm`), so the grant is a formality and the REVOKE is the
+-- statement that changes something. anon has no policy on this table and no reason to hold
+-- the privilege either.
+grant  delete on project_statuses to authenticated;
+revoke delete on project_statuses from anon;
+
 -- The column restriction, and THE OBVIOUS FORM OF THIS IS A SILENT NO-OP.
 --
 -- `revoke update (slug) on project_statuses from authenticated` reads correctly and does
@@ -539,8 +695,10 @@ create policy statuses_owner_update on project_statuses
 -- `slug` is excluded because it is the fk target of tickets_status_fk: the fk is keyed on
 -- the slug precisely so no ticket row is rewritten when the vocabulary changes, and a
 -- movable slug would undo that. `is_initial` is excluded because
--- project_statuses_one_initial_per_project prevents TWO initial statuses but not ZERO, and
--- zero is a state SPRIN-80 must reach deliberately, not one an owner stumbles into.
+-- project_statuses_one_initial_per_project prevents TWO initial statuses but not ZERO —
+-- and since SPRIN-80 made ticket creation RESOLVE against that column, zero is no longer a
+-- tidiness problem but a project that cannot create a ticket. Nothing an owner types moves
+-- it: it is seeded on `todo` and moved only by project_statuses_promote_initial().
 -- `position` IS granted because reorder_project_statuses below is SECURITY INVOKER and
 -- therefore writes that column as the caller.
 revoke update on project_statuses from authenticated, anon;
