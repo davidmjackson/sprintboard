@@ -589,9 +589,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     afterAll(async () => {
       // DELETE FIRST, ASSERT AFTERWARDS — the same rule as the suite-level teardown,
       // and it bites harder here: these two projects are the only reachable handle on
-      // every status this block writes. project_statuses has no DELETE policy, so a
-      // skipped cascade leaves rows that no client of this application can ever
-      // remove.
+      // every status this block writes. SPRIN-80 gave project_statuses a DELETE
+      // policy, so an owner CAN now remove a status row directly — but only via the
+      // owning project's client, and only while signed in as that owner. A skipped
+      // cascade here would still leak the rows: `a` (this describe's fixture owner)
+      // goes out of scope with the block, and nothing else in this suite is signed in
+      // as the owner of `wp1`/`wp2` to reach them afterwards.
       const one = wp1 ? await settled(a.from('projects').delete().eq('id', wp1).select()) : null
       const two = wp2 ? await settled(a.from('projects').delete().eq('id', wp2).select()) : null
 
@@ -719,25 +722,47 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
-     * THE ONE THAT KEEPS SPRIN-80'S DOOR SHUT. If anyone ever "simplifies" the three
-     * policies into a single `for all`, this is what goes red.
+     * SPRIN-80 gave `project_statuses` a DELETE policy, so "nobody can delete a
+     * status — not even the owner" is no longer true and this test used to assert
+     * exactly that. Only the STRANGER half survives: an owner deleting their OWN
+     * status is now the feature, and five tests below this one (duplicate name,
+     * position collision, same-name-in-another-project, both reorders, the
+     * anonymous-RPC probe) all depend on `qa` still being in `wp1` afterwards. So
+     * this test proves the owner CAN delete by giving itself a throwaway row to
+     * delete rather than spending `qa` on the proof — `qa` is never touched here.
      *
-     * A DELETE matching zero rows is NOT an error — there is no DELETE policy, so RLS
-     * filters the row out of the command's view and Postgres reports a successful
-     * delete of nothing. `expect(error).toBeNull()` therefore proves nothing here and
-     * `expect(data).toEqual([])` proves only that nothing came back. Re-selecting the
-     * whole vocabulary and finding every row still in place is the only honest
-     * evidence, and it is why the assertion below names all five slugs in order.
+     * A stranger's delete matching zero rows is still NOT an error — RLS filters the
+     * row out of the command's view rather than raising, so `expect(error).toBeNull()`
+     * proves nothing on its own and `expect(data).toEqual([])` proves only that
+     * nothing came back. Re-selecting the whole vocabulary and finding every row
+     * (including `qa`) still in place is the only honest evidence, which is why the
+     * assertion below still names all five slugs in order.
      */
-    it('nobody can delete a status — not a stranger, and not even the owner', async () => {
+    it("the owner can delete their OWN status; a stranger still cannot touch qa", async () => {
+      // position 99: deliberately far outside every other position this describe block
+      // uses in wp1 (up to 6, for the duplicate-name probes further down), so a failed
+      // delete leaving this row behind — the expected pre-migration state — cannot also
+      // collide with project_statuses_project_position_unique and mask a later test's
+      // assertion behind the WRONG unique-constraint name.
+      const { data: added } = await a
+        .from('project_statuses')
+        .insert({
+          project_id: wp1,
+          slug: 'tmp_del',
+          name: 'Temporary, deleted below',
+          category: 'in_progress',
+          position: 99,
+        })
+        .select()
+        .single()
+
       const asOwner = await a
         .from('project_statuses')
         .delete()
-        .eq('project_id', wp1)
-        .eq('slug', 'qa')
+        .eq('id', added!.id)
         .select()
-      expect(asOwner.error).toBeNull() // it does not raise...
-      expect(asOwner.data).toEqual([]) // ...it filters.
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1) // the owner's own throwaway row is really gone.
 
       const asStranger = await b
         .from('project_statuses')
@@ -1107,6 +1132,16 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * Pins the DATABASE's promotion rule against the same expectation `removeStatus`'s unit test
      * pins for the client's. The two derivations cannot be shared across SQL and TypeScript, so
      * this is what stops them drifting.
+     *
+     * GENERIC by design: it reads whichever slug is currently `is_initial` and computes the
+     * expected survivor from position, rather than hard-coding `todo`/`in_progress`. That is
+     * what makes it the right place to pin the PROMOTION RULE itself. The trailing ticket-insert
+     * assertion here only proves the promotion is "real" (something later reads it), which is a
+     * different, narrower claim than `tickets.integration.test.ts`'s "resolves a new ticket's
+     * status from the promoted initial status" — that test fixes the scenario (delete `todo`,
+     * expect `in_progress`) specifically so a reader can verify it against
+     * `DEFAULT_PROJECT_STATUSES` without also trusting this test's own row-position query. Both
+     * are kept; neither substitutes for the other.
      */
     it('promotes the lowest-position survivor when the initial status is deleted', async () => {
       const p = await throwawayProject('Promotion')

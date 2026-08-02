@@ -98,22 +98,72 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
     expect((rows ?? []).some((r) => r.summary === 'Intruder')).toBe(false)
   }, 30_000)
 
-  it('resolves a new ticket status from the project initial status, not a literal default', async () => {
-    const { data: initial } = await a
-      .from('project_statuses')
-      .select('slug')
-      .eq('project_id', projectId)
-      .eq('is_initial', true)
+  /**
+   * `is_initial` starts on `todo` for every seeded project, and the OLD bare
+   * `default 'todo'` on `tickets.status` produces exactly the same slug for a
+   * ticket that names none. Asserting "the new ticket's status equals the
+   * project's is_initial slug" against a project whose seed is untouched would
+   * therefore pass identically whether the resolution trigger exists or not — it
+   * cannot tell the trigger from the column default it replaces, so it would pin
+   * nothing. (An earlier version of this test did exactly that.)
+   *
+   * The fix is to make the two mechanisms disagree: delete the SEEDED `todo`
+   * first, so the project's initial status is no longer the literal the old
+   * default hard-coded. Only then does "the new ticket lands on the ACTUAL
+   * initial status" become a claim the literal default cannot satisfy by
+   * accident. This is deliberately a FIXED scenario (delete `todo`, expect
+   * `in_progress`) rather than the generic "whichever slug is_initial happens to
+   * be" of `rls.integration.test.ts`'s "promotes the lowest-position survivor"
+   * test in the SPRIN-80 describe block — that test pins the DATABASE's PROMOTION
+   * RULE itself (which survivor becomes initial, computed generically from
+   * position) using a throwaway project it fully controls; this one pins that
+   * ticket CREATION — the S4.1 contract this describe block is about — reads
+   * `is_initial` rather than defaulting to a hard-coded string, using the
+   * concrete slugs a reader can check against `DEFAULT_PROJECT_STATUSES` without
+   * cross-referencing another file. Both are kept; neither substitutes for the
+   * other.
+   *
+   * It also fails under every broken variant, not just "trigger missing, default
+   * present": if the trigger were missing AND the column default were also
+   * dropped, the insert would fail its NOT NULL constraint; if the trigger were
+   * missing and the default were still 'todo', the insert would fail
+   * `tickets_status_fk` because the `todo` row is genuinely gone below — not
+   * silently reuse it.
+   */
+  it("resolves a new ticket's status from the promoted initial status, not the literal 'todo' default", async () => {
+    const { data: proj, error: projErr } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Status resolution', key: runKey() })
+      .select()
       .single()
+    if (projErr) throw projErr
+    const disposableProjectId = proj!.id
 
-    const { data, error } = await a
-      .from('tickets')
-      .insert({ project_id: projectId, summary: 'No status given', type: 'story' })
-      .select('status')
-      .single()
+    try {
+      // Positive control: without proving `todo` is genuinely gone, a ticket that
+      // happens to land on `todo` anyway (e.g. because the delete silently no-op'd)
+      // would be indistinguishable from success.
+      const { data: deleted, error: delErr } = await a
+        .from('project_statuses')
+        .delete()
+        .eq('project_id', disposableProjectId)
+        .eq('slug', 'todo')
+        .select()
+      expect(delErr).toBeNull()
+      expect(deleted).toHaveLength(1)
 
-    expect(error).toBeNull()
-    expect(data!.status).toBe(initial!.slug)
+      const { data, error } = await a
+        .from('tickets')
+        .insert({ project_id: disposableProjectId, summary: 'No status given', type: 'story' })
+        .select('status')
+        .single()
+
+      expect(error).toBeNull()
+      expect(data!.status).toBe('in_progress')
+      expect(data!.status).not.toBe('todo')
+    } finally {
+      await a.from('projects').delete().eq('id', disposableProjectId)
+    }
   }, 30_000)
 })
 
