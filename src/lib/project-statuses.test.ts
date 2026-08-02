@@ -836,4 +836,19 @@ describe('deleteBlockReason', () => {
   it('returns null when the status can be deleted', () => {
     expect(deleteBlockReason(0, false)).toBeNull()
   })
+
+  // The fix this describe block exists to pin: an UNKNOWN count (the caller has no entry for
+  // this status — e.g. a failed `ticketCountsByStatus`) must block, with its own sentence, and
+  // must NEVER be treated as `0` (which is the one value that unlocks this button).
+  it('blocks on an unknown count, and says why — never reads it as zero', () => {
+    expect(deleteBlockReason(undefined, false)).toBe(
+      'Ticket counts are unavailable, so this status cannot be deleted safely.',
+    )
+  })
+
+  // Last-ness wins even over "unknown": a project's only status is still un-deletable
+  // regardless of whether its count could be read.
+  it('reports last-ness ahead of an unknown count too', () => {
+    expect(deleteBlockReason(undefined, true)).toBe('A project must keep at least one status.')
+  })
 })

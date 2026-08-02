@@ -85,9 +85,15 @@ beforeEach(() => {
   vi.mocked(reorderProjectStatuses).mockReset()
   vi.mocked(deleteProjectStatus).mockReset()
   // Real StatusSettings now renders through this on every visit to the Settings tab (AC2), so
-  // every test that reaches it needs a default — not just the ones about deleting. `new Map()`
-  // mirrors "no counts fetched yet" the same way SettingsTab's own failure default does.
-  vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+  // every test that reaches it needs a default — not just the ones about deleting. A REAL,
+  // successful fetch of all-zero counts, not an empty map: since the fix for the "unknown
+  // count must block" finding, an empty map now means "we do not know" and blocks every
+  // Delete, which would make every test in this file that reaches Settings unable to click
+  // one. Deriving the map from whatever `statuses` argument each call receives keeps it
+  // honest for both the seeded four and any status a test adds locally first.
+  vi.mocked(ticketCountsByStatus)
+    .mockReset()
+    .mockImplementation(async (_projectId, statuses) => new Map(statuses.map((s) => [s.slug, 0])))
 })
 
 const PROJECTS = [

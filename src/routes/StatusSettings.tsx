@@ -107,7 +107,9 @@ function StatusRow({
   /** The WHOLE list, not just this row's status — `StatusDeleteControl` needs it to know
    *  whether this is the last status and, if it is the initial one, who gets promoted. */
   statuses: readonly ProjectStatus[]
-  count: number
+  /** `undefined` when the caller's count map has no entry for this status — i.e. it does not
+   *  know the count, NOT that the count is zero. See `StatusDeleteControl`'s own prop doc. */
+  count: number | undefined
   onUpdated: (status: ProjectStatus) => void
   onDeleted: (id: string) => void
   onMoveUp?: () => void
@@ -285,9 +287,11 @@ function StatusDeleteControl({
 }: {
   status: ProjectStatus
   statuses: readonly ProjectStatus[]
-  /** This status's own ticket count — `0` when the caller's count map has no entry, which is
-   *  what "no tickets yet" looks like on a freshly seeded or freshly created status. */
-  count: number
+  /** This status's own ticket count, straight from the caller's map with NO `?? 0` — `0` is
+   *  the one value that unlocks this control, so a missing entry (the caller never learned the
+   *  count) must stay `undefined` all the way to `deleteBlockReason` rather than being
+   *  invented here. See that function's docblock for the precedence this feeds. */
+  count: number | undefined
   onDeleted: (id: string) => void
 }) {
   const [confirming, setConfirming] = useState(false)
@@ -297,7 +301,7 @@ function StatusDeleteControl({
     <div className="flex shrink-0 flex-col items-end gap-0.5">
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground text-xs">
-          {count} {count === 1 ? 'ticket' : 'tickets'}
+          {count === undefined ? 'count unavailable' : `${count} ${count === 1 ? 'ticket' : 'tickets'}`}
         </span>
         <Button
           size="sm"
@@ -515,7 +519,7 @@ export function StatusSettings({
               key={status.id}
               status={status}
               statuses={statuses}
-              count={counts.get(status.slug) ?? 0}
+              count={counts.get(status.slug)}
               onUpdated={onUpdated}
               onDeleted={onDeleted}
               onMoveUp={index > 0 ? () => void move(status, -1) : undefined}

@@ -233,13 +233,33 @@ describe('domain vocabulary matches the database check constraints', () => {
     )
   })
 
-  it('exactly one seeded status is the initial one, and it is tickets.status default', () => {
+  // Repinned by SPRIN-80. This used to assert `tickets.status` carried the bare literal
+  // default `'todo'`, matching the one seeded initial status. SPRIN-80 removed that default
+  // deliberately — `alter table tickets alter column status drop default`, applied live — and
+  // the schema doc's comment on the column now says why: the bare literal was only ever safe
+  // while the 'todo' row could not be deleted, and the same migration that dropped the default
+  // also opened DELETE on `project_statuses`. Deleting this test instead of repinning it would
+  // leave "how does a new ticket get its initial status" unguarded by anything but the live
+  // integration suite, which does not run here.
+  it("exactly one seeded status is the initial one, and tickets.status resolves it via a trigger — NOT a column default", () => {
     const initial = seededProjectStatuses().filter((s) => s.is_initial)
     expect(initial).toHaveLength(1)
-    // If these two ever disagree, ticket creation and "where new tickets land"
-    // disagree: the column default is a bare literal, not a lookup on is_initial.
     expect(initial[0]?.slug).toBe('todo')
-    expect(tableBody('tickets')).toMatch(/status\s+text not null default 'todo'/)
+
+    // The bare literal is GONE. Asserted both ways: `status` is `not null` with nothing
+    // after the comma, AND no `default` clause appears immediately after it — a regex that
+    // only checked the first half would still pass if a default had crept back in on a
+    // later line via some other mechanism this pattern cannot see.
+    expect(tableBody('tickets')).toMatch(/status\s+text not null,/)
+    expect(tableBody('tickets')).not.toMatch(/status\s+text not null default/)
+
+    // What supplies the value instead — a BEFORE INSERT trigger that fills a NULL status
+    // from the project's `is_initial` row. Without this half, the two assertions above only
+    // prove the default was removed, not that anything safe replaced it.
+    expect(SCHEMA).toMatch(/create or replace function resolve_initial_ticket_status\(\)/)
+    expect(SCHEMA).toMatch(
+      /create trigger resolve_initial_ticket_status\s+before insert on tickets/,
+    )
   })
 
   it('status categories match the schema', () => {

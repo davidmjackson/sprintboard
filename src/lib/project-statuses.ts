@@ -377,12 +377,23 @@ export function removeStatus(statuses: readonly ProjectStatus[], id: string): Pr
  * The database is the real control; this only decides what to render. A stale count therefore
  * degrades to a wrong sentence, never to a wrong delete.
  *
- * Last-ness is reported ahead of the ticket count deliberately: a last status holding tickets is
- * blocked for a reason the user cannot fix by moving tickets, so naming the count would send
- * them to do work that would not unblock the button.
+ * `ticketCount` is `number | undefined` rather than defaulting a missing count to `0` at the
+ * caller: `0` is the one value that UNLOCKS this button, so a caller that could not learn the
+ * real count (a failed `ticketCountsByStatus`) must never be able to manufacture it here by
+ * omission. `undefined` is therefore its OWN outcome, checked before the ticket-count branch,
+ * with its own sentence — never silently folded into "0 tickets, deletable".
+ *
+ * Precedence: last-ness first (unchanged — a last status holding tickets is blocked for a
+ * reason the user cannot fix by moving tickets, so naming the count would send them to do work
+ * that would not unblock the button), THEN an unknown count, THEN the count itself. Last-ness
+ * wins over "unknown" too: a project's only status is still un-deletable even if its count
+ * could not be read, and that is the more actionable of the two true statements.
  */
-export function deleteBlockReason(ticketCount: number, isLast: boolean): string | null {
+export function deleteBlockReason(ticketCount: number | undefined, isLast: boolean): string | null {
   if (isLast) return 'A project must keep at least one status.'
+  if (ticketCount === undefined) {
+    return 'Ticket counts are unavailable, so this status cannot be deleted safely.'
+  }
   if (ticketCount > 0) {
     const plural = ticketCount === 1 ? 'ticket' : 'tickets'
     return `This status holds ${ticketCount} ${plural}. Move them to another status first.`

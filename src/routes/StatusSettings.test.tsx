@@ -434,6 +434,16 @@ describe('StatusSettings', () => {
   })
 
   describe('deleting a status', () => {
+    // A KNOWN zero for every row — distinct from the default `renderSettings()` map, which is
+    // EMPTY and (since the fix below) means "we do not know", not "zero". Tests in this block
+    // that are about something other than the availability gate itself use this so they are not
+    // incidentally blocked by it.
+    const KNOWN_ZERO_COUNTS = new Map([
+      ['triage', 0],
+      ['building', 0],
+      ['shipped', 0],
+    ])
+
     it("shows each status's ticket count", () => {
       renderSettings({ counts: new Map([['triage', 4]]) })
 
@@ -456,9 +466,24 @@ describe('StatusSettings', () => {
       expect(within(row).getByText(/at least one status/i)).toBeInTheDocument()
     })
 
+    // THE ONE THAT MATTERS for this fix. An EMPTY counts map means the caller does not know
+    // ANY status's count — e.g. `ticketCountsByStatus` failed — and that must block every
+    // Delete, not read as "0 tickets, deletable" the way `?? 0` used to make it read.
+    it('blocks every Delete and states the reason when the counts map is empty', () => {
+      renderSettings({ counts: new Map() })
+
+      for (const status of STATUSES) {
+        const row = deleteRowFor(status.name)
+        expect(within(row).getByRole('button', { name: `Delete ${status.name}` })).toBeDisabled()
+        // Scoped to the REASON sentence specifically — the count span above it also renders
+        // "count unavailable", so an unscoped /unavailable/i would match twice in the same row.
+        expect(within(row).getByText(/cannot be deleted safely/i)).toBeInTheDocument()
+      }
+    })
+
     it('names the status that will take over when deleting the initial one', async () => {
       const u = userEvent.setup()
-      renderSettings()
+      renderSettings({ counts: KNOWN_ZERO_COUNTS })
 
       // TRIAGE is the initial status; BUILDING is the lowest-position survivor, so
       // `removeStatus` promotes it — the dialog must name it, not re-derive the rule itself.
@@ -472,7 +497,7 @@ describe('StatusSettings', () => {
     it('calls onDeleted after a successful delete', async () => {
       const u = userEvent.setup()
       mockDelete.mockResolvedValue({ ok: true, value: undefined })
-      const { onDeleted } = renderSettings()
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
 
       await u.click(screen.getByRole('button', { name: 'Delete Building' }))
       const dialog = await screen.findByRole('alertdialog')
@@ -485,7 +510,7 @@ describe('StatusSettings', () => {
     it('surfaces a has_tickets refusal without calling onDeleted', async () => {
       const u = userEvent.setup()
       mockDelete.mockResolvedValue({ ok: false, error: 'has_tickets' })
-      const { onDeleted } = renderSettings()
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
 
       await u.click(screen.getByRole('button', { name: 'Delete Building' }))
       const dialog = await screen.findByRole('alertdialog')
