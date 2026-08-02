@@ -7,6 +7,9 @@ import type { ProjectStatus } from '@/lib/domain'
 import { STATUS_CATEGORIES, STATUS_CATEGORY_LABELS } from '@/lib/domain'
 import {
   createProjectStatus,
+  deleteBlockReason,
+  deleteProjectStatus,
+  removeStatus,
   renameProjectStatus,
   reorderProjectStatuses,
 } from '@/lib/project-statuses'
@@ -21,6 +24,15 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { GENERIC_CREATE_ERROR } from './CreateDialog'
 import { EditableText } from './EditableText'
 import { FormRootError, selectClass, SubmitButton } from './form-primitives'
@@ -45,6 +57,31 @@ const DUPLICATE_NAME = 'A status with that name already exists in this project.'
 const STALE_LIST =
   'This list of statuses is out of date — refresh the page and try adding it again.'
 
+/** The `error` tag `deleteProjectStatus` can resolve with, read off its own return type rather
+ *  than re-declared here — `StatusWriteError` is a private alias in `project-statuses.ts`, and
+ *  duplicating its literal union would drift the moment a tag is added there. */
+type DeleteStatusError = Extract<
+  Awaited<ReturnType<typeof deleteProjectStatus>>,
+  { ok: false }
+>['error']
+
+/**
+ * What each `deleteProjectStatus` refusal means in words. A `Record` over the derived union,
+ * not a chain of `if`s, so adding a tag there is a compile error here until this is updated.
+ *
+ * `duplicate` is unreachable in practice — a delete carries no name to collide on, so nothing
+ * in `deleteError` can produce it — but the map stays total rather than partial-with-a-fallback,
+ * because a partial map is exactly the shape that lets a real, reachable tag go unhandled
+ * without the compiler noticing.
+ */
+const DELETE_FAILURE_COPY: Record<DeleteStatusError, string> = {
+  has_tickets: 'This status still holds tickets. Move them to another status first, then try again.',
+  last: 'A project must keep at least one status.',
+  stale: 'This status no longer exists — refresh the page to see the current list.',
+  duplicate: GENERIC_CREATE_ERROR,
+  unknown: GENERIC_CREATE_ERROR,
+}
+
 /**
  * One status, with its name editable in place and the two reorder controls.
  *
@@ -58,13 +95,21 @@ const STALE_LIST =
  */
 function StatusRow({
   status,
+  statuses,
+  count,
   onUpdated,
+  onDeleted,
   onMoveUp,
   onMoveDown,
   reordering,
 }: {
   status: ProjectStatus
+  /** The WHOLE list, not just this row's status — `StatusDeleteControl` needs it to know
+   *  whether this is the last status and, if it is the initial one, who gets promoted. */
+  statuses: readonly ProjectStatus[]
+  count: number
   onUpdated: (status: ProjectStatus) => void
+  onDeleted: (id: string) => void
   onMoveUp?: () => void
   onMoveDown?: () => void
   /** A reorder is in flight somewhere in the list — every row's controls wait for it, because
@@ -115,6 +160,12 @@ function StatusRow({
       <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
         {STATUS_CATEGORY_LABELS[status.category]}
       </span>
+      <StatusDeleteControl
+        status={status}
+        statuses={statuses}
+        count={count}
+        onDeleted={onDeleted}
+      />
       <div className="flex shrink-0 gap-1">
         {onMoveUp ? (
           <Button
@@ -140,6 +191,133 @@ function StatusRow({
         ) : null}
       </div>
     </li>
+  )
+}
+
+/**
+ * The destructive confirm for deleting one status — mirrors `TicketDeleteDialog`'s `AlertDialog`
+ * shape (`TicketActionDialogs.tsx`): closed while a delete is in flight, Cancel/destructive
+ * footer, an inline `role="alert"` for a refusal.
+ *
+ * Split out of `StatusDeleteControl` so that component, and `StatusRow` above it, both stay
+ * under the line/complexity thresholds as this grows.
+ */
+function StatusDeleteDialog({
+  status,
+  statuses,
+  open,
+  onOpenChange,
+  onDeleted,
+}: {
+  status: ProjectStatus
+  statuses: readonly ProjectStatus[]
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onDeleted: (id: string) => void
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // `removeStatus` is the single source of the promotion rule (mirrors the DB trigger) — this
+  // reads its result rather than re-deciding who takes over.
+  const promoted = status.is_initial
+    ? removeStatus(statuses, status.id).find((s) => s.is_initial)
+    : undefined
+
+  async function submit() {
+    setDeleting(true)
+    setError(null)
+    const result = await deleteProjectStatus(status.id)
+    setDeleting(false)
+    if (!result.ok) {
+      setError(DELETE_FAILURE_COPY[result.error])
+      return
+    }
+    onDeleted(status.id)
+  }
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!deleting) onOpenChange(next)
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {status.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This can’t be undone.
+            {promoted ? ` New tickets will start in ${promoted.name} instead.` : ''}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? (
+          <p role="alert" className="text-destructive text-sm">
+            {error}
+          </p>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel asChild>
+            <Button variant="outline" disabled={deleting}>
+              Cancel
+            </Button>
+          </AlertDialogCancel>
+          <Button variant="destructive" onClick={() => void submit()} disabled={deleting}>
+            {deleting ? 'Deleting…' : 'Delete'}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/**
+ * The Delete button plus its always-visible ticket count and, when blocked, the reason —
+ * and the confirm dialog above. Split out of `StatusRow` so that function stays under the
+ * threshold; this owns the confirm-open state because only one status's dialog is ever open
+ * at a time.
+ */
+function StatusDeleteControl({
+  status,
+  statuses,
+  count,
+  onDeleted,
+}: {
+  status: ProjectStatus
+  statuses: readonly ProjectStatus[]
+  /** This status's own ticket count — `0` when the caller's count map has no entry, which is
+   *  what "no tickets yet" looks like on a freshly seeded or freshly created status. */
+  count: number
+  onDeleted: (id: string) => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const reason = deleteBlockReason(count, statuses.length === 1)
+
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-0.5">
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground text-xs">
+          {count} {count === 1 ? 'ticket' : 'tickets'}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          aria-label={`Delete ${status.name}`}
+          disabled={reason !== null}
+          onClick={() => setConfirming(true)}
+        >
+          Delete
+        </Button>
+      </div>
+      {reason ? <p className="text-muted-foreground text-xs">{reason}</p> : null}
+      <StatusDeleteDialog
+        status={status}
+        statuses={statuses}
+        open={confirming}
+        onOpenChange={setConfirming}
+        onDeleted={onDeleted}
+      />
+    </div>
   )
 }
 
@@ -262,21 +440,30 @@ function AddStatusForm({
  * only real coverage would be Playwright, which CLAUDE.md is explicit is NOT the gate here.
  * Buttons are testable in the gate and keyboard-operable without an ARIA drag pattern.
  *
- * **Deleting a status is not here.** It is SPRIN-80, and the database has no DELETE policy for
- * this table — an attempt would match zero rows and return no error, so a delete control would
- * appear to work and silently do nothing.
+ * **Deleting a status** (SPRIN-80) is owned by `StatusRow`/`StatusDeleteControl`, for the same
+ * reason rename is: the refusal reasons (holds tickets, is the last status) are per-row facts,
+ * so a row states its own rather than a page-level banner making the user work out which one it
+ * meant. `counts` is supplied by the caller rather than fetched here, because AC2 needs the
+ * count to gate the button BEFORE any delete is attempted, and this component has no project id
+ * to read `tickets` with beyond the one it is already handed for `AddStatusForm`.
  */
 export function StatusSettings({
   projectId,
   statuses,
+  counts,
   onCreated,
   onUpdated,
+  onDeleted,
   onReordered,
 }: {
   projectId: string
   statuses: readonly ProjectStatus[]
+  /** Ticket counts by status SLUG (matching `ticketCountsByStatus`'s own keying), used to gate
+   *  and explain each row's Delete control before any write is attempted. */
+  counts: ReadonlyMap<string, number>
   onCreated: (status: ProjectStatus) => void
   onUpdated: (status: ProjectStatus) => void
+  onDeleted: (id: string) => void
   onReordered: (statuses: ProjectStatus[]) => void
 }) {
   const [reordering, setReordering] = useState(false)
@@ -327,7 +514,10 @@ export function StatusSettings({
             <StatusRow
               key={status.id}
               status={status}
+              statuses={statuses}
+              count={counts.get(status.slug) ?? 0}
               onUpdated={onUpdated}
+              onDeleted={onDeleted}
               onMoveUp={index > 0 ? () => void move(status, -1) : undefined}
               onMoveDown={index < statuses.length - 1 ? () => void move(status, 1) : undefined}
               reordering={reordering}

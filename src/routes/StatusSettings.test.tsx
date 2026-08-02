@@ -6,22 +6,26 @@ import { StatusSettings } from './StatusSettings'
 import type { ProjectStatus } from '@/lib/domain'
 import {
   createProjectStatus,
+  deleteProjectStatus,
   renameProjectStatus,
   reorderProjectStatuses,
 } from '@/lib/project-statuses'
 
 // Spread the real module: `status-schemas.ts` calls `slugForName` from it during validation,
-// and `doneSlugs`/`statusName` are pure. Only the three network-touching writes are mocked.
+// and `doneSlugs`/`statusName`/`removeStatus`/`deleteBlockReason` are pure. Only the four
+// network-touching writes are mocked.
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
   createProjectStatus: vi.fn(),
   renameProjectStatus: vi.fn(),
   reorderProjectStatuses: vi.fn(),
+  deleteProjectStatus: vi.fn(),
 }))
 
 const mockCreate = vi.mocked(createProjectStatus)
 const mockRename = vi.mocked(renameProjectStatus)
 const mockReorder = vi.mocked(reorderProjectStatuses)
+const mockDelete = vi.mocked(deleteProjectStatus)
 
 /**
  * A vocabulary that is NOT the seeded four, and whose names never equal a CATEGORY label.
@@ -64,27 +68,44 @@ const STATUSES = [TRIAGE, BUILDING, SHIPPED]
 function renderSettings(
   props: {
     statuses?: ProjectStatus[]
+    counts?: Map<string, number>
     onCreated?: (s: ProjectStatus) => void
     onUpdated?: (s: ProjectStatus) => void
     onReordered?: (s: ProjectStatus[]) => void
+    onDeleted?: (id: string) => void
   } = {},
 ) {
   const handlers = {
     onCreated: vi.fn(),
     onUpdated: vi.fn(),
     onReordered: vi.fn(),
+    onDeleted: vi.fn(),
     ...props,
   }
   render(
     <StatusSettings
       projectId="p1"
       statuses={props.statuses ?? STATUSES}
+      counts={props.counts ?? new Map()}
       onCreated={handlers.onCreated}
       onUpdated={handlers.onUpdated}
       onReordered={handlers.onReordered}
+      onDeleted={handlers.onDeleted}
     />,
   )
   return handlers
+}
+
+/** The row containing a given status's controls, anchored on the Delete button's
+ *  `aria-label` — one text node, one element, no composed name — then scoped with `within`.
+ *  Deliberately NOT `getByRole('listitem', { name })`: a listitem's accessible name is
+ *  composed from its children, which is precisely the jsdom-vs-browser fusion SPRIN-67
+ *  established is not real. */
+function deleteRowFor(name: string): HTMLElement {
+  const button = screen.getByRole('button', { name: `Delete ${name}` })
+  const row = button.closest('li')
+  if (!row) throw new Error(`No row found for "${name}"`)
+  return row
 }
 
 /** The row for a status, found by the name it renders. Scoping every DOM-text assertion to
@@ -112,6 +133,7 @@ beforeEach(() => {
   mockCreate.mockReset()
   mockRename.mockReset()
   mockReorder.mockReset()
+  mockDelete.mockReset()
 })
 
 describe('StatusSettings', () => {
@@ -408,6 +430,69 @@ describe('StatusSettings', () => {
       // "Please try again" message the user cannot act on. Asserting the message alone reads
       // as though it covers the recovery; it does not.
       expect(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i })).toBeEnabled()
+    })
+  })
+
+  describe('deleting a status', () => {
+    it("shows each status's ticket count", () => {
+      renderSettings({ counts: new Map([['triage', 4]]) })
+
+      expect(within(deleteRowFor('Triage')).getByText('4 tickets')).toBeInTheDocument()
+    })
+
+    it('disables Delete on a status holding tickets, and states the reason', () => {
+      renderSettings({ counts: new Map([['triage', 4]]) })
+
+      const row = deleteRowFor('Triage')
+      expect(within(row).getByRole('button', { name: 'Delete Triage' })).toBeDisabled()
+      expect(within(row).getByText(/holds 4 tickets/i)).toBeInTheDocument()
+    })
+
+    it('disables Delete on the last remaining status, and states the reason', () => {
+      renderSettings({ statuses: [TRIAGE], counts: new Map([['triage', 0]]) })
+
+      const row = deleteRowFor('Triage')
+      expect(within(row).getByRole('button', { name: 'Delete Triage' })).toBeDisabled()
+      expect(within(row).getByText(/at least one status/i)).toBeInTheDocument()
+    })
+
+    it('names the status that will take over when deleting the initial one', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      // TRIAGE is the initial status; BUILDING is the lowest-position survivor, so
+      // `removeStatus` promotes it — the dialog must name it, not re-derive the rule itself.
+      await u.click(screen.getByRole('button', { name: 'Delete Triage' }))
+
+      const dialog = await screen.findByRole('alertdialog')
+      expect(dialog).toHaveTextContent(/will start in/i)
+      expect(dialog).toHaveTextContent('Building')
+    })
+
+    it('calls onDeleted after a successful delete', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: true, value: undefined })
+      const { onDeleted } = renderSettings()
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      // Scoped to the dialog: an unscoped /delete/i would also match every row's button.
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('st2'))
+    })
+
+    it('surfaces a has_tickets refusal without calling onDeleted', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'has_tickets' })
+      const { onDeleted } = renderSettings()
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/move them/i)
+      expect(onDeleted).not.toHaveBeenCalled()
     })
   })
 
