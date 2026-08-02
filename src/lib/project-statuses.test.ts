@@ -665,6 +665,20 @@ describe('removeStatus', () => {
     expect(removeStatus(rows, 'b').filter((s) => s.is_initial)).toHaveLength(1)
   })
 
+  // Kills the mutation "drop the `if (!removed?.is_initial) return rest` guard": with the
+  // initial status NOT at the lowest position, running the promotion unconditionally would
+  // mark a SECOND row initial. Fixtures where the lowest survivor is already the initial
+  // row cannot see that, because there the promotion is a no-op.
+  it('promotes nobody when a non-initial status is removed and the initial one is not lowest', () => {
+    const rows = [
+      status({ id: 'a', position: 1 }),
+      status({ id: 'b', position: 2, is_initial: true }),
+      status({ id: 'c', position: 3 }),
+    ]
+    const next = removeStatus(rows, 'c')
+    expect(next.filter((s) => s.is_initial).map((s) => s.id)).toEqual(['b'])
+  })
+
   it('is a no-op for an id the list does not hold', () => {
     const rows = [status({ id: 'a', position: 1, is_initial: true })]
     expect(removeStatus(rows, 'nope')).toEqual(rows)
