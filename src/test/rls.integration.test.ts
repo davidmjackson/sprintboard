@@ -81,6 +81,23 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
   let projectB: string
   let statusA: string
 
+  /**
+   * Shared by the SPRIN-77 and SPRIN-80 blocks below — both are project-status suites
+   * that need a disposable project of their own rather than reusing `projectA`, whose
+   * teardown assertions (above) are written against a fixed 4-status fixture. Hoisted
+   * out of SPRIN-77's `describe` to this outer scope so both siblings share one copy
+   * instead of a pasted duplicate.
+   */
+  async function throwawayProject(name: string): Promise<string> {
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name, key: runKey() })
+      .select('id')
+      .single()
+    if (error) throw new Error(`Fixture: could not create "${name}": ${error.message}`)
+    return data.id
+  }
+
   beforeAll(async () => {
     a = await signIn('A')
     b = await signIn('B')
@@ -564,16 +581,6 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     let wp1: string
     let wp2: string
 
-    async function throwawayProject(name: string): Promise<string> {
-      const { data, error } = await a
-        .from('projects')
-        .insert({ owner_id: userAId, name, key: runKey() })
-        .select('id')
-        .single()
-      if (error) throw new Error(`Fixture: could not create "${name}": ${error.message}`)
-      return data.id
-    }
-
     beforeAll(async () => {
       wp1 = await throwawayProject('Status writes')
       wp2 = await throwawayProject('Status writes, second project')
@@ -1007,6 +1014,153 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .eq('project_id', wp1)
         .order('position')
       expect(rows.data![0]!.slug).toBe('qa') // and the order is untouched
+    })
+  })
+
+  describe('the owner can delete a status, safely (SPRIN-80)', () => {
+    let dp: string
+
+    beforeAll(async () => {
+      dp = await throwawayProject('Status deletes')
+    }, 30_000)
+
+    afterAll(async () => {
+      const gone = dp ? await settled(a.from('projects').delete().eq('id', dp).select()) : null
+      expect(gone?.error).toBeNull()
+      expect(gone?.data).toHaveLength(1)
+    }, 30_000)
+
+    /** POSITIVE CONTROL, first: every refusal below only means something if this passes. */
+    it('deletes an EMPTY status, and no ticket is left referencing it (AC1, AC3)', async () => {
+      const { data: added } = await a
+        .from('project_statuses')
+        .insert({ project_id: dp, slug: 'qa', name: 'Ready for QA', category: 'in_progress', position: 9 })
+        .select()
+        .single()
+
+      const { data, error } = await a
+        .from('project_statuses')
+        .delete()
+        .eq('id', added!.id)
+        .select()
+      expect(error).toBeNull()
+      expect(data).toHaveLength(1)
+
+      // AC3 asserted DIRECTLY against the database, not inferred from the UI looking right.
+      // adminClient() bypasses RLS, so a stranded row cannot hide behind a policy.
+      const { data: stranded } = await adminClient()
+        .from('tickets')
+        .select('id')
+        .eq('project_id', dp)
+        .eq('status', 'qa')
+      expect(stranded).toHaveLength(0)
+    })
+
+    it('REFUSES to delete a status holding tickets, and the tickets survive (AC2, AC5)', async () => {
+      const { data: t } = await a
+        .from('tickets')
+        .insert({ project_id: dp, summary: 'Sits on todo', type: 'story' })
+        .select()
+        .single()
+
+      const { data: todo } = await a
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', dp)
+        .eq('slug', 'todo')
+        .single()
+
+      const { error } = await a.from('project_statuses').delete().eq('id', todo!.id).select()
+      expect(error?.code).toBe('23503')
+
+      // The interrupted-delete path: the ticket is still there, still on its status.
+      const { data: survivor } = await adminClient()
+        .from('tickets')
+        .select('status')
+        .eq('id', t!.id)
+        .single()
+      expect(survivor!.status).toBe('todo')
+
+      await a.from('tickets').delete().eq('id', t!.id)
+    })
+
+    it('REFUSES to delete the last remaining status (AC4)', async () => {
+      const solo = await throwawayProject('Only one status left')
+      try {
+        const { data: rows } = await a.from('project_statuses').select('id, is_initial').eq('project_id', solo)
+        const keep = rows!.find((r) => r.is_initial)!
+        for (const r of rows!.filter((r) => r.id !== keep.id)) {
+          await a.from('project_statuses').delete().eq('id', r.id)
+        }
+
+        const { error } = await a.from('project_statuses').delete().eq('id', keep.id).select()
+        expect(error?.code).toBe('SB001')
+
+        const { data: left } = await a.from('project_statuses').select('id').eq('project_id', solo)
+        expect(left).toHaveLength(1)
+      } finally {
+        await a.from('projects').delete().eq('id', solo)
+      }
+    })
+
+    /**
+     * Pins the DATABASE's promotion rule against the same expectation `removeStatus`'s unit test
+     * pins for the client's. The two derivations cannot be shared across SQL and TypeScript, so
+     * this is what stops them drifting.
+     */
+    it('promotes the lowest-position survivor when the initial status is deleted', async () => {
+      const p = await throwawayProject('Promotion')
+      try {
+        const { data: rows } = await a
+          .from('project_statuses')
+          .select('id, slug, position, is_initial')
+          .eq('project_id', p)
+          .order('position')
+
+        const wasInitial = rows!.find((r) => r.is_initial)!
+        const expected = rows!.filter((r) => r.id !== wasInitial.id).sort((x, y) => x.position - y.position)[0]!
+
+        const { error } = await a.from('project_statuses').delete().eq('id', wasInitial.id).select()
+        expect(error).toBeNull()
+
+        const { data: after } = await a
+          .from('project_statuses')
+          .select('id, slug, is_initial')
+          .eq('project_id', p)
+        expect(after!.filter((r) => r.is_initial)).toHaveLength(1)
+        expect(after!.find((r) => r.is_initial)!.id).toBe(expected.id)
+
+        // And the promotion is REAL: a ticket created now lands on the promoted status,
+        // proving the BEFORE INSERT resolution and the AFTER DELETE promotion together.
+        const { data: fresh } = await a
+          .from('tickets')
+          .insert({ project_id: p, summary: 'After promotion', type: 'story' })
+          .select('status')
+          .single()
+        expect(fresh!.status).toBe(expected.slug)
+      } finally {
+        await a.from('projects').delete().eq('id', p)
+      }
+    })
+
+    it("user B cannot delete user A's status — zero rows, and no error", async () => {
+      const { data: todo } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', dp)
+        .eq('slug', 'in_review')
+        .single()
+
+      // RLS FILTERS rather than raising. The row COUNT is the only evidence.
+      const { data, error } = await b.from('project_statuses').delete().eq('id', todo!.id).select()
+      expect(error).toBeNull()
+      expect(data).toHaveLength(0)
+
+      const { data: still } = await adminClient()
+        .from('project_statuses')
+        .select('id')
+        .eq('id', todo!.id)
+      expect(still).toHaveLength(1)
     })
   })
 })

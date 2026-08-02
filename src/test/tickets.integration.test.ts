@@ -97,6 +97,24 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
     const { data: rows } = await a.from('tickets').select('summary').eq('project_id', projectId)
     expect((rows ?? []).some((r) => r.summary === 'Intruder')).toBe(false)
   }, 30_000)
+
+  it('resolves a new ticket status from the project initial status, not a literal default', async () => {
+    const { data: initial } = await a
+      .from('project_statuses')
+      .select('slug')
+      .eq('project_id', projectId)
+      .eq('is_initial', true)
+      .single()
+
+    const { data, error } = await a
+      .from('tickets')
+      .insert({ project_id: projectId, summary: 'No status given', type: 'story' })
+      .select('status')
+      .single()
+
+    expect(error).toBeNull()
+    expect(data!.status).toBe(initial!.slug)
+  }, 30_000)
 })
 
 describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
