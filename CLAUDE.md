@@ -80,6 +80,15 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   shortcut to undo.
 - **Ticket keys are already project-scoped** (`unique (project_id, number)`) and **blocked
   is a flag, not a column.** Both survive custom workflows unchanged. Preserve them.
+- **`projects` holds NO UPDATE privilege for `authenticated` or `anon`** (SPRIN-82). Nothing
+  in `src/` updates the table, so the revoke granted no columns back — which makes
+  `project_type` immutable in the *database* rather than only in our code, now that
+  `hasSprints(project)` decides whether sprints exist at all. **A story that needs to edit a
+  project — renaming is the obvious one — will get a `42501` until its migration runs
+  `grant update (name) on projects to authenticated`**, and it owes two more things: narrow
+  the AST guard in `src/test/project-type-immutability.test.ts`, and restore a cross-tenant
+  UPDATE row-count assertion to `rls.integration.test.ts`, which SPRIN-82 removed precisely
+  because there was no longer a privilege for RLS to filter. Deny by default, widen visibly.
 
 **The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
 Every policy on every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions
