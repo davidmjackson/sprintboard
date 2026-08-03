@@ -294,6 +294,113 @@ describe('ProjectShell', () => {
     expect(screen.getByRole('heading', { name: /kanban/i })).toBeInTheDocument()
   })
 
+  // SPRIN-82 AC1. A Kanban project delivers continuously: sprints are not merely empty for
+  // it, they have no meaning, so the nav must not offer the tab at all.
+  //
+  // THE POSITIVE CONTROLS SIT IN THIS SAME TEST DELIBERATELY, and splitting them out would
+  // defeat them. A bare "the Sprints link is not in the document" passes just as happily on
+  // a header that never rendered — a throw inside `ProjectShellHeader`, a fixture the shell
+  // rejected as "not in your list" and redirected home, a route table that lost the shell —
+  // and that is this epic's single named failure mode, because every story in it is about
+  // something disappearing. Board, Backlog and Settings prove the nav rendered; the Kanban
+  // badge proves it rendered for THIS project rather than silently falling back to the
+  // scrum fixture, which would make the absence true for the wrong reason.
+  //
+  // TWO ABSENCE ASSERTIONS, ONE SCOPED AND ONE NOT, and they say different things — this
+  // is not belt-and-braces. A reviewer proved it by leaking a Sprints link OUTSIDE the
+  // `<nav>` for kanban only: 849/849 stayed green while a Kanban project rendered a live,
+  // clickable Sprints link into the dead tab, because the only query pointed inside the
+  // element the link had just left.
+  //
+  //  * The SCOPED one (`within(nav)`) is the one that says "not in the tab bar", which is
+  //    where AC1's requirement actually lives, and it stops "the word sprint appears
+  //    somewhere on the page" standing in for "the link exists" — the tab content
+  //    underneath is free to mention sprints in prose.
+  //  * The UNSCOPED one says "and nowhere else either". A link is a link wherever it is
+  //    rendered: the harm AC1 names is a user reaching a tab that has no meaning for this
+  //    project, and the `<nav>` is not what makes that reachable. It is safe to make this
+  //    one document-wide precisely because it queries the LINK ROLE rather than text —
+  //    the board underneath renders no links at all, and the tab content's prose is not a
+  //    link.
+  //
+  // Both queries are REGEXes by design. An exact `'Sprints'` would go green on a link
+  // relabelled to anything else while still routing to the dead tab; `/sprint/i` catches
+  // the rename too. The positive controls keep the repo's existing exact names — each is a
+  // single text node, which is the carve-out CLAUDE.md permits.
+  it('offers no Sprints tab for a kanban project (SPRIN-82 AC1)', () => {
+    renderShell('/projects/p1/board', { projects: KANBAN_PROJECTS, loading: false })
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).queryByRole('link', { name: /sprint/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /sprint/i })).not.toBeInTheDocument()
+
+    // Controls: the header, its nav and its other three tabs all really rendered…
+    expect(within(nav).getByRole('link', { name: 'Board' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Backlog' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Settings' })).toBeInTheDocument()
+    // …for a project this suite can see is the Kanban one.
+    expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Kanban')).toBeVisible()
+  })
+
+  // The other half of AC4, and not redundant with the four-link test at the top of this
+  // file: that one renders the default fixture without ever naming a project type, so a
+  // predicate wired backwards (or to `undefined`) would be visible there only by accident.
+  // This one asserts the link against the scrum fixture explicitly, scoped to the nav, so
+  // the pair above and below say "shown for scrum, hidden for kanban" rather than "hidden".
+  it('offers the Sprints tab for a scrum project (SPRIN-82 AC4)', () => {
+    renderShell('/projects/p1/board')
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByRole('link', { name: /sprint/i })).toBeInTheDocument()
+    expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Scrum')).toBeVisible()
+  })
+
+  // SPRIN-82 AC2. Hiding the nav link (the pair of tests above) closes the door a user is
+  // offered; it does nothing about the door they already have the key to. A bookmark, a
+  // shared link, a back button, or a project converted before SPRIN-81 fixed the type all
+  // arrive at `/projects/:id/sprints` directly, and until this redirect existed that URL
+  // rendered the whole tab — CreateSprintDialog included — on a project with no sprint
+  // concept. AC1 and AC2 are therefore two different holes, not one stated twice.
+  //
+  // THE BOARD CONTENT IS THE POSITIVE CONTROL, and it is the assertion that makes this test
+  // worth anything. "No Sprints heading" is equally true of a route that rendered nothing at
+  // all — a redirect to a path with no matching route, a `<Navigate>` that threw, a shell
+  // that bounced the whole project home as "not in your list". Naming a real board column
+  // proves the redirect LANDED somewhere the user can work, which is the actual requirement;
+  // absence alone would let a dead end pass. The Kanban badge is the second control: it
+  // proves the fixture under test is the Kanban one rather than a silent fallback to the
+  // scrum projects, which would make the absence true for entirely the wrong reason.
+  //
+  // Queried by regex (`/sprints/i`) rather than the exact 'Sprints': a heading renamed to
+  // "Sprint planning" would still be the dead tab, and an exact query would go green on it.
+  it('redirects a kanban project away from the sprints URL to its board (SPRIN-82 AC2)', async () => {
+    renderShell('/projects/p1/sprints', { projects: KANBAN_PROJECTS, loading: false })
+
+    // Controls first: the redirect landed on the REAL BoardTab, for the Kanban fixture.
+    expect(await screen.findByRole('heading', { name: 'To Do' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Done' })).toBeInTheDocument()
+    expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Kanban')).toBeVisible()
+
+    // …and the sprints tab is nowhere: not its heading, and not the create affordance that
+    // is the concrete harm — a dialog that would write a sprint row for a project whose UI
+    // has no other way to see one.
+    expect(screen.queryByRole('heading', { name: /sprints/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new sprint/i })).not.toBeInTheDocument()
+  })
+
+  // The other half of AC4, and the reason the test above cannot stand alone: a `<Navigate>`
+  // rendered unconditionally — the predicate wired backwards, or to a field that is always
+  // falsy — satisfies every assertion up there perfectly. This is the test that fails for
+  // that mutation. It also pins the deep link itself, which the nav-link pair cannot: a
+  // scrum user's bookmark must still open the tab.
+  it('keeps the sprints URL for a scrum project (SPRIN-82 AC4)', async () => {
+    renderShell('/projects/p1/sprints')
+
+    expect(await screen.findByRole('heading', { name: /sprints/i })).toBeInTheDocument()
+    // And it stayed on that route rather than falling through to the board.
+    expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
+  })
+
   // The LINK, and the shell's ability to render a settings tab underneath it — NOT the app's
   // route table. `renderShell` above builds its own `<Routes>`, settings route included, so
   // nothing in this file can observe `src/App.tsx`: the real `<Route path="settings">` was
@@ -679,6 +786,63 @@ describe('ProjectShell', () => {
     await waitFor(() =>
       expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { status: 'parked' }),
     )
+  })
+
+  // THE SAME SEAM AGAIN, for SPRIN-82 AC3 — and this pair is the only place in the repo that
+  // can see it. The rule spans four components: `ProjectShell` asks the predicate,
+  // `TicketDetailDialog` forwards the answer, `TicketDetailSidebar` forwards it again, and
+  // `TicketSprintField` acts on it. Every one of those has its own tests, and every one of
+  // them would stay green if the prop were wired to nothing whatsoever — the field's suite
+  // passes the flag by hand, and the dialog's 52 render sites never mention it. A per-component
+  // test cannot observe a seam by construction; only a render of the real chain can.
+  //
+  // Driven from the BACKLOG tab rather than a board card, which is a deliberate deviation from
+  // the plan's suggestion: the board renders only the ACTIVE SPRINT's tickets today (S7.1, and
+  // SPRIN-83 is the story that changes it), so opening a card there would mean handing a Kanban
+  // project an active sprint — a fixture that contradicts the very rule under test. The backlog
+  // needs no sprint to exist, which is exactly the state a Kanban project is in.
+  //
+  // THE POSITIVE CONTROLS ARE THE OTHER THREE PICKERS, asserted in this same test and scoped to
+  // the dialog. "No sprint picker" is equally true of a dialog that never opened, a sidebar that
+  // threw, and a ticket the backlog filtered away — and each of those would make this test green
+  // while the Kanban rule did nothing. Status, type and assignee prove the Details panel
+  // rendered in full; the sprint field is then the only thing missing from it.
+  it('offers no sprint picker in the detail dialog for a kanban project (SPRIN-82 AC3)', async () => {
+    const u = userEvent.setup()
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog', { projects: KANBAN_PROJECTS, loading: false })
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Controls first: the dialog opened and its sidebar rendered its other three pickers.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('combobox', { name: 'status' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: 'type' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('combobox', { name: 'assignee' })).toBeInTheDocument()
+
+    // …and the sprint field is absent, label and all — not merely disabled or empty, which is
+    // what a picker over a project with no sprints would otherwise degrade to.
+    expect(within(dialog).queryByRole('combobox', { name: 'sprint' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('Sprint')).not.toBeInTheDocument()
+  })
+
+  // The other half of AC4, and the reason the test above cannot stand alone: a `hasSprints`
+  // wired backwards, or a `TicketSprintField` that returns null unconditionally, satisfies
+  // every assertion up there perfectly. This one fails for both of those.
+  it('offers the sprint picker in the detail dialog for a scrum project (SPRIN-82 AC4)', async () => {
+    const u = userEvent.setup()
+    mockList.mockResolvedValue([ticketA])
+    mockListSprints.mockResolvedValue([{ ...sprintBase, id: 's1', name: 'Hardening push' }])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    const dialog = await screen.findByRole('dialog')
+    const picker = within(dialog).getByRole('combobox', { name: 'sprint' })
+    // Populated from the shell's own read, so the extraction kept the props flowing through
+    // both forwarding hops rather than merely rendering a picker.
+    expect(within(picker).getByRole('option', { name: /Hardening push/ })).toBeInTheDocument()
+    expect(picker).toBeEnabled()
   })
 
   // S4.6: the ticket read is three-state, like the sprint read beside it. Before this, the

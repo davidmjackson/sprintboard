@@ -718,6 +718,30 @@ revoke delete on project_statuses from anon;
 revoke update on project_statuses from authenticated, anon;
 grant  update (name, category, position) on project_statuses to authenticated;
 
+-- SPRIN-82: `projects` holds NO update privilege at all, and nothing is granted back —
+-- because nothing in src/ updates the table (createProject inserts, listProjects selects).
+-- This is the SAME statement as the line above with the opposite shape: no column-level
+-- grant follows it, so the trap described above does not arise here. It makes SPRIN-81's
+-- app-layer "the project type cannot change after creation" a database control, which
+-- matters as of SPRIN-82 because hasSprints(project) now decides whether the Sprints tab,
+-- the /sprints route and the ticket sprint picker exist. It is NOT a tenant-isolation fix
+-- — projects_owner already confined the write to the owner's own row — it stops an owner
+-- stranding their own sprints behind a UI that no longer shows them.
+--
+-- A FUTURE "RENAME A PROJECT" STORY OWES THREE THINGS, and only the first is obvious:
+--   1. `grant update (name) on projects to authenticated` — right here.
+--   2. Narrow the AST guard in src/test/project-type-immutability.test.ts (check 5) so it
+--      inspects an update's payload for project_type instead of forbidding every write to
+--      this table. That one blocks the merge, so it cannot be forgotten.
+--   3. RESTORE the cross-tenant `projects` UPDATE row-count assertion to
+--      src/test/rls.integration.test.ts's "B cannot UPDATE any of it". SPRIN-82 deleted it
+--      because the revoke left no UPDATE privilege for RLS to filter — a column grant hands
+--      that privilege straight back for `name`, so projects_owner becomes load-bearing again
+--      for a verb nothing tests, and "B renames A's project" is a real cross-tenant write.
+--      Nothing goes red to ask for this. That is why it is written next to the line that
+--      causes it rather than only in the migration file nobody will reopen.
+revoke update on projects from authenticated, anon;
+
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors
 -- project_statuses_name_nonempty, which already btrims: "Done", "done" and " Done " are one

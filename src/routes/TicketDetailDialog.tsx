@@ -35,6 +35,7 @@ export function TicketDetailDialog({
   sprintsPhase = 'loading',
   statuses = [],
   statusesPhase = 'loading',
+  hasSprints,
   onOpenChange,
   onUpdated,
   onDeleted,
@@ -56,6 +57,16 @@ export function TicketDetailDialog({
   /** Whether that list is trustworthy yet. Defaults to 'loading' — i.e. unknown, so the
    *  status picker is disabled — which is the honest default for a standalone render. */
   statusesPhase?: ReadPhase
+  /** Whether the project delivers in sprints — `hasSprints(project)`, resolved by
+   *  `ProjectShell` (SPRIN-82). Forwarded to the sidebar and on to `TicketSprintField`,
+   *  which owns the conditional and the default.
+   *
+   *  UNLIKE every other optional prop above, this one is deliberately NOT defaulted here.
+   *  A destructuring default costs a cyclomatic point in this repo's eslint config
+   *  (measured), and this component is at 10 of 10 — `hasSprints = true` would take it to
+   *  11 and turn `npm run lint` red. The default lives one hop further down instead, which
+   *  is also where it reads as a decision rather than as plumbing. */
+  hasSprints?: boolean
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
@@ -165,6 +176,7 @@ export function TicketDetailDialog({
             commit={commit}
             setError={setError}
             onEditingChange={handleEditingChange}
+            hasSprints={hasSprints}
           />
         </div>
 

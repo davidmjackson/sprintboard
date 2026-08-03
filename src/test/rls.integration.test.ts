@@ -384,12 +384,51 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(asA.data).toHaveLength(1)
     })
 
+    /**
+     * `projects` IS DELIBERATELY ABSENT FROM THIS TEST, and it used to be the first line.
+     *
+     * SPRIN-82 revoked the table-wide UPDATE privilege on `projects` from `authenticated`
+     * (docs/migrations/sprin-82-projects-immutable.sql), so B's update no longer returns
+     * an empty result set — it returns 42501 with `data === null`, and the row count this
+     * test is built on stops existing.
+     *
+     * The tempting repair — change `[]` to `null`, or assert the error — is the WRONG one
+     * and was rejected explicitly. That line would then pass because of the GRANT, so
+     * dropping the `projects_owner` policy would no longer redden it: two controls on one
+     * write, and the assertion can no longer tell you which one is holding. `sprints` and
+     * `tickets` stay because they still hold table-wide UPDATE, so they still genuinely
+     * exercise RLS *filtering*, which is what this describe block's comment says it is
+     * about.
+     *
+     * WHERE THE COVERAGE WENT. `projects` keeps its cross-tenant coverage for SELECT (the
+     * test directly above) and DELETE (the test two below) here, and for INSERT via the
+     * spoofed-`owner_id` 42501 case in `src/test/projects.integration.test.ts`. Nothing was
+     * dropped, because there is no longer any UPDATE privilege for RLS to filter — the
+     * assertion removed was not covering a hole, it was covering a verb that no longer
+     * reaches the policy at all. The privilege refusal
+     * itself is asserted, owner-side, in `src/test/projects.integration.test.ts`
+     * ("refuses the owner's own project_type UPDATE"): owner rather than stranger, because
+     * a stranger was already blocked by the policy and would prove nothing about the grant.
+     *
+     * ⚠ PUT THIS LINE BACK THE DAY ANY COLUMN OF `projects` BECOMES UPDATABLE — and the
+     * "rename a project" story the migration anticipates is exactly that day. The argument
+     * above holds only while `projects` carries NO update privilege at all. The moment a
+     * story runs `grant update (name) on projects to authenticated`, UPDATE reaches the
+     * policy again for that column, `projects_owner` is load-bearing for it, and B renaming
+     * A's project is a live cross-tenant write with no assertion anywhere in this repo
+     * against it. The owner-side 42501 test does NOT cover it and will not notice: a COLUMN
+     * grant leaves `project_type` ungranted, so that test stays green while this hole opens.
+     * Nothing goes red to ask for this. Restore it in the same shape `sprints` and `tickets`
+     * use below — `b.from('projects').update({ name: 'pwned' }).eq('id', projectA).select()`,
+     * asserting `[]` — because at that point RLS filtering is once again what is holding, so
+     * a row count is once again the honest assertion. The same obligation is recorded above
+     * the revoke in `docs/sprintboard_phase1_schema.sql` and in
+     * `docs/migrations/sprin-82-projects-immutable.sql`.
+     */
     it('B cannot UPDATE any of it', async () => {
-      const project = await b.from('projects').update({ name: 'pwned' }).eq('id', projectA).select()
       const sprint = await b.from('sprints').update({ name: 'pwned' }).eq('id', sprintA).select()
       const ticket = await b.from('tickets').update({ summary: 'pwned' }).eq('id', ticketA).select()
 
-      expect(project.data).toEqual([])
       expect(sprint.data).toEqual([])
       expect(ticket.data).toEqual([])
 

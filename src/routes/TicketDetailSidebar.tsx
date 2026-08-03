@@ -1,7 +1,6 @@
 import { parseStoryPoints } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
 import {
-  SPRINT_STATUS_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   type ProjectStatus,
@@ -16,6 +15,7 @@ import type { SprintsPhase } from './ProjectShell'
 import { EditableText, FieldLabel } from './EditableText'
 import { selectClass } from './form-primitives'
 import { TicketReferenceSelect } from './TicketReferenceSelect'
+import { TicketSprintField } from './TicketSprintField'
 
 /** Sidebar: a quiet "Details" panel, the Jira right rail */
 export function TicketDetailSidebar({
@@ -29,6 +29,7 @@ export function TicketDetailSidebar({
   commit,
   setError,
   onEditingChange,
+  hasSprints,
 }: {
   ticket: Ticket
   currentUser: { id: string; email: string }
@@ -41,6 +42,11 @@ export function TicketDetailSidebar({
   commit: (patch: TicketUpdate) => Promise<boolean>
   setError: (ticketId: string, message: string) => void
   onEditingChange: (editing: boolean) => void
+  /** Whether the project delivers in sprints (SPRIN-82). Forwarded straight through to
+   *  `TicketSprintField`, which owns both the conditional and the "absent means show it"
+   *  default — deliberately NOT defaulted here, where the cyclomatic budget has one point
+   *  left and SPRIN-71's custom fields will want it. */
+  hasSprints?: boolean
 }) {
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
   const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
@@ -133,36 +139,17 @@ export function TicketDetailSidebar({
         />
       ) : null}
 
-      {/* Sprint membership (S6.2). `''` is the backlog: `backlog.ts` defines the backlog
-          as `sprint_id is null`, so "Backlog" and "no sprint" are the same fact and the
-          UI uses the domain's word for it. Unlike the parent-epic picker this is NOT
-          gated on ticket type — an epic can be in a sprint. Sprints are NOT filtered by
-          status — barring a complete or active sprint is a rule no AC asks for, and
-          S6.3/S6.4 own what starting and completing do. The composite fk
-          `tickets_sprint_fk` keeps the sprint in the same project, so a cross-project
-          reference is rejected at the database.
-
-          Disabled unless the sprint list actually loaded: `sprints` is `[]` while
-          loading AND after a failed read, so an empty list never means "no sprints". An
-          enabled picker would then offer only "Backlog", read as "this ticket is in no
-          sprint", and one click would quietly unsprint it. */}
-      {/* The current sprint isn't in the list (deleted, or the list hasn't loaded):
-          still render its value so the <select> stays controlled and the membership
-          isn't silently shown as "Backlog". Same guard as the parent-epic picker above —
-          both are the same `TicketReferenceSelect` component, so it's one implementation
-          used twice, not a rule mirrored by hand in two places. */}
-      <TicketReferenceSelect
-        label="Sprint"
-        ariaLabel="sprint"
-        value={ticket.sprint_id}
-        noneLabel="Backlog"
-        unavailableLabel="Current sprint (unavailable)"
-        options={sprints.map((s) => ({
-          id: s.id,
-          label: `${s.name} · ${SPRINT_STATUS_LABELS[s.status]}`,
-        }))}
-        disabled={sprintsPhase !== 'loaded'}
-        onChange={(next) => commit({ sprint_id: next })}
+      {/* Sprint membership (S6.2), and whether the project has sprints at all (SPRIN-82).
+          Both live in `TicketSprintField` — the field's reasoning travelled with the field,
+          and the `hasSprints` default has to live in a file with cyclomatic headroom, which
+          this one does not have. `hasSprints` is forwarded with NO default here for exactly
+          that reason: a destructuring default costs a point this component cannot spend. */}
+      <TicketSprintField
+        ticket={ticket}
+        sprints={sprints}
+        sprintsPhase={sprintsPhase}
+        commit={commit}
+        hasSprints={hasSprints}
       />
 
       <label className="flex flex-col gap-1">
