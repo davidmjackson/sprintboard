@@ -265,20 +265,33 @@ describe('ProjectShell', () => {
   // follow a positive control rather than another absence to prove, so a badge that silently
   // stopped rendering at all cannot pass as "this project is Scrum".
   //
-  // Asserted as DOM text SCOPED to the heading, never as an accessible name. The badge is
-  // `uppercase`, and Chrome's AX tree applies `text-transform` when computing a name while jsdom
-  // does not — so any name assertion here would pin a string no browser produces (CLAUDE.md).
-  // `within(...)` is what makes it an assertion about the header rather than about the document.
+  // TWO assertions per type, and both are needed — this is verbatim the SPRIN-67 lesson in
+  // CLAUDE.md, re-earned here by mutation.
+  //
+  //  * DOM text SCOPED to the heading proves the badge renders IN THE HEADER rather than
+  //    merely somewhere in the document. An unscoped getByText says the text exists and
+  //    nothing about where it sits.
+  //  * A SUBSTRING NAME QUERY proves it reaches the accessibility tree. `getByText` ignores
+  //    only <script>/<style>, so it matches an `aria-hidden` subtree perfectly happily:
+  //    adding aria-hidden="true" to the badge deletes it from every screen reader while
+  //    leaving the whole suite green. A role+name query honours aria-hidden, so it does not.
+  //
+  // The name query is a REGEX and must stay one. The badge is `uppercase`, and Chrome's AX
+  // tree applies `text-transform` when computing a name while jsdom does not — so an exact
+  // name here ('APP Kanban Apple') would pin a string no browser produces. A substring match
+  // is engine-independent, which is exactly the carve-out CLAUDE.md permits.
   it("badges a scrum project's header with its type", () => {
     renderShell('/projects/p1')
     const heading = screen.getByRole('heading', { name: /Apple/ })
     expect(within(heading).getByText('Scrum')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /scrum/i })).toBeInTheDocument()
   })
 
   it("badges a kanban project's header with its type", () => {
     renderShell('/projects/p1', { projects: KANBAN_PROJECTS, loading: false })
     const heading = screen.getByRole('heading', { name: /Apple/ })
     expect(within(heading).getByText('Kanban')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /kanban/i })).toBeInTheDocument()
   })
 
   // The LINK, and the shell's ability to render a settings tab underneath it — NOT the app's

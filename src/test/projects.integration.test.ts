@@ -99,11 +99,22 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
 
     if (data) createdIds.push(data.id)
 
-    // The CODE, never the message — constraint wording is not a stable contract, and
-    // this file already pins `projects_key_format` the same way. 23514 is shared by
-    // both checks, so the discriminator is the payload: `runKey()` cannot produce a
-    // key the format check rejects, leaving project_type as the only violation here.
+    // The code first — 23514 is "some check constraint refused this row".
     expect(error?.code).toBe('23514')
+
+    // ...but `projects` has TWO check constraints, and 23514 does not say which one
+    // fired. The original version of this test relied on the payload as the
+    // discriminator: `runKey()` cannot produce a key `projects_key_format` rejects, so
+    // project_type had to be the violation. That reasoning is true today and would go
+    // silently false the day a third check lands on this table — the test would still
+    // pass, while no longer testing project_type at all.
+    //
+    // So name the constraint. This asserts the constraint's NAME, not the message's
+    // wording: the name is ours, it is written in the migration and the schema doc, and
+    // renaming it is a deliberate act that SHOULD redden this. The prose around it
+    // (`new row for relation ... violates check constraint ...`) stays unasserted,
+    // because that IS Postgres's wording and not a contract.
+    expect(error?.message).toContain('projects_project_type_check')
     expect(data).toBeNull()
   }, 30_000)
 
