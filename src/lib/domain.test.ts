@@ -10,6 +10,7 @@ import {
   STATUS_CATEGORY_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
+  hasSprints,
   isProjectType,
   isSprintStatus,
   isStatusCategory,
@@ -332,6 +333,44 @@ describe('project types and their labels', () => {
 
   it('labels both types in the expected words', () => {
     expect(PROJECT_TYPE_LABELS).toEqual({ scrum: 'Scrum', kanban: 'Kanban' })
+  })
+})
+
+/**
+ * `hasSprints` is the single expression of "does this project deliver work in sprints"
+ * (SPRIN-82 AC5), so these two tests are the only place the mapping from a project type
+ * to that answer is written down outside the function itself.
+ *
+ * They come as a pair for the same reason the label tests above do, and the pair is not
+ * redundant. The DERIVED one iterates `PROJECT_TYPES`, so a third project type lands in
+ * the verdict map automatically and the hard-coded expectation then no longer matches —
+ * which is the whole point: `hasSprints` returns `false` for anything that is not
+ * `'scrum'`, so a new type would silently inherit "no sprints" as a default nobody chose.
+ * This test is what turns that silence into a red. The LITERAL one states today's two
+ * answers in words, and is the anchor that stops the derived test pinning the function to
+ * a list derived from the same file and to nothing else.
+ *
+ * Neither is a substitute for the behaviour tests: these say what the predicate returns,
+ * not that any component consults it.
+ */
+describe('hasSprints', () => {
+  it('is true for scrum and false for kanban', () => {
+    expect(hasSprints({ project_type: 'scrum' })).toBe(true)
+    expect(hasSprints({ project_type: 'kanban' })).toBe(false)
+  })
+
+  it('has a verdict for every project type', () => {
+    const verdicts = Object.fromEntries(
+      PROJECT_TYPES.map((type) => [type, hasSprints({ project_type: type })]),
+    )
+
+    expect(
+      verdicts,
+      'A project type has been added to PROJECT_TYPES without deciding whether it has ' +
+        'sprints. hasSprints() answers false for anything that is not scrum, so the new ' +
+        'type has just inherited "no sprints" by default — state the answer here ' +
+        'deliberately, and check hasSprints() still expresses the rule you want.',
+    ).toEqual({ scrum: true, kanban: false })
   })
 })
 

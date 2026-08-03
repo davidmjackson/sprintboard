@@ -2,7 +2,13 @@ import { useState } from 'react'
 import { Navigate, Outlet, useLocation, useOutletContext, useParams } from 'react-router-dom'
 
 import type { ProjectsContext } from './AppLayout'
-import type { Project, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import {
+  hasSprints,
+  type Project,
+  type ProjectStatus,
+  type Sprint,
+  type Ticket,
+} from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
@@ -289,6 +295,10 @@ export function ProjectShell() {
           sprintsPhase={sprintsPhase}
           statuses={statuses}
           statusesPhase={statusesPhase}
+          // SPRIN-82 AC3. A CALL, not a branch — which is the only reason this fits: the
+          // shell is at 10 of 10 cyclomatic, so the question has to be asked here (where the
+          // project is) and answered further down (where there is headroom to act on it).
+          hasSprints={hasSprints(project)}
           currentUser={currentUser}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)

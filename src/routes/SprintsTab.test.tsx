@@ -44,7 +44,18 @@ vi.mock('./CreateSprintDialog', () => ({
   ),
 }))
 
-const project = { id: 'p1', name: 'Sprintboard', key: 'SPB' } as Project
+// `project_type` arrived with SPRIN-82: the tab now redirects a continuously-delivered
+// project to its board, so a fixture without one is a project whose type reads `undefined`
+// and every test in this file lands on the board stub instead of the tab. The `as Project`
+// cast is an assertion rather than a check, so nothing warned about the missing field — the
+// suite simply went red all at once. Kept explicit rather than defaulted inside `renderTab`,
+// because "these tests are about a project that HAS sprints" is a fact worth reading here.
+const project = { id: 'p1', name: 'Sprintboard', key: 'SPB', project_type: 'scrum' } as Project
+
+/** The same project delivered continuously. Built by spreading the fixture above so the two
+ *  differ in `project_type` and nothing else — a pair that also differed in, say, its id
+ *  could not say which field the component read. */
+const kanbanProject = { ...project, project_type: 'kanban' } as Project
 
 function sprint(overrides: Partial<Sprint> = {}): Sprint {
   return {
@@ -105,6 +116,7 @@ const STATUSES = [
 // read is still driven from here — the load itself is pinned in ProjectShell.test.tsx.
 function renderTab(
   ctx: {
+    project?: Project
     sprints?: Sprint[]
     sprintsPhase?: SprintsPhase
     onSprintCreated?: (s: Sprint) => void
@@ -146,6 +158,15 @@ function renderTab(
       <Routes>
         <Route path="/" element={<Outlet context={context} />}>
           <Route path="sprints" element={<SprintsTab />} />
+          {/* SPRIN-82. The tab's redirect target, as a sibling of `sprints` under the same
+              parent — `../board` climbs one ROUTE level, not one URL segment, so this is
+              where it resolves. A stub rather than the real BoardTab: this suite is about
+              what SprintsTab does, and the real board would drag its reads in. It exists to
+              give the redirect somewhere observable to land, which is what turns "the sprint
+              UI is gone" from an assertion that a blank render also satisfies into one that
+              only a working redirect does. Every other test here enters at '/sprints' and
+              never sees it. */}
+          <Route path="board" element={<p>board tab stub</p>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -158,6 +179,46 @@ beforeEach(() => {
 })
 
 describe('SprintsTab', () => {
+  // SPRIN-82 AC2, at the component rather than the shell. `ProjectShell.test.tsx` pins the
+  // same behaviour through the real route table and the real BoardTab; this one pins that
+  // the decision is SPRINTSTAB'S, taken before anything else it renders. The two are not
+  // redundant: move the guard up into the shell's route table and the shell test stays
+  // green while this one goes red, which is the distinction worth keeping — a tab that
+  // renders sprint UI whenever someone mounts it is a landmine for every future route.
+  //
+  // BOTH HALVES IN ONE TEST, deliberately. The Kanban half is entirely absence assertions,
+  // and absence is the one thing that passes just as well when the fixture never built, the
+  // context never arrived, or the component threw. Its controls are the board stub (the
+  // redirect landed on a real route rather than rendering nothing) and, after the remount,
+  // the scrum case showing the very sprint the Kanban case could not find — same sprint,
+  // same harness, one field different. Split into two `it`s, the absence half could pass in
+  // a run where the presence half had already failed.
+  //
+  // The scrum half deliberately uses the DEFAULT fixture rather than a locally built scrum
+  // project: that fixture is what every other test in this file renders, so if it ever stops
+  // being a project with sprints, this test says so first.
+  it('redirects a kanban project off the sprints route, and leaves scrum alone (AC2/AC4)', () => {
+    const kanban = renderTab({
+      project: kanbanProject,
+      sprints: [sprint({ name: 'Hardening push' })],
+    })
+
+    // Absent, not empty: no heading, no sprint row, and above all no create trigger — a
+    // dialog that would write a sprint row this project's UI can never show again.
+    expect(screen.queryByRole('heading', { name: /sprints/i })).not.toBeInTheDocument()
+    expect(screen.queryByText('Hardening push')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /New sprint/ })).not.toBeInTheDocument()
+    // The control: the redirect resolved to a real route rather than rendering nothing.
+    expect(screen.getByText('board tab stub')).toBeVisible()
+    kanban.unmount()
+
+    renderTab({ sprints: [sprint({ name: 'Hardening push' })] })
+
+    expect(screen.getByRole('heading', { name: /sprints/i })).toBeVisible()
+    expect(screen.getByText('Hardening push')).toBeVisible()
+    expect(screen.queryByText('board tab stub')).not.toBeInTheDocument()
+  })
+
   it('lists a sprint with its name, status, goal and ISO dates', () => {
     renderTab({
       sprints: [

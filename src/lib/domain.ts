@@ -391,3 +391,27 @@ export function isStatusCategory(value: string): value is StatusCategory {
 export function isProjectType(value: string): value is ProjectType {
   return (PROJECT_TYPES as readonly string[]).includes(value)
 }
+
+/**
+ * Whether a project delivers work in sprints. THE single expression of the rule
+ * (SPRIN-82 AC5) — no component, filter or test may write `project_type === 'kanban'`
+ * itself, and `src/test/project-type-single-expression.test.ts` says so in a form that
+ * goes red rather than in prose.
+ *
+ * Same discipline as `doneSlugs()` being the single derivation of "terminal" (SPRIN-77):
+ * two call sites reading the raw string can drift, one predicate cannot. There are three
+ * consumers in SPRIN-82 alone, and SPRIN-83, -85 and -86 add more.
+ *
+ * Deliberately not `isKanban`. "Has sprints" and "has WIP limits" are two different
+ * questions that share an answer only while there are exactly two project types; a third
+ * would separate them, and a single negated predicate would not survive it. `hasWipLimits`
+ * arrives in SPRIN-85 with its first caller rather than now, when it would be an
+ * unreferenced export — which is what `npx knip` (SPRIN-63's dead-code pass) is for.
+ *
+ * Takes the narrowest shape it reads so a test can pass `{ project_type: 'kanban' }`
+ * without inventing eight irrelevant columns; a full `Project` is assignable. Same reason
+ * `statusOptions` and `doneSlugs` take rows rather than a project.
+ */
+export function hasSprints(project: Pick<Project, 'project_type'>): boolean {
+  return project.project_type === 'scrum'
+}

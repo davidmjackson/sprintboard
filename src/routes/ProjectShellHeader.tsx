@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 
-import { PROJECT_TYPE_LABELS, type Project, type Ticket } from '@/lib/domain'
+import { hasSprints, PROJECT_TYPE_LABELS, type Project, type Ticket } from '@/lib/domain'
 // Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
 // this component, so taking the type from there would close an import cycle — harmless
 // today because `import type` is erased, but not worth leaving for someone to trip over.
@@ -77,9 +77,22 @@ export function ProjectShellHeader({
         <NavLink to="backlog" className={tabClass}>
           Backlog
         </NavLink>
-        <NavLink to="sprints" className={tabClass}>
-          Sprints
-        </NavLink>
+        {/* SPRIN-82 AC1. Board, Backlog and Settings are unconditional; Sprints is not,
+            because a continuously-delivered project has no sprint concept to show — the tab
+            would offer "New sprint" on a project that can never have one. Absent rather
+            than disabled: a disabled tab advertises a feature this project type does not
+            have, and there is no action the user could take to enable it.
+
+            `hasSprints` rather than a comparison written here — the rule lives in
+            `domain.ts` and nowhere else, so this branch cannot drift from the other places
+            that ask the same question. Hiding the link does NOT close the URL: a deep link
+            to `/sprints` stays live, and only the tab's own guard (AC2) can refuse it.
+            Neither substitutes for the other. */}
+        {hasSprints(project) ? (
+          <NavLink to="sprints" className={tabClass}>
+            Sprints
+          </NavLink>
+        ) : null}
         <NavLink to="settings" className={tabClass}>
           Settings
         </NavLink>

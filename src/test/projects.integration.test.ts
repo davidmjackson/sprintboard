@@ -118,6 +118,64 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
     expect(data).toBeNull()
   }, 30_000)
 
+  /**
+   * SPRIN-82 AC6 — `project_type` immutability stops being prose and becomes a database
+   * control. `docs/migrations/sprin-82-projects-immutable.sql` revokes the table-wide
+   * UPDATE privilege on `projects` from `authenticated` and `anon`, and grants no columns
+   * back, because nothing in `src/` updates the table.
+   *
+   * OWNER, NOT STRANGER, and that is the entire point. `projects_owner` is `for all` on
+   * `owner_id = auth.uid()`, so a stranger's UPDATE was ALWAYS filtered to zero rows — a
+   * stranger-only test passes just as happily on the un-migrated database and would prove
+   * nothing about this migration. The only caller who could ever have rewritten the column
+   * is the row's own owner, so the owner is who this test signs in as.
+   *
+   * ASSERT THE CODE, NOT MERELY THAT AN ERROR EXISTS. RLS FILTERS, it does not raise: a
+   * policy refusal arrives as `error === null` with zero rows. 42501 is
+   * `insufficient_privilege` — the revoked grant refusing the statement outright, before
+   * any policy is consulted. Only the code tells those two apart, and this whole story
+   * turns on the distinction.
+   *
+   * NOTE WHAT DOES *NOT* STOP THIS WRITE: the type system. `TablesUpdate<'projects'>` has
+   * `project_type?: string`, so the update below compiles with no cast at all. (The `as
+   * never` idiom at `rls.integration.test.ts:350` is needed only because `TicketUpdate`
+   * deliberately removes `key`/`number`; there is no equivalent narrowing for projects.)
+   * A bug in the app would send exactly this, type-clean and lint-clean. Proving the
+   * DATABASE holds is the point.
+   */
+  it("refuses the owner's own project_type UPDATE (revoked grant -> 42501)", async () => {
+    // Push before asserting: a failed expect() aborts the body, and a teardown delete is
+    // an obligation where an assertion is only a report.
+    const created = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Immutable type', key: runKey() })
+      .select()
+      .single()
+
+    if (created.data) createdIds.push(created.data.id)
+
+    expect(created.error).toBeNull()
+    expect(created.data!.project_type).toBe('scrum')
+    const id = created.data!.id
+
+    const { data, error } = await a
+      .from('projects')
+      .update({ project_type: 'kanban' })
+      .eq('id', id)
+      .select()
+
+    expect(error?.code).toBe('42501')
+    expect(data).toBeNull()
+
+    // The positive control, in this same test, doing double duty: the row still reads
+    // 'scrum', AND this same client can still SELECT the project. Without that second
+    // half the test passes against a fixture that was never created — a refusal aimed at
+    // a row that does not exist proves nothing about immutability.
+    const after = await a.from('projects').select('project_type').eq('id', id)
+    expect(after.error).toBeNull()
+    expect(after.data).toEqual([{ project_type: 'scrum' }])
+  }, 30_000)
+
   it('rejects a duplicate key for the same owner (projects_owner_key_unique -> 23505)', async () => {
     const key = runKey()
     const first = await a

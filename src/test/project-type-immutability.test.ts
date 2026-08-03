@@ -21,14 +21,36 @@ import {
 /**
  * SPRIN-81 AC5 — "the project type cannot be changed after creation".
  *
- * There is no database control behind that sentence. `projects_owner` is a single
- * `FOR ALL` policy on `owner_id = auth.uid()`, so Postgres will happily accept an
- * owner's `PATCH /projects?id=eq.…` setting `project_type` to anything the check
- * constraint allows. Immutability here is a property of OUR CODE: no write path
- * exists. That is a claim about the source tree, so this is a test that reads the
- * source tree — the same idiom `src/lib/domain.test.ts` uses to pin the client
- * vocabulary against the schema doc, and `scripts/check-bundle.mjs` uses to pin a
- * credential out of `dist/`. A comment is not a control.
+ * THERE ARE TWO LAYERS BEHIND THAT SENTENCE, and this file is the second of them.
+ * When SPRIN-81 shipped there was only one, and this paragraph used to open "there is
+ * no database control behind that sentence": `projects_owner` is a single `FOR ALL`
+ * policy on `owner_id = auth.uid()`, so Postgres happily accepted an owner's
+ * `PATCH /projects?id=eq.…` setting `project_type` to anything the check constraint
+ * allowed, and immutability was purely a property of OUR CODE — no write path exists.
+ * SPRIN-82 added the database half (`docs/migrations/sprin-82-projects-immutable.sql`):
+ * `revoke update on projects from authenticated, anon`, with no columns granted back,
+ * so that PATCH is now refused with 42501 before any policy is consulted. It landed in
+ * that story rather than this one because SPRIN-82 is where behaviour first came to
+ * depend on the column — `hasSprints(project)` decides whether the Sprints tab, the
+ * `/sprints` route and the ticket sprint picker exist at all.
+ *
+ * BOTH LAYERS STAY, AND NEITHER MASKS THE OTHER — which is the question worth asking of
+ * any two controls on one property, because the usual answer is that one is quietly
+ * doing all the work. Here they fail on DISJOINT mutations. Restore the grant and the
+ * live assertion in `src/test/projects.integration.test.ts` goes red while every check
+ * below stays green. Add a `.update({ project_type })` to `src/` and check 5 below goes
+ * red while that live assertion stays green — the app would simply be shipping a write
+ * that earns a 42501 nobody handles. Neither is the other's backstop, so deleting either
+ * loses coverage nothing else provides.
+ *
+ * WHY A SOURCE-TREE TEST AT ALL, now that the database refuses the write. Because "the
+ * app never attempts it" and "the database would refuse it" are different claims, and
+ * only the first is about this repo. A `project_type` write in `src/` is a real defect —
+ * a user-visible failure the code does not handle — and it is a claim about the source
+ * tree, so this is a test that reads the source tree: the same idiom
+ * `src/lib/domain.test.ts` uses to pin the client vocabulary against the schema doc, and
+ * `scripts/check-bundle.mjs` uses to pin a credential out of `dist/`. A comment is not a
+ * control — and neither is a privilege that one line in the next migration can hand back.
  *
  * WHY IT PARSES RATHER THAN GREPS. The first version of this guard matched
  * `/\bfrom\(\s*['"]projects['"]\s*\)/` and read the chain after it with a hand-rolled
@@ -104,11 +126,18 @@ import {
  * That second anchor is what keeps a client this file cannot trace — a factory return, a
  * renamed re-export, a `SupabaseClient` parameter — inside check 4 rather than outside it.
  *
- * WHEN A LEGITIMATE PROJECT UPDATE ARRIVES — renaming a project, say — check 5 goes red.
- * That red is the story asking the question, not an obstacle: narrow the guard so it
- * inspects the update's payload for `project_type`, or replace the app-layer claim with a
- * database one (a column grant, or a trigger that restores the old value). Deleting it
- * puts AC5 back to being prose.
+ * WHEN A LEGITIMATE PROJECT UPDATE ARRIVES — renaming a project, say — TWO things stop it,
+ * one per layer, and that is the design working rather than an obstacle. Check 5 below goes
+ * red, AND the write fails live with 42501, because SPRIN-82 revoked the table UPDATE
+ * outright and granted no columns back. That story has to do both: `grant update (name) on
+ * projects to authenticated` in its migration, and narrow this guard so it inspects the
+ * update's payload for `project_type` rather than forbidding every write to the table. The
+ * grant without the narrowing leaves check 5 blocking the merge; the narrowing without the
+ * grant ships a rename that silently 42501s. Deleting either layer instead puts AC5 back to
+ * being prose — and note which one is now the cheaper to lose by accident: a stray `grant
+ * update on projects` in an unrelated migration undoes the database half silently, and no
+ * check in CI can read pg_catalog to notice. What would notice is the live 42501 assertion
+ * in `src/test/projects.integration.test.ts`, which is why it exists.
  *
  * WHAT IT STILL CANNOT SEE, stated without flattery:
  *   - Anything outside `src/`. `scripts/` and `e2e/` are tooling and tests, and neither

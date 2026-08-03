@@ -1,8 +1,8 @@
-import { useOutletContext } from 'react-router-dom'
+import { Navigate, useOutletContext } from 'react-router-dom'
 
 import { selectSprintTickets } from '@/lib/backlog'
 import { doneSlugs } from '@/lib/project-statuses'
-import { SPRINT_STATUS_LABELS } from '@/lib/domain'
+import { hasSprints, SPRINT_STATUS_LABELS } from '@/lib/domain'
 import type { ProjectShellContext } from './ProjectShell'
 import { CompleteSprintButton } from './CompleteSprintButton'
 import { CreateSprintDialog } from './CreateSprintDialog'
@@ -40,6 +40,38 @@ export function SprintsTab() {
     statuses,
     statusesPhase,
   } = useOutletContext<ProjectShellContext>()
+
+  /**
+   * SPRIN-82 AC2. ABSENT, not merely hidden — and this is a different hole from the one
+   * `ProjectShellHeader` closes by not rendering the nav link.
+   *
+   * Hiding a link removes the door a user is OFFERED; it leaves the URL itself fully live.
+   * A bookmark, a shared link, browser history, the back button, or a link written down
+   * before the project's type was known all arrive here directly, and without this guard
+   * they get the whole tab: the sprint list, the Start and Complete buttons, and above all
+   * `CreateSprintDialog` — which would happily write a real sprint row for a project that
+   * delivers continuously and has nowhere left to show it. That row is not cosmetic; it is
+   * a sprint the user can neither see nor complete afterwards.
+   *
+   * It sits AFTER the `useOutletContext` destructuring above and before everything else,
+   * which is the only correct position: hooks must run unconditionally on every render
+   * (returning before one would break the rules of hooks the moment a second hook is added
+   * here), and nothing below should get the chance to build sprint UI first.
+   *
+   * `replace` rather than a push, so the dead URL does not enter the history stack. Pushing
+   * would leave Back pointing at the sprints route, which redirects forward again — the
+   * user presses Back, watches the board reappear, and is trapped. Replacing it means Back
+   * goes to wherever they genuinely came from.
+   *
+   * `../board` is relative to this `sprints` CHILD ROUTE, so `..` climbs one route level to
+   * the project shell — `/projects/:projectId` — and resolves to `/projects/:id/board`, not
+   * to `/board`. The board is the right destination because it is the one tab every project
+   * type has, and it is where a continuously-delivered project's work actually lives.
+   *
+   * The rule itself is `hasSprints` in `domain.ts` and is never re-spelled here: two copies
+   * of one predicate agree right up until someone edits one of them (SPRIN-82 AC5).
+   */
+  if (!hasSprints(project)) return <Navigate to="../board" replace />
 
   // Derived ONCE for every row, from the project's status rows by CATEGORY rather than by the
   // slug 'done' (SPRIN-77). `doneSlugs` is the single derivation the sprint-completion DB

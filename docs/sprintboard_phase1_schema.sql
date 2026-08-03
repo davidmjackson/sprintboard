@@ -718,6 +718,18 @@ revoke delete on project_statuses from anon;
 revoke update on project_statuses from authenticated, anon;
 grant  update (name, category, position) on project_statuses to authenticated;
 
+-- SPRIN-82: `projects` holds NO update privilege at all, and nothing is granted back —
+-- because nothing in src/ updates the table (createProject inserts, listProjects selects).
+-- This is the SAME statement as the line above with the opposite shape: no column-level
+-- grant follows it, so the trap described above does not arise here. It makes SPRIN-81's
+-- app-layer "the project type cannot change after creation" a database control, which
+-- matters as of SPRIN-82 because hasSprints(project) now decides whether the Sprints tab,
+-- the /sprints route and the ticket sprint picker exist. It is NOT a tenant-isolation fix
+-- — projects_owner already confined the write to the owner's own row — it stops an owner
+-- stranding their own sprints behind a UI that no longer shows them. A future "rename a
+-- project" story must add `grant update (name) on projects to authenticated`.
+revoke update on projects from authenticated, anon;
+
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors
 -- project_statuses_name_nonempty, which already btrims: "Done", "done" and " Done " are one
