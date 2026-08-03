@@ -53,13 +53,45 @@ Identical reasoning to `doneSlugs()` being the single derivation of "terminal" (
 two call sites reading `project_type === 'kanban'` can drift; one predicate cannot. There
 are three consumers in this story alone, and stories 3, 5 and 6 add more.
 
-**How AC5 is pinned.** A new test asserts the string `'kanban'` appears in no non-test file
-under `src/` except `domain.ts`. That is a text scan and it fails open on obfuscation
-(`String.fromCharCode`, a computed key) — stated plainly rather than dressed up. It is
-proportionate because the *positive* half of the rule is pinned by behaviour: the three
-absence tests below go red if a component stops consulting the predicate. The text scan
-catches only the specific regression AC5 names, which is a second, inlined comparison
-sitting quietly beside a correct one.
+**How AC5 is pinned.** `src/test/project-type-single-expression.test.ts` runs **three** text
+scans over every non-test file under `src/`:
+
+1. the **value** — `'kanban'` may appear only in `domain.ts`;
+2. the **comparison** — `project_type`/`projectType` adjacent to `===`/`!==` may appear only
+   in `domain.ts`;
+3. the **read** — a `.project_type` property access may appear only in `domain.ts`, or as an
+   index into `PROJECT_TYPE_LABELS` (the header badge needs a display name, which a boolean
+   predicate cannot supply).
+
+The *positive* half of AC5 — that each component consults the predicate at all — is pinned by
+behaviour instead: the three absence tests below go red the moment a component stops asking.
+
+**The third scan was added after review, and the reason is worth recording rather than
+quietly fixing.** This section originally claimed the scans failed open only on obfuscation
+(`String.fromCharCode`, a computed key), and the guard's own docblock went further, arguing
+that "every construction that defeats it also defeats an AST scan of string literals, because
+none of them is a string literal". **That was false.** A reviewer planted this beside a
+correct `hasSprints(project)` call in `ProjectShellHeader.tsx`:
+
+```tsx
+const kind: string = project.project_type
+const showsSprintFilters = kind === 'scrum'
+```
+
+Scans 1 and 2 both missed it — the value scan never sees `kanban`, and the comparison scan
+never sees `project_type` next to an operator — `npm run lint` was clean, and all 849 tests
+stayed green while a second derivation of the rule sat in the tree. `switch (p.project_type)
+{ case 'scrum': }` and the Yoda form `'scrum' === p.project_type` survive the same way, and
+all three contain real string literals an AST walk would find, so the "not a literal"
+argument never held. Scan 3 closes the class rather than the instance: however many ways a
+comparison can be spelled, there is exactly **one** way to obtain the value, and that is the
+read. The one remaining known survivor is a destructure **that renames**
+(`const { project_type: kind } = project`), named in the guard's docblock rather than closed —
+banning the bare word would need an allowlist covering `projects.ts`'s insert payload, a doc
+comment, and the generated `database.types.ts`. A *plain* destructure is **not** a survivor:
+it binds a variable called `project_type`, so the comparison that follows trips scan 2. Both
+halves of that were measured by mutation rather than reasoned, because the first draft of this
+paragraph got it wrong in the direction that would have cost an unnecessary allowlist.
 
 ## 3. Where the conditional lives, and why the obvious answer is wrong
 

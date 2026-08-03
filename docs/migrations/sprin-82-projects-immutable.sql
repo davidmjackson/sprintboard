@@ -71,11 +71,36 @@
 -- spoofed-`owner_id` 42501) in `src/test/projects.integration.test.ts`, which is
 -- also where the new owner-side 42501 assertion for this migration lives.
 --
--- THE COST, STATED PLAINLY. A future "rename a project" story cannot work until
--- it runs `grant update (name) on projects to authenticated;`. That is one line
--- in that story's migration, and it is the correct direction of travel: deny by
--- default, widen deliberately and visibly. Do not pre-grant columns nothing
--- writes yet.
+-- THE COST, STATED PLAINLY, AND IT IS THREE THINGS RATHER THAN ONE. A future
+-- "rename a project" story cannot work until it runs
+--
+--     grant update (name) on projects to authenticated;
+--
+-- That is one line, and it is the correct direction of travel: deny by default,
+-- widen deliberately and visibly. Do not pre-grant columns nothing writes yet.
+-- But it does NOT stand alone. That story owes three things, and the second and
+-- third are the ones that will be forgotten because nothing goes red to ask for
+-- them:
+--
+--   1. `grant update (name) on projects to authenticated;` — this file's line.
+--   2. Narrow the AST guard in `src/test/project-type-immutability.test.ts` so
+--      check 5 inspects an update's PAYLOAD for `project_type` instead of
+--      forbidding every write to `projects`. Without this the guard blocks the
+--      merge — which is the one obligation that announces itself.
+--   3. **Restore a cross-tenant `projects` UPDATE row-count assertion to
+--      `src/test/rls.integration.test.ts`'s "B cannot UPDATE any of it".** The
+--      line SPRIN-82 deleted (see CONSEQUENCE FOR AN EXISTING TEST above) was
+--      removed because no UPDATE privilege remained for RLS to filter. A column
+--      grant hands that privilege back for `name`, so `projects_owner` becomes
+--      load-bearing again for a verb nothing tests — and B renaming A's project
+--      is a real cross-tenant write. Bring it back as
+--      `.update({ name: 'pwned' })` and assert `[]`, the same shape `sprints`
+--      and `tickets` still use.
+--
+-- Obligation 3 is also written where that story will actually be reading: the
+-- comment above the revoke in docs/sprintboard_phase1_schema.sql, and the note
+-- in rls.integration.test.ts explaining the deleted line. A migration banner is
+-- not somewhere a future author has any reason to open.
 --
 -- WHY anon IS INCLUDED. It holds the identical `arwdDxtm` and has no policy on
 -- this table, so it can update nothing today regardless. A privilege that
@@ -84,11 +109,28 @@
 --
 -- WHAT THIS DOES NOT REPLACE. The AST guard in
 -- `src/test/project-type-immutability.test.ts` stays. The two layers fail on
--- DISJOINT mutations — restoring this grant reddens the live test and leaves
--- the guard green; adding a `.update({ project_type })` to `src/` reddens the
--- guard and leaves the live test green (the app would simply get a 42501 it
--- does not handle). Neither is the other's backstop, so neither hides the
--- other's regression.
+-- DISJOINT mutations — restoring this grant TABLE-WIDE reddens the live 42501
+-- assertion in src/test/projects.integration.test.ts and leaves the guard
+-- green; adding a `.update({ project_type })` to `src/` reddens the guard and
+-- leaves the live assertion green (the app would simply get a 42501 it does not
+-- handle). Neither is the other's backstop, so neither hides the other's
+-- regression.
+--
+-- THAT FIRST HALF IS CONDITIONAL, AND THE CONDITION IS THE SHAPE OF THE
+-- RE-GRANT. An earlier draft of this banner said flatly that "restoring this
+-- grant reddens the live test", which is true only of `grant update on
+-- projects` — the table-wide form. It is FALSE of the column form this file
+-- itself prescribes for a future rename story: after
+--
+--     grant update (name) on projects to authenticated;
+--
+-- `project_type` is still not a granted column, so the owner-side PATCH still
+-- earns its 42501 and that test stays green — while UPDATE on `projects`
+-- reaches RLS again for `name`. The privilege layer is then partially back with
+-- nothing in the suite noticing, which is precisely why obligation 3 under THE
+-- COST below exists: no test anywhere currently asserts that B cannot rename
+-- A's project. Do not read the disjointness argument above as covering the
+-- column case. It does not.
 --
 -- RUN: paste this ENTIRE file into the Supabase SQL editor and run it once.
 -- One explicit transaction. If any statement errors, NOTHING lands.

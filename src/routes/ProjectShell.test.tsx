@@ -306,11 +306,24 @@ describe('ProjectShell', () => {
   // badge proves it rendered for THIS project rather than silently falling back to the
   // scrum fixture, which would make the absence true for the wrong reason.
   //
-  // Scoped with `within(nav)` so "the word sprint appears somewhere on the page" cannot
-  // stand in for "the link exists": the tab content underneath is free to mention sprints,
-  // and an unscoped query would then be asserting something else entirely.
+  // TWO ABSENCE ASSERTIONS, ONE SCOPED AND ONE NOT, and they say different things — this
+  // is not belt-and-braces. A reviewer proved it by leaking a Sprints link OUTSIDE the
+  // `<nav>` for kanban only: 849/849 stayed green while a Kanban project rendered a live,
+  // clickable Sprints link into the dead tab, because the only query pointed inside the
+  // element the link had just left.
   //
-  // The absence query is a REGEX by design. An exact `'Sprints'` would go green on a link
+  //  * The SCOPED one (`within(nav)`) is the one that says "not in the tab bar", which is
+  //    where AC1's requirement actually lives, and it stops "the word sprint appears
+  //    somewhere on the page" standing in for "the link exists" — the tab content
+  //    underneath is free to mention sprints in prose.
+  //  * The UNSCOPED one says "and nowhere else either". A link is a link wherever it is
+  //    rendered: the harm AC1 names is a user reaching a tab that has no meaning for this
+  //    project, and the `<nav>` is not what makes that reachable. It is safe to make this
+  //    one document-wide precisely because it queries the LINK ROLE rather than text —
+  //    the board underneath renders no links at all, and the tab content's prose is not a
+  //    link.
+  //
+  // Both queries are REGEXes by design. An exact `'Sprints'` would go green on a link
   // relabelled to anything else while still routing to the dead tab; `/sprint/i` catches
   // the rename too. The positive controls keep the repo's existing exact names — each is a
   // single text node, which is the carve-out CLAUDE.md permits.
@@ -319,6 +332,7 @@ describe('ProjectShell', () => {
 
     const nav = screen.getByRole('navigation')
     expect(within(nav).queryByRole('link', { name: /sprint/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /sprint/i })).not.toBeInTheDocument()
 
     // Controls: the header, its nav and its other three tabs all really rendered…
     expect(within(nav).getByRole('link', { name: 'Board' })).toBeInTheDocument()

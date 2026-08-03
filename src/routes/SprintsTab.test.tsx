@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 
 import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
@@ -107,39 +107,41 @@ const STATUSES = [
   { id: 'st3', slug: 'shipped', name: 'Shipped', category: 'done', position: 3 },
 ] as unknown as ProjectStatus[]
 
-// The parent route's element is an `<Outlet context={...}>`, per the established pattern
-// in BoardTab.test.tsx — a bare `<div />` has no outlet, so the nested route could never
-// mount and the fixture would wire to nothing (the suite would pass vacuously).
-//
-// S6.2: sprints arrive through this context rather than a mocked `listSprints`, because
-// the tab no longer owns the read. `sprintsPhase` is supplied per test, so the three-state
-// read is still driven from here — the load itself is pinned in ProjectShell.test.tsx.
-function renderTab(
-  ctx: {
-    project?: Project
-    sprints?: Sprint[]
-    sprintsPhase?: SprintsPhase
-    onSprintCreated?: (s: Sprint) => void
-    onSprintUpdated?: (s: Sprint) => void
-    onSprintCompleted?: (s: Sprint, tickets: Ticket[]) => void
-    onRetry?: () => void
-    tickets?: Ticket[]
-    ticketsPhase?: TicketsPhase
-    statuses?: ProjectStatus[]
-    statusesPhase?: ReadPhase
-  } = {},
-) {
-  // Every field the component reads is defaulted HERE, and `ctx` is spread over the top.
-  // Both phases default to 'loaded' — the landed state every other test here means — and
-  // both have to be supplied: the `as ProjectShellContext` cast is an assertion, not a
-  // check, so omitting a field the component reads is not a type error. It would arrive as
-  // `undefined`, which is neither 'loading' nor 'loaded' — the ticket-count tests would pass
-  // for the wrong reason, and the Complete button would be absent from every test because
-  // `statusesPhase !== 'loaded'`, not because the case under test made it so.
-  //
-  // Spread rather than a `??` per field: eleven of those put this function over T2's
-  // cyclomatic 10, and the defaults do not need a branch each.
-  const context = {
+type ContextOverrides = {
+  project?: Project
+  sprints?: Sprint[]
+  sprintsPhase?: SprintsPhase
+  onSprintCreated?: (s: Sprint) => void
+  onSprintUpdated?: (s: Sprint) => void
+  onSprintCompleted?: (s: Sprint, tickets: Ticket[]) => void
+  onRetry?: () => void
+  tickets?: Ticket[]
+  ticketsPhase?: TicketsPhase
+  statuses?: ProjectStatus[]
+  statusesPhase?: ReadPhase
+}
+
+/**
+ * The outlet context every render in this file hands the tab.
+ *
+ * Every field the component reads is defaulted HERE, and `ctx` is spread over the top.
+ * Both phases default to 'loaded' — the landed state every other test here means — and
+ * both have to be supplied: the `as ProjectShellContext` cast is an assertion, not a
+ * check, so omitting a field the component reads is not a type error. It would arrive as
+ * `undefined`, which is neither 'loading' nor 'loaded' — the ticket-count tests would pass
+ * for the wrong reason, and the Complete button would be absent from every test because
+ * `statusesPhase !== 'loaded'`, not because the case under test made it so.
+ *
+ * Spread rather than a `??` per field: eleven of those put the caller over T2's
+ * cyclomatic 10, and the defaults do not need a branch each.
+ *
+ * It is a function of its own rather than a literal inside `renderTab` because the
+ * back-navigation harness below needs the identical context under a different router, and
+ * a second copy of these eleven lines would be a fixture that can silently drift from the
+ * one thirty tests are written against.
+ */
+function buildContext(ctx: ContextOverrides = {}): ProjectShellContext {
+  return {
     project,
     sprints: [],
     sprintsPhase: 'loaded',
@@ -153,6 +155,17 @@ function renderTab(
     statusesPhase: 'loaded',
     ...ctx,
   } as ProjectShellContext
+}
+
+// The parent route's element is an `<Outlet context={...}>`, per the established pattern
+// in BoardTab.test.tsx — a bare `<div />` has no outlet, so the nested route could never
+// mount and the fixture would wire to nothing (the suite would pass vacuously).
+//
+// S6.2: sprints arrive through this context rather than a mocked `listSprints`, because
+// the tab no longer owns the read. `sprintsPhase` is supplied per test, so the three-state
+// read is still driven from here — the load itself is pinned in ProjectShell.test.tsx.
+function renderTab(ctx: ContextOverrides = {}) {
+  const context = buildContext(ctx)
   return render(
     <MemoryRouter initialEntries={['/sprints']}>
       <Routes>
@@ -166,6 +179,54 @@ function renderTab(
               UI is gone" from an assertion that a blank render also satisfies into one that
               only a working redirect does. Every other test here enters at '/sprints' and
               never sees it. */}
+          <Route path="board" element={<p>board tab stub</p>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  )
+}
+
+/**
+ * A location readout and a real Back button, rendered OUTSIDE `<Routes>` so it survives
+ * every navigation and can report where the router actually ended up.
+ *
+ * `navigate(-1)` rather than a click on an anchor: browser Back is the specific gesture
+ * `replace` exists to protect, and it is the only one that can observe the difference
+ * between a history entry that was replaced and one that was pushed.
+ */
+function BackNavigationProbe() {
+  const navigate = useNavigate()
+  const { pathname } = useLocation()
+  return (
+    <div>
+      <p>at: {pathname}</p>
+      <button type="button" onClick={() => navigate(-1)}>
+        go back
+      </button>
+    </div>
+  )
+}
+
+/**
+ * A router with TWO REAL HISTORY ENTRIES — the user was on the backlog, then followed a
+ * stale link to `/sprints` — so that pressing Back has somewhere genuine to return to.
+ * Every other test in this file enters at `/sprints` with nothing behind it, where Back
+ * is unobservable and `replace` therefore looks free.
+ *
+ * Deliberately a SEPARATE harness rather than an option on `renderTab`: this is the only
+ * test that needs a history, a backlog route or a location readout, and threading a
+ * `<p>at: /sprints</p>` through the shared harness would put that string in front of the
+ * thirty text queries in this file for no benefit to any of them.
+ */
+function renderWithHistory() {
+  const context = buildContext({ project: kanbanProject })
+  return render(
+    <MemoryRouter initialEntries={['/backlog', '/sprints']} initialIndex={1}>
+      <BackNavigationProbe />
+      <Routes>
+        <Route path="/" element={<Outlet context={context} />}>
+          <Route path="backlog" element={<p>backlog tab stub</p>} />
+          <Route path="sprints" element={<SprintsTab />} />
           <Route path="board" element={<p>board tab stub</p>} />
         </Route>
       </Routes>
@@ -216,6 +277,47 @@ describe('SprintsTab', () => {
 
     expect(screen.getByRole('heading', { name: /sprints/i })).toBeVisible()
     expect(screen.getByText('Hardening push')).toBeVisible()
+    expect(screen.queryByText('board tab stub')).not.toBeInTheDocument()
+  })
+
+  /**
+   * The `replace` on that `<Navigate>`, which nothing else in the repo could observe.
+   * Deleting it left all 849 tests green — including the redirect test directly above,
+   * because the user still LANDS on the board either way. The harm `replace` prevents is
+   * not about where the redirect goes; it is about what it leaves behind it in history.
+   *
+   * IT LIVES HERE RATHER THAN IN `ProjectShell.test.tsx` because it is a property of the
+   * `<Navigate>` element in `SprintsTab.tsx` and of nothing else — the shell has no say in
+   * it, and asserting it through the shell's route table would mean a red there could be
+   * the shell's fault. This suite already owns the redirect at the component level for the
+   * same reason.
+   *
+   * WHAT A PUSHED ENTRY ACTUALLY COSTS, since "Back is a bit odd" undersells it. With
+   * `replace`, history is `['/backlog', '/board']` and Back returns the user to the
+   * backlog — where they genuinely came from. WITHOUT it the redirect pushes, leaving
+   * `['/backlog', '/sprints', '/board']`; Back lands on `/sprints`, which redirects
+   * forward to `/board` again, so the user watches the board reappear and cannot get out
+   * of it with the button that exists for exactly that. That is why the assertion is
+   * `/backlog` and not merely "not /sprints": the trapped user never sees `/sprints`
+   * either — the redirect is instant — so a test asserting only its absence passes on both
+   * versions and pins nothing.
+   *
+   * The controls come first: the redirect must have fired at all (we are on the board,
+   * not the sprints route) before "and Back goes somewhere sensible" means anything.
+   */
+  it('replaces the sprints history entry so Back is not a trap (SPRIN-82 AC2)', async () => {
+    const user = userEvent.setup()
+    renderWithHistory()
+
+    // Control: the redirect fired and landed on the board, from the second history entry.
+    expect(await screen.findByText('board tab stub')).toBeVisible()
+    expect(screen.getByText('at: /board')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'go back' }))
+
+    // The whole assertion: Back reached the page BEFORE the dead link, not the board again.
+    expect(await screen.findByText('at: /backlog')).toBeInTheDocument()
+    expect(screen.getByText('backlog tab stub')).toBeVisible()
     expect(screen.queryByText('board tab stub')).not.toBeInTheDocument()
   })
 

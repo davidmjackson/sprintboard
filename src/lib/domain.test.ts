@@ -15,6 +15,7 @@ import {
   isSprintStatus,
   isStatusCategory,
   isTicketType,
+  type ProjectType,
   type TicketInsert,
   type TicketUpdate,
 } from './domain'
@@ -371,6 +372,36 @@ describe('hasSprints', () => {
         'type has just inherited "no sprints" by default — state the answer here ' +
         'deliberately, and check hasSprints() still expresses the rule you want.',
     ).toEqual({ scrum: true, kanban: false })
+  })
+
+  /**
+   * THE DIRECTION of the predicate, which the two tests above cannot see. Both pass
+   * unchanged if `hasSprints` is rewritten as `project_type !== 'kanban'` — over today's
+   * two-value union the two spellings are the same function — and so did all 849 tests in
+   * the repo when a reviewer made exactly that change. They are not the same function on
+   * any OTHER input, and the message on the derived test above already claims the
+   * fail-closed half ("hasSprints() answers false for anything that is not scrum"), so
+   * until this test existed that claim was prose rather than a control.
+   *
+   * `=== 'scrum'` fails CLOSED: an unrecognised type gets "no sprints", which is the
+   * conservative answer — a Sprints tab that should be there is a visible bug someone
+   * reports, where a sprint row written against a project that cannot show sprints is
+   * invisible damage (see SprintsTab's redirect docblock). `!== 'kanban'` fails OPEN: the
+   * same input gets the whole sprint surface, CreateSprintDialog included.
+   *
+   * THE CAST IS THE POINT, not a workaround for it. `ProjectType` is a client-side union
+   * restoring narrowing the database cannot express — the column is `text` with a check
+   * constraint, so `database.types.ts` types it as a bare `string` and every row arrives
+   * from the network unvalidated. The check constrains what can be WRITTEN; nothing
+   * constrains what an already-persisted row, a mid-migration row, or a row from a
+   * database whose constraint has been widened ahead of the client hands to this function.
+   * `undefined` is the same class of input from the other end: a partially-built fixture,
+   * a `select()` that did not ask for the column, a row shape that drifted. The type
+   * system stops neither, and this predicate has to answer both without opening the door.
+   */
+  it('answers false for an unrecognised or missing project type (fails CLOSED)', () => {
+    expect(hasSprints({ project_type: 'waterfall' as ProjectType })).toBe(false)
+    expect(hasSprints({ project_type: undefined as unknown as ProjectType })).toBe(false)
   })
 })
 

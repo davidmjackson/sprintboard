@@ -139,6 +139,17 @@ import {
  * check in CI can read pg_catalog to notice. What would notice is the live 42501 assertion
  * in `src/test/projects.integration.test.ts`, which is why it exists.
  *
+ * AND THERE IS A THIRD OBLIGATION ON THAT STORY, which is the one nothing red will ask for.
+ * SPRIN-82 DELETED the cross-tenant `projects` UPDATE row-count assertion from
+ * `src/test/rls.integration.test.ts` ("B cannot UPDATE any of it") — correctly, because a
+ * revoked privilege leaves no UPDATE for RLS to filter, so the assertion was covering a verb
+ * that no longer reached the policy. A COLUMN grant hands that verb straight back for `name`
+ * and quietly re-arms `projects_owner`, while leaving `project_type` ungranted — so the live
+ * 42501 assertion above stays green and NOTHING in the repo asserts that B cannot rename A's
+ * project. That story must restore the deleted line. It is recorded in three places for that
+ * reason: this docblock, the comment above the revoke in
+ * `docs/sprintboard_phase1_schema.sql`, and the note at the deletion site itself.
+ *
  * WHAT IT STILL CANNOT SEE, stated without flattery:
  *   - Anything outside `src/`. `scripts/` and `e2e/` are tooling and tests, and neither
  *     holds a supabase write path.
@@ -472,10 +483,14 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
 
     expect(
       offenders,
-      "SPRIN-81 AC5: a project's type is fixed at creation, and RLS does NOT enforce it — " +
-        'the projects_owner policy is FOR ALL, so the database would accept this write. ' +
-        'The absence of an update path is the whole control. If this update is legitimate, ' +
-        'narrow this guard to inspect its payload for project_type; do not delete it.',
+      "SPRIN-81 AC5: a project's type is fixed at creation. RLS does not enforce that — " +
+        'projects_owner is FOR ALL, so the policy would accept an owner rewriting their ' +
+        'own row — but SPRIN-82 revoked the table UPDATE privilege on projects and granted ' +
+        'no columns back, so the database now refuses this write with a 42501 the app does ' +
+        'not handle. This guard is the OTHER layer: it says the app never attempts it, ' +
+        'which is a claim about this repo rather than about the database. If this update ' +
+        'is legitimate, the story owes a column grant AND a narrowing of this guard to ' +
+        "inspect its payload for project_type; see this file's docblock. Do not delete it.",
     ).toEqual([])
   })
 

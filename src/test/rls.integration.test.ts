@@ -409,6 +409,21 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * itself is asserted, owner-side, in `src/test/projects.integration.test.ts`
      * ("refuses the owner's own project_type UPDATE"): owner rather than stranger, because
      * a stranger was already blocked by the policy and would prove nothing about the grant.
+     *
+     * ⚠ PUT THIS LINE BACK THE DAY ANY COLUMN OF `projects` BECOMES UPDATABLE — and the
+     * "rename a project" story the migration anticipates is exactly that day. The argument
+     * above holds only while `projects` carries NO update privilege at all. The moment a
+     * story runs `grant update (name) on projects to authenticated`, UPDATE reaches the
+     * policy again for that column, `projects_owner` is load-bearing for it, and B renaming
+     * A's project is a live cross-tenant write with no assertion anywhere in this repo
+     * against it. The owner-side 42501 test does NOT cover it and will not notice: a COLUMN
+     * grant leaves `project_type` ungranted, so that test stays green while this hole opens.
+     * Nothing goes red to ask for this. Restore it in the same shape `sprints` and `tickets`
+     * use below — `b.from('projects').update({ name: 'pwned' }).eq('id', projectA).select()`,
+     * asserting `[]` — because at that point RLS filtering is once again what is holding, so
+     * a row count is once again the honest assertion. The same obligation is recorded above
+     * the revoke in `docs/sprintboard_phase1_schema.sql` and in
+     * `docs/migrations/sprin-82-projects-immutable.sql`.
      */
     it('B cannot UPDATE any of it', async () => {
       const sprint = await b.from('sprints').update({ name: 'pwned' }).eq('id', sprintA).select()

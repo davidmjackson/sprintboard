@@ -136,6 +136,27 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
    * any policy is consulted. Only the code tells those two apart, and this whole story
    * turns on the distinction.
    *
+   * …BUT THE CODE ALONE IS NOT ENOUGH, AND THAT IS WHY THE MESSAGE IS ASSERTED TOO.
+   * `42501` is not one control, it is a class: the spoofed-`owner_id` test at the bottom of
+   * this file asserts the identical code for a completely different refusal — an RLS
+   * `WITH CHECK` violation on INSERT. Two controls, one code, forty lines apart, and a
+   * reader comparing them cannot tell which is which. Postgres does distinguish them, in
+   * the message, and both were MEASURED live rather than recalled:
+   *
+   *   revoked grant   -> `permission denied for table projects`
+   *   RLS WITH CHECK  -> `new row violates row-level security policy for table "projects"`
+   *
+   * So each test names its own control. This is not pedantry about wording — it is what
+   * makes these two tests independently falsifiable. Restore the grant and this test must
+   * fail; drop `projects_owner` and the other one must fail. Without the message, a change
+   * that swapped which control was doing the refusing would leave both green, and SPRIN-75
+   * is a story that rewrites every policy on this table. It is the one place a policy edit
+   * could start answering for a privilege, or vice versa.
+   *
+   * The message prose is Postgres's, not ours — unlike `projects_project_type_check` above,
+   * which is a name we chose and may therefore pin whole. So this asserts a SUBSTRING that
+   * names the control ('permission denied'), not the full sentence.
+   *
    * NOTE WHAT DOES *NOT* STOP THIS WRITE: the type system. `TablesUpdate<'projects'>` has
    * `project_type?: string`, so the update below compiles with no cast at all. (The `as
    * never` idiom at `rls.integration.test.ts:350` is needed only because `TicketUpdate`
@@ -165,6 +186,10 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
       .select()
 
     expect(error?.code).toBe('42501')
+    // Names the GRANT as the refusing control. See the docblock: the spoofed-owner_id test
+    // below asserts the same 42501 for an RLS WITH CHECK violation, whose message reads
+    // 'new row violates row-level security policy' instead. The code cannot tell them apart.
+    expect(error?.message).toContain('permission denied')
     expect(data).toBeNull()
 
     // The positive control, in this same test, doing double duty: the row still reads
@@ -215,6 +240,21 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
       .single()
 
     expect(error?.code).toBe('42501')
+    // NAMES ITS CONTROL, and this half arrived with SPRIN-82 rather than with the test.
+    // Until then 42501 had exactly one meaning on this table, so the code was sufficient
+    // on its own. SPRIN-82's revoke gave it a second: the owner-side project_type UPDATE
+    // test above asserts the same 42501 for a REVOKED GRANT, which is a different control
+    // in a different layer, refusing before any policy is consulted. Measured live, the two
+    // messages are 'new row violates row-level security policy for table "projects"' and
+    // 'permission denied for table projects' respectively.
+    //
+    // Fixing only the newer test would have left the confusion half-standing — this one
+    // would still be the ambiguous member of the pair, and it is the one guarding the
+    // tenant boundary. It matters most at SPRIN-75, which rewrites every policy on this
+    // table to a membership check: a policy that stopped applying while a privilege picked
+    // up the refusal would keep this test green and the boundary broken. Substring, not the
+    // whole sentence — the prose is Postgres's, not a name this repo chose.
+    expect(error?.message).toContain('row-level security policy')
     expect(data).toBeNull()
   }, 30_000)
 
