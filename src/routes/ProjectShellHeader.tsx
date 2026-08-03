@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 
-import type { Project, Ticket } from '@/lib/domain'
+import { PROJECT_TYPE_LABELS, type Project, type Ticket } from '@/lib/domain'
 // Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
 // this component, so taking the type from there would close an import cycle — harmless
 // today because `import type` is erased, but not worth leaving for someone to trip over.
@@ -41,6 +41,13 @@ export function ProjectShellHeader({
       <div className="flex items-start justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">
           <span className="text-muted-foreground mr-2 font-mono text-lg">{project.key}</span>
+          {/* Rendered for EVERY project type, not only Kanban: "Scrum" is a badge reading
+              Scrum, never the absence of one. Same treatment as the ticket-type badge on
+              `TicketCard`, deliberately reused rather than reinvented. The label comes from
+              `PROJECT_TYPE_LABELS` — display names live in `domain.ts` and nowhere else. */}
+          <span className="bg-muted text-muted-foreground mr-2 rounded px-1.5 py-0.5 align-middle text-[10px] font-medium uppercase">
+            {PROJECT_TYPE_LABELS[project.project_type]}
+          </span>
           {project.name}
         </h1>
         {/* The trigger only renders once `ticketsPhase === 'loaded'`, and that gate is

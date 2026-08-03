@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -85,9 +85,61 @@ describe('CreateProjectDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Create project' }))
 
     await waitFor(() =>
-      expect(mockCreate).toHaveBeenCalledWith({ ownerId: 'u1', name: 'Sprintboard', key: 'SPR' }),
+      expect(mockCreate).toHaveBeenCalledWith({
+        ownerId: 'u1',
+        name: 'Sprintboard',
+        key: 'SPR',
+        projectType: 'scrum',
+      }),
     )
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  /**
+   * SPRIN-81. The type is chosen at create time and never again — there is no update path
+   * for `project_type` anywhere in the app, so the description below is the only place a
+   * user is told that. These four pin the control itself; the `createProject` assertion in
+   * "creates the project and closes on success" above pins the untouched default reaching
+   * the write, which is why there is no fifth test restating it.
+   */
+  describe('the project type', () => {
+    it('offers both project types', async () => {
+      await openDialog()
+      const select = screen.getByLabelText('Type')
+
+      expect(within(select).getByRole('option', { name: 'Scrum' })).toBeInTheDocument()
+      expect(within(select).getByRole('option', { name: 'Kanban' })).toBeInTheDocument()
+    })
+
+    it('defaults to Scrum', async () => {
+      await openDialog()
+      expect(screen.getByLabelText('Type')).toHaveValue('scrum')
+    })
+
+    it('says the type cannot be changed later', async () => {
+      await openDialog()
+      expect(
+        screen.getByText(/cannot be changed after the project is created/i),
+      ).toBeInTheDocument()
+    })
+
+    it('creates a Kanban project when Kanban is chosen', async () => {
+      mockCreate.mockResolvedValue({ ok: true, project: { id: 'p1' } as never })
+      const user = await openDialog()
+
+      await user.type(screen.getByLabelText('Name'), 'Sprintboard')
+      await user.selectOptions(screen.getByLabelText('Type'), 'kanban')
+      await user.click(screen.getByRole('button', { name: 'Create project' }))
+
+      await waitFor(() =>
+        expect(mockCreate).toHaveBeenCalledWith({
+          ownerId: 'u1',
+          name: 'Sprintboard',
+          key: 'SPR',
+          projectType: 'kanban',
+        }),
+      )
+    })
   })
 
   it('surfaces a duplicate key as a field error and stays open', async () => {

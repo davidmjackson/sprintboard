@@ -57,6 +57,67 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
     if (data) createdIds.push(data.id)
   }, 30_000)
 
+  /**
+   * SPRIN-81 AC1/AC2. The two halves of the widened `projects_project_type_check`:
+   * 'kanban' is now accepted, and the constraint still refuses everything else. Both
+   * are live-only claims — `domain.test.ts` reads the schema DOC, which is applied by
+   * hand, so only this suite can see what the database actually enforces.
+   *
+   * NOTE the cleanup placement, which deliberately differs from the tests either side:
+   * they push after asserting, so a failed `expect()` aborts the body and strands the
+   * project in the shared database forever. A teardown delete is an obligation; an
+   * assertion is only a report. Push first.
+   */
+  it('creates a kanban project when project_type is supplied (SPRIN-81)', async () => {
+    const key = runKey()
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Kanban contract test', key, project_type: 'kanban' })
+      .select()
+      .single()
+
+    if (data) createdIds.push(data.id)
+
+    expect(error).toBeNull()
+    expect(data).toMatchObject({
+      key,
+      owner_id: userAId,
+      name: 'Kanban contract test',
+      project_type: 'kanban',
+    })
+  }, 30_000)
+
+  it('rejects an unknown project_type (projects_project_type_check -> 23514)', async () => {
+    // The row is pushed for cleanup even though the insert is expected to fail: if the
+    // check constraint is ever dropped or widened by accident, this insert SUCCEEDS,
+    // and the test that catches that must not also leak the project it created.
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Waterfall', key: runKey(), project_type: 'waterfall' })
+      .select()
+      .single()
+
+    if (data) createdIds.push(data.id)
+
+    // The code first — 23514 is "some check constraint refused this row".
+    expect(error?.code).toBe('23514')
+
+    // ...but `projects` has TWO check constraints, and 23514 does not say which one
+    // fired. The original version of this test relied on the payload as the
+    // discriminator: `runKey()` cannot produce a key `projects_key_format` rejects, so
+    // project_type had to be the violation. That reasoning is true today and would go
+    // silently false the day a third check lands on this table — the test would still
+    // pass, while no longer testing project_type at all.
+    //
+    // So name the constraint. This asserts the constraint's NAME, not the message's
+    // wording: the name is ours, it is written in the migration and the schema doc, and
+    // renaming it is a deliberate act that SHOULD redden this. The prose around it
+    // (`new row for relation ... violates check constraint ...`) stays unasserted,
+    // because that IS Postgres's wording and not a contract.
+    expect(error?.message).toContain('projects_project_type_check')
+    expect(data).toBeNull()
+  }, 30_000)
+
   it('rejects a duplicate key for the same owner (projects_owner_key_unique -> 23505)', async () => {
     const key = runKey()
     const first = await a

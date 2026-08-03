@@ -77,7 +77,22 @@ export type StatusCategory = 'todo' | 'in_progress' | 'done'
  */
 export type TicketStatus = string
 export type SprintStatus = 'future' | 'active' | 'complete'
-export type ProjectType = 'scrum'
+
+/**
+ * How a project delivers work: in sprints, or continuously.
+ *
+ * A bare `'scrum'` until SPRIN-81 widened it to the two Rung 3 types. It gets the same
+ * union + runtime array + label map shape as `TicketType` because the create-project
+ * dialog has to render the values AND their display names — and this is the only file
+ * either may live in.
+ *
+ * Still `text` + a `check` constraint in the database, never a Postgres enum: widening
+ * the check is one line, altering an enum type is a migration. The check now reads
+ * `check (project_type in ('scrum', 'kanban'))`, and `domain.test.ts` parses it out of
+ * the schema doc and compares it to `PROJECT_TYPES` — ORDERED, so the constraint must
+ * spell the values in the same order as the array below.
+ */
+export type ProjectType = 'scrum' | 'kanban'
 
 export const TICKET_TYPES = [
   'epic',
@@ -85,6 +100,8 @@ export const TICKET_TYPES = [
   'bug',
   'task',
 ] as const satisfies readonly TicketType[]
+
+export const PROJECT_TYPES = ['scrum', 'kanban'] as const satisfies readonly ProjectType[]
 
 export const SPRINT_STATUSES = [
   'future',
@@ -151,6 +168,19 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
 }
 
 /**
+ * Human-readable project-type labels, keyed by type. Here for the same reason as every
+ * other label map in this file: display names live in `domain.ts` and nowhere else, so
+ * the create-project dialog's `<option>` text and any future badge cannot word the same
+ * type two ways. The exhaustive `Record<ProjectType, string>` makes a third project type
+ * unshippable without a label — though not without a *meaningful* one, which is why
+ * `domain.test.ts` also iterates `PROJECT_TYPES` and asserts each label is non-empty.
+ */
+export const PROJECT_TYPE_LABELS: Record<ProjectType, string> = {
+  scrum: 'Scrum',
+  kanban: 'Kanban',
+}
+
+/**
  * Human-readable category labels, keyed by category — the settings surface (SPRIN-77) shows a
  * status's category on its row and offers the three in the add form, and `in_progress` is not
  * a thing to put in front of a user.
@@ -201,6 +231,10 @@ export type AssertSprintStatusesExhaustive = Expect<
 
 export type AssertStatusCategoriesExhaustive = Expect<
   Exact<StatusCategory, (typeof STATUS_CATEGORIES)[number]>
+>
+
+export type AssertProjectTypesExhaustive = Expect<
+  Exact<ProjectType, (typeof PROJECT_TYPES)[number]>
 >
 
 export type AssertTicketTypeColumn = Assignable<TicketType, Tables<'tickets'>['type']>
@@ -352,4 +386,8 @@ export function isSprintStatus(value: string): value is SprintStatus {
 
 export function isStatusCategory(value: string): value is StatusCategory {
   return (STATUS_CATEGORIES as readonly string[]).includes(value)
+}
+
+export function isProjectType(value: string): value is ProjectType {
+  return (PROJECT_TYPES as readonly string[]).includes(value)
 }

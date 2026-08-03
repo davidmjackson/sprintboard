@@ -65,7 +65,11 @@ create table projects (
   owner_id     uuid not null references auth.users(id) on delete cascade,
   name         text not null,
   key          text not null,
-  project_type text not null default 'scrum' check (project_type in ('scrum')),
+  -- SPRIN-81 widened this to include 'kanban' (epic SPRIN-73). Still text + check,
+  -- NEVER an enum: widening a check is one line, altering an enum type is not.
+  -- Postgres normalises a single-element IN to an equality, so before SPRIN-81 the
+  -- live constraint read `CHECK ((project_type = 'scrum'::text))` despite the IN here.
+  project_type text not null default 'scrum' check (project_type in ('scrum', 'kanban')),
   created_at   timestamptz not null default now(),
   -- key: first char a letter, total length 2 to 4, uppercase alnum
   constraint projects_key_format check (key ~ '^[A-Z][A-Z0-9]{1,3}$'),
