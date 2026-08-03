@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { Project } from './domain'
+import type { Project, ProjectType } from './domain'
 
 /**
  * Create a project for the given owner.
@@ -16,6 +16,16 @@ import type { Project } from './domain'
  * fixture inserts across the integration suites and the Playwright E2E all create
  * projects without going through this function, and a client-side seed would leave
  * every one of them with a statusless project. Do not add one.
+ *
+ * `projectType` is REQUIRED and deliberately has no TypeScript default (SPRIN-81). The
+ * column is `not null default 'scrum'`, and that default is the single source of the
+ * decision — it is what keeps every one of those raw fixture inserts creating a Scrum
+ * project. A default here would be a second source that could silently drift from it.
+ * The caller supplies the user's choice; the database supplies everyone else's.
+ *
+ * The value is not re-validated here: `ProjectType` is a closed union, so an invalid
+ * type is a compile error, and the `projects_project_type_check` constraint is the
+ * backstop for anything that reaches the database by another route.
  */
 export type CreateProjectResult =
   { ok: true; project: Project } | { ok: false; error: 'duplicate_key' | 'unknown' }
@@ -24,10 +34,16 @@ export async function createProject(input: {
   ownerId: string
   name: string
   key: string
+  projectType: ProjectType
 }): Promise<CreateProjectResult> {
   const { data, error } = await supabase
     .from('projects')
-    .insert({ owner_id: input.ownerId, name: input.name, key: input.key })
+    .insert({
+      owner_id: input.ownerId,
+      name: input.name,
+      key: input.key,
+      project_type: input.projectType,
+    })
     .select()
     .single()
 

@@ -3,15 +3,17 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_PROJECT_STATUSES,
+  PROJECT_TYPES,
+  PROJECT_TYPE_LABELS,
   SPRINT_STATUSES,
   STATUS_CATEGORIES,
   STATUS_CATEGORY_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
+  isProjectType,
   isSprintStatus,
   isStatusCategory,
   isTicketType,
-  type ProjectType,
   type TicketInsert,
   type TicketUpdate,
 } from './domain'
@@ -289,9 +291,41 @@ describe('domain vocabulary matches the database check constraints', () => {
     expect(checkConstraintValues('sprints', 'status')).toEqual([...SPRINT_STATUSES])
   })
 
-  it('project_type is scrum only — kanban is Rung 3', () => {
-    const projectTypes: ProjectType[] = ['scrum']
-    expect(checkConstraintValues('projects', 'project_type')).toEqual(projectTypes)
+  /**
+   * Was "project_type is scrum only — kanban is Rung 3", asserting a hard-coded
+   * `['scrum']`. SPRIN-81 is that Rung 3 story, so the claim is now false — and a
+   * hard-coded literal here would have gone red the moment the schema doc was widened,
+   * inside a file no later task of this story owns. Derived from `PROJECT_TYPES`
+   * instead, exactly like the ticket-type and sprint-status assertions either side of
+   * it, so the schema doc and the union are pinned to each other rather than to a
+   * third copy of the list. ORDER MATTERS — `toEqual` on arrays is ordered, so the
+   * check constraint must spell the values in `PROJECT_TYPES` order.
+   */
+  it('project types match the schema', () => {
+    expect(checkConstraintValues('projects', 'project_type')).toEqual([...PROJECT_TYPES])
+  })
+})
+
+/**
+ * The same pair every other vocabulary in this file gets. The derived test is the one
+ * that matters: `Record<ProjectType, string>` already makes a MISSING key a compile
+ * error, so a second hard-coded list here would only drift with the thing it guards.
+ * Iterating `PROJECT_TYPES` means adding a third project type cannot ship a blank
+ * `<option>` in the create-project dialog.
+ */
+describe('project types and their labels', () => {
+  it('lists both project types', () => {
+    expect([...PROJECT_TYPES]).toEqual(['scrum', 'kanban'])
+  })
+
+  it('has a non-empty label for every project type', () => {
+    for (const type of PROJECT_TYPES) {
+      expect(PROJECT_TYPE_LABELS[type]).toBeTruthy()
+    }
+  })
+
+  it('labels both types in the expected words', () => {
+    expect(PROJECT_TYPE_LABELS).toEqual({ scrum: 'Scrum', kanban: 'Kanban' })
   })
 })
 
@@ -340,6 +374,12 @@ describe('type guards', () => {
   it('accepts every valid sprint status and rejects anything else', () => {
     for (const status of SPRINT_STATUSES) expect(isSprintStatus(status)).toBe(true)
     expect(isSprintStatus('cancelled')).toBe(false)
+  })
+
+  it('accepts every valid project type and rejects anything else', () => {
+    for (const type of PROJECT_TYPES) expect(isProjectType(type)).toBe(true)
+    expect(isProjectType('waterfall')).toBe(false)
+    expect(isProjectType('')).toBe(false)
   })
 
   it('accepts every valid status category and rejects anything else', () => {

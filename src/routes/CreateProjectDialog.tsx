@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { useAuth } from '@/lib/auth-context'
 import { createProject } from '@/lib/projects'
 import { deriveProjectKey, PROJECT_KEY_PATTERN } from '@/lib/project-key'
-import type { Project } from '@/lib/domain'
+import { PROJECT_TYPES, PROJECT_TYPE_LABELS, type Project, type ProjectType } from '@/lib/domain'
 import { Input } from '@/components/ui/input'
 import {
   FormControl,
@@ -16,6 +16,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { selectClass } from './form-primitives'
 import { CreateDialog, GENERIC_CREATE_ERROR, type SubmitActions } from './CreateDialog'
 
 const CreateProjectSchema = z.object({
@@ -30,6 +31,7 @@ const CreateProjectSchema = z.object({
       PROJECT_KEY_PATTERN,
       'Key must be 2–4 characters: start with a letter, uppercase letters and digits only',
     ),
+  projectType: z.enum([...PROJECT_TYPES] as [ProjectType, ...ProjectType[]]),
 })
 type CreateProjectValues = z.infer<typeof CreateProjectSchema>
 
@@ -46,7 +48,7 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
 
   const form = useForm<CreateProjectValues>({
     resolver: zodResolver(CreateProjectSchema),
-    defaultValues: { name: '', key: '' },
+    defaultValues: { name: '', key: '', projectType: 'scrum' },
   })
 
   async function onSubmit(
@@ -62,6 +64,7 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
       ownerId: user.id,
       name: values.name.trim(),
       key: values.key,
+      projectType: values.projectType,
     })
 
     if (!result.ok) {
@@ -131,6 +134,31 @@ export function CreateProjectDialog({ onCreated }: { onCreated?: (project: Proje
               />
             </FormControl>
             <FormDescription>Prefixes ticket IDs, e.g. SPR-1.</FormDescription>
+            <FormMessage />
+          </FormItem>
+        )}
+      />
+
+      <FormField
+        control={form.control}
+        name="projectType"
+        render={({ field }) => (
+          <FormItem>
+            <FormLabel>Type</FormLabel>
+            <FormControl>
+              <select className={selectClass} {...field}>
+                {PROJECT_TYPES.map((projectType) => (
+                  <option key={projectType} value={projectType}>
+                    {PROJECT_TYPE_LABELS[projectType]}
+                  </option>
+                ))}
+              </select>
+            </FormControl>
+            {/* The ONLY place a user is told this. There is no update path for
+                `project_type` anywhere in the app, so a project's type is fixed at
+                creation — say so here rather than letting someone discover it by
+                looking for a setting that does not exist. */}
+            <FormDescription>This cannot be changed after the project is created.</FormDescription>
             <FormMessage />
           </FormItem>
         )}

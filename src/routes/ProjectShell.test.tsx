@@ -99,6 +99,11 @@ beforeEach(() => {
 const PROJECTS = [
   { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'scrum', created_at: '' },
 ] as never
+/** The same project as `PROJECTS`, delivered continuously — the other half of SPRIN-81's
+ *  header badge, which renders for BOTH types rather than only for Kanban. */
+const KANBAN_PROJECTS = [
+  { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'kanban', created_at: '' },
+] as never
 
 const ticketBase: Ticket = {
   id: 'tA',
@@ -253,6 +258,27 @@ describe('ProjectShell', () => {
     expect(screen.getByRole('link', { name: 'Sprints' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Apple/ })).toBeInTheDocument()
+  })
+
+  // SPRIN-81. The badge renders for BOTH project types — a Scrum project is not the absence of
+  // a badge, it is a badge reading "Scrum". That is deliberate: it gives the Kanban stories that
+  // follow a positive control rather than another absence to prove, so a badge that silently
+  // stopped rendering at all cannot pass as "this project is Scrum".
+  //
+  // Asserted as DOM text SCOPED to the heading, never as an accessible name. The badge is
+  // `uppercase`, and Chrome's AX tree applies `text-transform` when computing a name while jsdom
+  // does not — so any name assertion here would pin a string no browser produces (CLAUDE.md).
+  // `within(...)` is what makes it an assertion about the header rather than about the document.
+  it("badges a scrum project's header with its type", () => {
+    renderShell('/projects/p1')
+    const heading = screen.getByRole('heading', { name: /Apple/ })
+    expect(within(heading).getByText('Scrum')).toBeInTheDocument()
+  })
+
+  it("badges a kanban project's header with its type", () => {
+    renderShell('/projects/p1', { projects: KANBAN_PROJECTS, loading: false })
+    const heading = screen.getByRole('heading', { name: /Apple/ })
+    expect(within(heading).getByText('Kanban')).toBeInTheDocument()
   })
 
   // The LINK, and the shell's ability to render a settings tab underneath it — NOT the app's
