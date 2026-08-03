@@ -39,9 +39,26 @@ alter table projects drop constraint projects_project_type_check;
 alter table projects add constraint projects_project_type_check
   check (project_type in ('scrum', 'kanban'));
 
--- 2. Post-state check. Fails the transaction if the constraint did not land in
---    the shape intended — this is the only place the shape is pinned, since
---    PostgREST cannot read pg_catalog and CI therefore cannot assert it.
+-- 2. Post-state check. Fails the transaction if the constraint is missing or did
+--    not widen. Two honest limits on it, added after review — the first draft of
+--    this comment called it "the only place the shape is pinned", which overstated
+--    what it does:
+--
+--      a) It runs INSIDE the transaction that just added the constraint, so it is
+--         reading back its own work. There is no path where the ADD above succeeds
+--         and this readback disagrees. What it actually catches is someone editing
+--         the ADD statement and not this block.
+--      b) `like '%kanban%'` is a SUBSTRING test, so it would also pass on a wider
+--         vocabulary — `in ('scrum','kanban','waterfall')` satisfies it. Asserting
+--         equality against the intended body would be stronger; that is worth doing
+--         if this block is ever copied for another migration.
+--
+--    What actually pins live behaviour is the pair of integration tests in
+--    src/test/projects.integration.test.ts: one inserts 'kanban' and reads it back,
+--    the other asserts an unknown value is refused with 23514 AND names this
+--    constraint. Those run against the real database on every PR. It remains true
+--    that CI cannot read pg_catalog, so the constraint's exact TEXT is unpinned —
+--    but its BEHAVIOUR is not.
 do $$
 declare
   def text;

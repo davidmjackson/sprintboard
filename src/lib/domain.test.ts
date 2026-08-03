@@ -300,6 +300,12 @@ describe('domain vocabulary matches the database check constraints', () => {
    * it, so the schema doc and the union are pinned to each other rather than to a
    * third copy of the list. ORDER MATTERS — `toEqual` on arrays is ordered, so the
    * check constraint must spell the values in `PROJECT_TYPES` order.
+   *
+   * WHAT KEEPS THIS FROM BEING CIRCULAR is not in this test. Both sides are derived, so
+   * on its own it would pass just as happily if `PROJECT_TYPES` and the schema doc drifted
+   * to the same wrong pair. The anchor is one hard-coded assertion further down — "lists
+   * both project types", `expect([...PROJECT_TYPES]).toEqual(['scrum', 'kanban'])`. Delete
+   * that and this assertion pins the two lists to each other and to nothing else.
    */
   it('project types match the schema', () => {
     expect(checkConstraintValues('projects', 'project_type')).toEqual([...PROJECT_TYPES])

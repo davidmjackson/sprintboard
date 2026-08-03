@@ -1,7 +1,22 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import {
+  SRC_ROOT,
+  at,
+  calleeName,
+  chainCallNames,
+  chainedMethods,
+  clientImportNames,
+  describeNode,
+  literalText,
+  nodesOf,
+  parse,
+  rootIdentifier,
+  sourceFiles,
+  tableOf,
+  unwrapExpression,
+} from './source-ast'
 
 /**
  * SPRIN-81 AC5 — "the project type cannot be changed after creation".
@@ -31,42 +46,87 @@ import { describe, expect, it } from 'vitest'
  * free — and inverts the question. It asks, of every write in the tree, "which table
  * is this?", and an answer it cannot determine is a FAILURE, not a pass.
  *
- * THE THREE CHECKS, and what each one uniquely owns. They deliberately do not overlap:
- * every forbidden shape below is caught by exactly one of them, so removing any one of
- * them turns something red for its own reason rather than being masked by a neighbour.
+ * WHY THE READABILITY CHECKS COME FIRST, and the hole that put them there. The second
+ * version kept the inversion but applied it only to TABLE NAMES: every check began by
+ * reading a `.name(` property access, and a call it could not name simply never entered
+ * the sets those checks ran over. So this file — a live post-insert write —
+ * was reported clean, eight assertions green:
  *
- *   1. RESOLVE — every `.update(`/`.upsert(` in non-test source must walk back through
- *      its own chain to a `from(<string literal>)`. A table name held in a variable, a
- *      call, or a concatenation is unresolvable, and unresolvable is red. So is a write
- *      whose chain contains no `from(` at all (`const q = …; q.update(…)`).
- *   2. FORBID — of the writes that DO resolve, none may resolve to `projects`. Writes to
+ *     supabase['from']('projects')['update']({ project_type: 'kanban' }).eq('id', id)
+ *
+ * Each bracket alone was caught: `supabase['from']('projects').update(…)` failed the
+ * table walk, and `supabase.from('projects')['update'](…)` failed the chain walk. Only
+ * the CONJUNCTION escaped, because both halves of the shape defeat the same shared
+ * precondition — a readable name. `supabase['rpc'](…)` walked past the allowlist for
+ * the same reason, and `supabase.rpc.bind(supabase)` never became a call at all.
+ *
+ * The docblock this replaces boasted that the checks "deliberately do not overlap".
+ * That is what made it fragile: with zero overlap, one shared precondition is a single
+ * point of failure. The fix is not more table analysis — it is to apply the same
+ * inversion to the SHAPE of a call before asking what it does. Checks 1-3 below are
+ * that: they refuse the unreadable outright, so checks 4-7 can trust that anything
+ * still standing is something they can actually read.
+ *
+ * THE SEVEN CHECKS, and what each one uniquely owns. Each has its own red, and each
+ * red says a different thing:
+ *
+ *   1. READABLE CALLEE — no call in non-test `src/` may be made through bracket notation
+ *      or through anything else standing in for a method name (`(cond ? a : b)()`). This
+ *      is the check the conjunction above defeats nothing of: it needs no name to fire,
+ *      because "there is no name" IS the finding.
+ *   2. READABLE MEMBER — `from`, `rpc`, `update` and `upsert` may only appear as calls.
+ *      A bare reference (`supabase.rpc.bind(…)`, `const write = supabase.from`) hands
+ *      the method to code this file cannot follow.
+ *   3. THE CLIENT IS A RECEIVER — an imported supabase client may only be used as
+ *      `client.something`. Passing it (`Reflect.get(supabase, 'from')`), aliasing it
+ *      (`const db = supabase`) or destructuring it (`const { from } = supabase`) all
+ *      move the client somewhere provenance cannot follow.
+ *   4. RESOLVE — every `.update(`/`.upsert(` ON A SUPABASE CHAIN must walk back to a
+ *      `from(<string literal>)`. A table name held in a variable, a call, or a
+ *      concatenation is unresolvable, and unresolvable is red.
+ *   5. FORBID — of the writes that DO resolve, none may resolve to `projects`. Writes to
  *      `tickets`, `sprints` and `project_statuses` are legitimate and stay green; there
  *      are seven of them today and the floors below prove the walk still sees them.
- *   3. ALLOWLIST — every `supabase.rpc(…)` must name an RPC on `ALLOWED_RPCS`. A new RPC
- *      reddens this until someone consciously adds it, which is the entire point: an RPC
- *      is a write path that no amount of table-chain analysis can see the inside of.
+ *   6. ALLOWLIST — every `rpc(…)` must name an RPC on `ALLOWED_RPCS`. A new RPC reddens
+ *      this until someone consciously adds it, which is the entire point: an RPC is a
+ *      write path that no amount of table-chain analysis can see the inside of.
+ *   7. FOLLOWABLE CHAIN — every `from(…)` on a client, and every `from('projects')`
+ *      whoever it is called on, must be continued by a chained `.method(`.
+ *      `const q = supabase.from('projects')` binds the one builder that still exposes
+ *      `.update`, and everything done to `q` afterwards is invisible here.
  *
- * Plus the guard-on-the-guard the original got right and this one keeps, generalised:
- * every `from('projects')` call must be FOLLOWABLE as a method chain. A builder assigned
- * to a variable, passed to a helper, or invoked through bracket notation
- * (`from('projects')['update'](…)`) is a shape this file cannot read, and it says so
- * rather than reporting a clean tree.
+ * WHAT CHECK 4 IS ANCHORED TO, and why it is not "every `.update(` in the tree". It used
+ * to be exactly that, which made an ordinary `cache.update(id, value)` — a Map wrapper,
+ * no supabase anywhere near it — fail with a message telling its author to name a table.
+ * `react-hook-form`'s `useFieldArray()` returns an `update(index, value)`, and this repo
+ * is react-hook-form throughout, so that was a matter of time. A call now counts as a
+ * supabase write when it starts from an imported client OR its chain contains a `from(`.
+ * That second anchor is what keeps a client this file cannot trace — a factory return, a
+ * renamed re-export, a `SupabaseClient` parameter — inside check 4 rather than outside it.
  *
- * WHEN A LEGITIMATE PROJECT UPDATE ARRIVES — renaming a project, say — check 2 goes red.
+ * WHEN A LEGITIMATE PROJECT UPDATE ARRIVES — renaming a project, say — check 5 goes red.
  * That red is the story asking the question, not an obstacle: narrow the guard so it
  * inspects the update's payload for `project_type`, or replace the app-layer claim with a
  * database one (a column grant, or a trigger that restores the old value). Deleting it
  * puts AC5 back to being prose.
  *
- * WHAT IT STILL CANNOT SEE: anything outside `src/` (`scripts/` and `e2e/` are tooling and
- * tests, and neither holds a supabase write path), the *body* of an allowlisted RPC, which
- * lives in the database rather than here, and the raw REST call the database would still
- * accept from a hostile client. It guards this repo's app code, which is the scope of AC5.
+ * WHAT IT STILL CANNOT SEE, stated without flattery:
+ *   - Anything outside `src/`. `scripts/` and `e2e/` are tooling and tests, and neither
+ *     holds a supabase write path.
+ *   - The *body* of an allowlisted RPC, which lives in the database rather than here.
+ *   - A raw REST call. `fetch('…/rest/v1/projects?id=eq.…', { method: 'PATCH', … })` is a
+ *     complete `project_type` write and is invisible to every check below — and that is
+ *     true of one written in OUR OWN `src/`, not only of a hostile client poking the API
+ *     directly. Nothing in `src/` calls `fetch` today; the day something does, this guard
+ *     needs a check that reads its URL, and until then the honest statement is that the
+ *     supabase client is the only write path it polices.
+ *   - A builder that escapes AFTER at least one chained call: `const q =
+ *     supabase.from('projects').select()` passes check 7 by design. Only the raw
+ *     `from()` result exposes `.update`/`.upsert`; what `.select()` returns is a filter
+ *     builder with no write verb on it, and `completeSprint` in `src/lib/sprints.ts`
+ *     legitimately binds one to apply a conditional `.not(…)`. If supabase-js ever grows
+ *     a write verb on the filter builder, check 7 has to widen to every escape.
  */
-
-// Resolved from this file, not the CWD: running vitest from a subdirectory would
-// otherwise silently scan nothing and report a clean tree.
-const SRC_ROOT = join(import.meta.dirname, '..')
 
 /** The table whose rows AC5 forbids rewriting. */
 const GUARDED_TABLE = 'projects'
@@ -75,161 +135,175 @@ const GUARDED_TABLE = 'projects'
 const WRITE_VERBS = new Set(['update', 'upsert'])
 
 /**
+ * Members that may only ever be CALLED, never referenced. Deliberately checked by name
+ * across all of `src/` rather than only on a receiver this file can prove is a supabase
+ * client: proving that is exactly what a `.bind`, a factory or a re-export defeats, and
+ * there are zero bare references to any of these four names in the tree today, so the
+ * strict reading costs nothing. If a legitimate non-supabase `.update` reference ever
+ * arrives (react-hook-form's `useFieldArray().update` passed as a prop is the plausible
+ * one), narrow this to client-rooted receivers — do not delete the check.
+ */
+const CALL_ONLY_MEMBERS = new Set(['from', 'rpc', 'update', 'upsert'])
+
+/**
  * RPCs this app is allowed to call. An RPC is an opaque write path — the guard can read
  * its name and nothing else — so the list is explicit and short on purpose. Adding to it
  * is a decision: satisfy yourself the function cannot write `projects.project_type`.
  *
  * `reorder_project_statuses` (SPRIN-77) writes `project_statuses.position` and is
- * `security invoker`, so it cannot reach past the caller's own RLS.
+ * `security invoker`, so it cannot reach past the caller's own RLS. NOTE THAT THIS FILE
+ * CANNOT SEE THAT: `security invoker` is a property of the function in the database, and
+ * flipping it to `definer` is a one-token change in a migration that would not touch a
+ * line of TypeScript. What holds it is one live test — "a stranger's reorder call changes
+ * nothing" in `src/test/rls.integration.test.ts`, which asserts the order is UNCHANGED
+ * after user B calls it on user A's project. Any name added here needs the same kind of
+ * evidence somewhere, and a note saying where.
  */
 const ALLOWED_RPCS = new Set(['reorder_project_statuses'])
 
 /**
- * Every non-test source file under `src/`, recursively.
- *
- * The extension list is `{ts,tsx,js,jsx,mjs,cjs}` and not a bare `{ts,tsx}` for the reason
- * SPRIN-60 widened the lint glob: an exemption shaped like a file extension is still an
- * exemption, and "add the write in a `.js` file" is the cheapest bypass there is. `src/`
- * holds no JavaScript today, so this costs nothing and closes that door.
+ * The docblock above says SEVEN checks. These two numbers are that claim in a form a
+ * test can hold to it — see the last `it` in this file. Change the prose and the
+ * numbers together, or the suite says so.
  */
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((entry) => {
-    const path = join(dir, entry)
-    if (statSync(path).isDirectory()) return sourceFiles(path)
-    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry)) return []
-    // Test files are excluded on purpose: the RLS suite deliberately attempts a
-    // cross-tenant `projects.update` to prove the policy refuses it, and this file
-    // itself names the forbidden verbs. Scanning them would be a permanent red.
-    if (/\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry)) return []
-    return [path]
-  })
+const DOCUMENTED_CHECKS = 7
+const DOCUMENTED_FLOORS = 5
+
+type Scan = { nodes: ts.Node[]; clients: Set<string> }
+
+const FILES = sourceFiles(SRC_ROOT)
+const SCANS: Scan[] = FILES.map(parse).map((source) => ({
+  nodes: nodesOf(source),
+  clients: clientImportNames(source),
+}))
+
+function callsIn(scan: Scan): ts.CallExpression[] {
+  return scan.nodes.filter((node): node is ts.CallExpression => ts.isCallExpression(node))
 }
 
-/** TypeScript's parser needs to be told which dialect a file is. */
-function scriptKind(file: string): ts.ScriptKind {
-  if (file.endsWith('.tsx')) return ts.ScriptKind.TSX
-  // JSX for every flavour of JavaScript: unlike `.ts`, plain JS has no `<T>` generic for
-  // JSX parsing to misread, so it is the safe superset.
-  if (/\.(?:[cm]?js|jsx)$/.test(file)) return ts.ScriptKind.JSX
-  return ts.ScriptKind.TS
+/** Does this expression start from an identifier the file binds the supabase client to? */
+function isClientRooted(expr: ts.Expression, clients: Set<string>): boolean {
+  const root = rootIdentifier(expr)
+  return root !== null && clients.has(root)
 }
 
 /**
- * A parsed source file, with parent links — `chainedMethods` walks UP the tree, and the
- * position helpers need the file. `.ts` is parsed as TS and `.tsx` as TSX deliberately:
- * parsing a `.ts` file as TSX misreads `<T>(x: T) => x` as JSX and loses the rest of it.
+ * A supabase write: a write verb on a chain that either starts at an imported client or
+ * passes through a `from(`. Two anchors rather than one because either can be defeated
+ * alone — a client this file cannot name still writes through `from(`, and a destructured
+ * `from` still starts from a name it can.
  */
-function parse(file: string): ts.SourceFile {
-  return ts.createSourceFile(
-    file,
-    readFileSync(file, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    scriptKind(file),
+function isSupabaseWrite(call: ts.CallExpression, clients: Set<string>): boolean {
+  if (!WRITE_VERBS.has(calleeName(call) ?? '')) return false
+  return isClientRooted(call, clients) || chainCallNames(call).includes('from')
+}
+
+/** Is this member access the callee of its own call, rather than a value handed elsewhere? */
+function isInvoked(access: ts.PropertyAccessExpression): boolean {
+  const parent = access.parent
+  return ts.isCallExpression(parent) && unwrapExpression(parent.expression) === access
+}
+
+/** The client may be `client.something`. Anything else moves it out of sight. */
+function isClientReceiver(id: ts.Identifier): boolean {
+  const parent = id.parent
+  const access = ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)
+  return access && parent.expression === id
+}
+
+/** The identifier in `import { supabase }` and `const supabase = …` is not a use of it. */
+function isDeclarationName(id: ts.Identifier): boolean {
+  const parent = id.parent
+  if (ts.isVariableDeclaration(parent) || ts.isBindingElement(parent)) return parent.name === id
+  return (
+    ts.isImportSpecifier(parent) ||
+    ts.isImportClause(parent) ||
+    ts.isNamespaceImport(parent) ||
+    ts.isExportSpecifier(parent)
   )
 }
 
-/** Every call expression in a file, in source order. */
-function callExpressions(source: ts.SourceFile): ts.CallExpression[] {
-  const found: ts.CallExpression[] = []
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) found.push(node)
-    ts.forEachChild(node, visit)
-  }
-  ts.forEachChild(source, visit)
-  return found
+/**
+ * `import('ws')` is a call with no callee to name — but also no receiver, no chain and
+ * no supabase client. It is the one nameless call shape that is not a hiding place.
+ */
+function isDynamicImport(call: ts.CallExpression): boolean {
+  return call.expression.kind === ts.SyntaxKind.ImportKeyword
 }
 
 /**
- * The text of a plain string argument — `'x'`, `"x"` and `` `x` `` all count, which is the
- * hole the regex version had. Anything computed (a variable, a call, a concatenation, a
- * template with a substitution) returns null, and null means "unknown", which means red.
+ * A callee this file can name: `f(…)`, `x.f(…)`, or a function RETURNED by one of those
+ * and invoked in place — `form.handleSubmit(onSubmit)(event)` is react-hook-form's
+ * documented shape and appears in `src/routes/CreateDialog.tsx`. Allowing it is not a
+ * hole in AC5: a returned function can only be a supabase method if the client was
+ * handed somewhere as a value (check 3) or a write member was referenced rather than
+ * called (check 2), and both of those are red on their own account.
  */
-function literalText(node: ts.Node | undefined): string | null {
-  if (node === undefined) return null
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
-  return null
+function isReadableCallee(call: ts.CallExpression): boolean {
+  if (calleeName(call) !== null || isDynamicImport(call)) return true
+  const callee = unwrapExpression(call.expression)
+  return ts.isCallExpression(callee) && isReadableCallee(callee)
 }
 
-/** The method name of `x.name(…)`. Null for `x[expr](…)` and for a bare `f(…)`. */
-function methodName(call: ts.CallExpression): string | null {
-  return ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : null
-}
-
-/** `src/<path>:<line>` for a node, for a message someone can act on without grepping. */
-function at(node: ts.Node): string {
-  const file = node.getSourceFile()
-  const { line } = file.getLineAndCharacterOfPosition(node.getStart(file))
-  return `src/${relative(SRC_ROOT, file.fileName)}:${line + 1}`
-}
-
-/** `src/<path>:<line> — <the offending source, on one line>`. */
-function describeCall(call: ts.CallExpression): string {
-  const text = call.getText().replace(/\s+/g, ' ')
-  return `${at(call)} — ${text.length > 90 ? `${text.slice(0, 89)}…` : text}`
-}
-
-/**
- * The table a chained call acts on, found by walking BACK down its own receiver chain to
- * the `from(…)` that started it. `supabase.from('tickets').update(p).eq('id', x)` resolves
- * to `tickets` from the `.update(` node. Null when the chain holds no `from(`, or when the
- * table name is not a plain string literal — both of which are "unknown", never "fine".
- */
-function tableOf(call: ts.CallExpression): string | null {
-  let node: ts.Expression = call
-  while (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-    if (node.expression.name.text === 'from') return literalText(node.arguments[0])
-    node = node.expression.expression
-  }
-  return null
-}
-
-/**
- * A chain that ends anywhere other than another `.method(` — assigned to a variable, passed
- * to a helper, or continued through bracket notation — is a shape this file cannot read.
- * `from('projects')['update']({ project_type: 'kanban' })` is valid TypeScript and has no
- * `.update` property access anywhere in it, so `tableOf` above will never be asked about it.
- * This is where that shape dies.
- */
-function endOfChain(parent: ts.Node, methods: string[]): string[] | null {
-  if (ts.isElementAccessExpression(parent)) return null
-  return methods.length === 0 ? null : methods
-}
-
-/** The methods chained onto a `from(…)`, in order, or null if the chain cannot be followed. */
-function chainedMethods(from: ts.CallExpression): string[] | null {
-  const methods: string[] = []
-  let node: ts.Node = from
-  for (;;) {
-    const access = node.parent
-    if (!ts.isPropertyAccessExpression(access) || access.expression !== node) {
-      return endOfChain(access, methods)
-    }
-    const call = access.parent
-    if (!ts.isCallExpression(call) || call.expression !== access) return null
-    methods.push(access.name.text)
-    node = call
-  }
-}
-
-const FILES = sourceFiles(SRC_ROOT)
-const CALLS = FILES.map(parse).flatMap(callExpressions)
-
-/** Every `.update(` / `.upsert(` in non-test source, whatever it turns out to act on. */
-const WRITES = CALLS.filter((call) => WRITE_VERBS.has(methodName(call) ?? ''))
-/** Every `.rpc(` in non-test source. */
-const RPCS = CALLS.filter((call) => methodName(call) === 'rpc')
-/** Every `from('projects')` — the only entry point a chain-following guard can start from. */
-const PROJECT_FROMS = CALLS.filter(
-  (call) => methodName(call) === 'from' && literalText(call.arguments[0]) === GUARDED_TABLE,
+/** Every call whose callee cannot be named: `x[k](…)`, `(a ?? b)(…)`, `(() => f)()(…)`. */
+const UNREADABLE_CALLS = SCANS.flatMap((scan) =>
+  callsIn(scan).filter((call) => !isReadableCallee(call)),
 )
+
+/** Every `from`/`rpc`/`update`/`upsert` referenced without being called. */
+const LOOSE_MEMBERS = SCANS.flatMap((scan) =>
+  scan.nodes
+    .filter((node): node is ts.PropertyAccessExpression => ts.isPropertyAccessExpression(node))
+    .filter((access) => CALL_ONLY_MEMBERS.has(access.name.text) && !isInvoked(access)),
+)
+
+/** Every use of an imported client that is not `client.something`. */
+const CLIENT_ESCAPES = SCANS.flatMap((scan) =>
+  scan.nodes
+    .filter((node): node is ts.Identifier => ts.isIdentifier(node))
+    .filter((id) => scan.clients.has(id.text) && !isClientReceiver(id) && !isDeclarationName(id)),
+)
+
+/** Every write this guard considers a supabase write, whatever it turns out to act on. */
+const WRITES = SCANS.flatMap((scan) =>
+  callsIn(scan).filter((call) => isSupabaseWrite(call, scan.clients)),
+)
+
+/** Every `rpc(…)` in non-test source, reached through the client or through a bare name. */
+const RPCS = SCANS.flatMap((scan) => callsIn(scan).filter((call) => calleeName(call) === 'rpc'))
+
+/** Is this `from(…)` naming the one table AC5 is about? */
+function isGuardedFrom(call: ts.CallExpression): boolean {
+  return calleeName(call) === 'from' && literalText(call.arguments[0]) === GUARDED_TABLE
+}
+
+/**
+ * The `from(…)` calls check 7 follows: those on an imported client, and — whatever they
+ * start from — those naming `projects`. Two populations for the same reason check 4 has
+ * two anchors. Requiring an imported client alone left a real hole, measured: re-export
+ * the client under another module name and `const q = client.from('projects')` was
+ * attributable to no client, so nothing followed it and `q.update({ project_type })`
+ * resolved to no table. The table literal is provenance the second half cannot shed.
+ */
+const FROMS_TO_FOLLOW = SCANS.flatMap((scan) =>
+  callsIn(scan).filter(
+    (call) =>
+      (calleeName(call) === 'from' && isClientRooted(call, scan.clients)) || isGuardedFrom(call),
+  ),
+)
+
+/** `from('projects')` specifically, for the floor: it is the call site AC5 is about. */
+const PROJECT_FROMS = SCANS.flatMap((scan) => callsIn(scan).filter(isGuardedFrom))
+
+/** How many files bind the client at all — the population check 3 runs over. */
+const CLIENT_FILES = SCANS.filter((scan) => scan.clients.size > 0).length
 
 describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC5)', () => {
   /**
    * The guard on the guard. A scanner that reports "no violations" having read nothing
    * looks identical to a clean tree — and this one resolves its own root and filters by
    * extension, so a moved file or a renamed directory could silently empty it. Floored
-   * loosely (74 files today) so ordinary deletions cannot trip it.
+   * loosely (75 files today) so ordinary deletions cannot trip it.
    */
   it('actually read the source tree', () => {
     expect(
@@ -258,43 +332,114 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
   it('still finds the legitimate writes it exists to classify', () => {
     expect(
       WRITES.length,
-      `Only ${WRITES.length} update/upsert call(s) found in non-test source. There are ` +
-        'seven legitimate ones (tickets, sprints, project_statuses), so a number this low ' +
-        'means the AST walk stopped seeing writes — and a guard that sees no writes ' +
-        'approves every write. Fix the walk, do not lower the floor.',
+      `Only ${WRITES.length} supabase update/upsert call(s) found in non-test source. There ` +
+        'are seven legitimate ones (tickets, sprints, project_statuses), so a number this low ' +
+        'means the AST walk stopped seeing writes, or the anchoring in isSupabaseWrite() ' +
+        'stopped recognising them — and a guard that sees no writes approves every write. ' +
+        'Fix the walk, do not lower the floor.',
     ).toBeGreaterThanOrEqual(5)
   })
 
   it('still finds the known rpc call site', () => {
     expect(
       RPCS.map(at),
-      'Found no supabase.rpc(…) call in non-test source. reorder_project_statuses ' +
-        '(SPRIN-77) is called from src/lib/project-statuses.ts, so zero means the walk ' +
-        'no longer sees rpc calls — and the allowlist below then approves every RPC.',
+      'Found no rpc(…) call in non-test source. reorder_project_statuses (SPRIN-77) is ' +
+        'called from src/lib/project-statuses.ts, so zero means the walk no longer sees rpc ' +
+        'calls — and the allowlist below then approves every RPC.',
     ).not.toHaveLength(0)
   })
 
   /**
-   * Check 1 — UNKNOWN IS A FAILURE. This is the inversion the regex version lacked, and
-   * it is what makes the other checks trustworthy: a write whose table cannot be named
-   * cannot be cleared either.
+   * Check 3, and the client-rooted half of check 7, only see files whose client this file
+   * can name. If import detection broke — a moved module, a re-export everything routes
+   * through — they would report a clean tree over an empty population.
    */
-  it('resolves every update and upsert to a named table', () => {
-    const unresolved = WRITES.filter((call) => tableOf(call) === null).map(describeCall)
+  it('still recognises the supabase client where it is imported', () => {
+    expect(
+      CLIENT_FILES,
+      `Only ${CLIENT_FILES} file(s) under src/ were seen to import the supabase client. ` +
+        'Eight do (four data-layer modules, the auth context, and three route ' +
+        'components), so a number this low means clientImportNames() stopped matching ' +
+        'the module specifier — and check 3 is then vacuous, as is half of check 7.',
+    ).toBeGreaterThanOrEqual(6)
+  })
+
+  /**
+   * Check 1 — SHAPE BEFORE MEANING. Every check that reads a method name is defeated by
+   * a call that has none, so nothing may have none. This is the one that catches
+   * `supabase['from']('projects')['update'](…)`, which passed all of its neighbours.
+   */
+  it('makes every call through a callee it can name', () => {
+    const unreadable = UNREADABLE_CALLS.map(describeNode)
 
     expect(
-      unresolved,
-      'This update/upsert cannot be traced back to a from(<string literal>), so this guard ' +
-        'cannot tell whether it writes the projects table. That is a FAILURE, not a pass — ' +
-        'the whole point of SPRIN-81 AC5 is that no unreadable write path exists. Either ' +
-        'write the table name as a plain literal in the same chain, or teach tableOf() the ' +
-        'new shape. Do not delete the call site from the walk.',
+      unreadable,
+      'This call is made through something whose name this guard cannot read — bracket ' +
+        "notation (`obj['method'](…)`), or an expression standing in for a method name. " +
+        'Every other check here starts by reading a method name, so an ' +
+        'unreadable callee is not one blind spot but all of them at once: ' +
+        "`supabase['from']('projects')['update']({ project_type })` is a live write to the " +
+        'column AC5 freezes, and it entered none of the sets below. Write the call as ' +
+        '`obj.method(…)`. Do not teach this check to resolve the key.',
     ).toEqual([])
   })
 
-  /** Check 2 — the actual AC. */
+  /**
+   * Check 2 — a method that is referenced rather than called has left this file's sight
+   * while still being perfectly callable somewhere else.
+   */
+  it('only ever calls from, rpc, update and upsert — never references them', () => {
+    const loose = LOOSE_MEMBERS.map(describeNode)
+
+    expect(
+      loose,
+      'This names a supabase write method without calling it, so the call happens ' +
+        'somewhere this guard cannot follow: `const rpc = supabase.rpc.bind(supabase)` ' +
+        "then `rpc('…', { … })` is an unrestricted RPC call that never meets the " +
+        'allowlist. Call the method in place. If this is a legitimate non-supabase ' +
+        'reference, narrow CALL_ONLY_MEMBERS to client-rooted receivers rather than ' +
+        'deleting the check.',
+    ).toEqual([])
+  })
+
+  /**
+   * Check 3 — provenance. Checks 4 and 7 ask what an expression starts from, and every
+   * answer they can give depends on the client still being where it was imported.
+   */
+  it('uses the supabase client only as a receiver', () => {
+    const escapes = CLIENT_ESCAPES.map((id) => describeNode(id.parent))
+
+    expect(
+      escapes,
+      'The supabase client is used here as a value rather than as `client.something`. ' +
+        'Passing it (`Reflect.get(supabase, "from")`), aliasing it (`const db = supabase`) ' +
+        'or destructuring it (`const { from } = supabase`) all move it somewhere this ' +
+        'guard cannot trace, and a write through the moved copy resolves to no table and ' +
+        'no client — a silent green on the one thing AC5 forbids.',
+    ).toEqual([])
+  })
+
+  /**
+   * Check 4 — UNKNOWN IS A FAILURE. This is the inversion the regex version lacked, and
+   * it is what makes the other checks trustworthy: a write whose table cannot be named
+   * cannot be cleared either.
+   */
+  it('resolves every supabase update and upsert to a named table', () => {
+    const unresolved = WRITES.filter((call) => tableOf(call) === null).map(describeNode)
+
+    expect(
+      unresolved,
+      'This update/upsert is on a supabase chain but cannot be traced back to a ' +
+        'from(<string literal>), so this guard cannot tell whether it writes the projects ' +
+        'table. That is a FAILURE, not a pass — the whole point of SPRIN-81 AC5 is that no ' +
+        'unreadable write path exists. Write the table name as a plain literal in the same ' +
+        'chain. Do not delete the call site from the walk.',
+    ).toEqual([])
+  })
+
+  /** Check 5 — the actual AC. */
   it('makes no update or upsert call against the projects table', () => {
-    const offenders = WRITES.filter((call) => tableOf(call) === GUARDED_TABLE).map(describeCall)
+    const offenders = WRITES.filter((call) => tableOf(call) === GUARDED_TABLE).map(describeNode)
 
     expect(
       offenders,
@@ -306,40 +451,58 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
   })
 
   /**
-   * Check 3 — an RPC is a write path with its body in the database. The name is all this
+   * Check 6 — an RPC is a write path with its body in the database. The name is all this
    * file can see, so the name is what it pins.
    */
   it('calls only allowlisted rpcs', () => {
     const offenders = RPCS.filter(
       (call) => !ALLOWED_RPCS.has(literalText(call.arguments[0]) ?? ''),
-    ).map(describeCall)
+    ).map(describeNode)
 
     expect(
       offenders,
-      'This supabase.rpc(…) is not on ALLOWED_RPCS (or its name is not a plain string ' +
-        'literal, which is the same thing: unknown). An RPC runs SQL this guard cannot ' +
-        'read, so it is a write path to every table including projects — which is exactly ' +
-        'how a project_type update would arrive without a from(…) anywhere near it. Add ' +
-        'the name to ALLOWED_RPCS once you have satisfied yourself it cannot write ' +
+      'This rpc(…) is not on ALLOWED_RPCS (or its name is not a plain string literal, ' +
+        'which is the same thing: unknown). An RPC runs SQL this guard cannot read, so it ' +
+        'is a write path to every table including projects — which is exactly how a ' +
+        'project_type update would arrive without a from(…) anywhere near it. Add the name ' +
+        'to ALLOWED_RPCS once you have satisfied yourself it cannot write ' +
         "projects.project_type, and say so in the constant's comment.",
     ).toEqual([])
   })
 
   /**
-   * The guard on the guard, kept from the original and widened. If a `from('projects')`
-   * escapes into a variable, an argument, or bracket notation, everything downstream of it
-   * is invisible to check 2 — a false green on exactly the thing being guarded. Fail loudly
-   * instead and teach the parser the new shape.
+   * Check 7 — a `from(…)` result is the one supabase builder that still exposes `.update`
+   * and `.upsert`. If it escapes before a single method is chained onto it, everything
+   * done with it afterwards is invisible to check 5 — a false green on exactly the thing
+   * being guarded. Fail loudly instead and teach the parser the new shape.
    */
-  it("can follow every from('projects') call as a method chain", () => {
-    const opaque = PROJECT_FROMS.filter((call) => chainedMethods(call) === null).map(describeCall)
+  it('can follow every from(…) it is asked to watch as a method chain', () => {
+    const opaque = FROMS_TO_FOLLOW.filter((call) => chainedMethods(call) === null).map(describeNode)
 
     expect(
       opaque,
-      "This from('projects') is not continued by a chained `.method(`, so this guard cannot " +
-        'see what is done with it. Most likely the builder was assigned to a variable, passed ' +
-        "to a helper, or called through bracket notation (`from('projects')['update']`). " +
-        'Teach chainedMethods() that shape rather than accepting a blind spot.',
+      'This from(…) is not continued by a chained `.method(`, so this guard cannot see ' +
+        'what is done with it. Most likely the builder was assigned to a variable, ' +
+        'destructured, or passed to a helper — and the value it binds is the one that still ' +
+        'has .update() and .upsert() on it. Chain the call in place rather than accepting ' +
+        'a blind spot.',
     ).toEqual([])
+  })
+
+  /**
+   * The docblock is part of the control: it is where the argument for each red lives, and
+   * a stale count is the first sign it has stopped being maintained alongside the code.
+   * "THE THREE CHECKS" survived two of them being added.
+   */
+  it('has as many tests as its docblock claims', () => {
+    const own = readFileSync(import.meta.filename, 'utf8')
+    const declared = own.match(/^ {2}it\(/gm) ?? []
+
+    expect(
+      declared.length,
+      `This file declares ${declared.length} test(s) but its docblock describes ` +
+        `${DOCUMENTED_CHECKS} checks and ${DOCUMENTED_FLOORS} floors (plus this one). ` +
+        'Update the prose and DOCUMENTED_CHECKS/DOCUMENTED_FLOORS together with the tests.',
+    ).toBe(DOCUMENTED_CHECKS + DOCUMENTED_FLOORS + 1)
   })
 })
