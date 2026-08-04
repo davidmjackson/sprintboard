@@ -595,9 +595,12 @@ describe('StatusSettings', () => {
      * update that lands after the test has finished is an `act()` warning at best and a leak
      * into the next test at worst.
      *
-     * The wait is on the button's LABEL rather than a timer — `deleting` is what flips it to
-     * 'Deleting…', so that text appearing is the in-flight state being on screen, not a guess
-     * that enough microtasks have drained.
+     * The wait is on the WRITE having been issued, not on the pending label. Waiting on
+     * 'Deleting…' was the first version and it coupled all three tests below to that one
+     * string: removing the label made every one of them fail, so none could distinguish "the
+     * guard is gone" from "the label is gone". `mockDelete` having been called is the actual
+     * definition of in-flight, and it is what `deleting` is set alongside. The label is pinned
+     * deliberately instead, by its own assertion, in the test below.
      */
     async function startPendingDelete() {
       const u = userEvent.setup()
@@ -613,7 +616,7 @@ describe('StatusSettings', () => {
       const dialog = await screen.findByRole('alertdialog')
       const confirm = within(dialog).getByRole('button', { name: /^delete$/i })
       await u.click(confirm)
-      await waitFor(() => expect(confirm).toHaveTextContent(/deleting/i))
+      await waitFor(() => expect(mockDelete).toHaveBeenCalled())
       return { u, dialog, confirm, handlers, release }
     }
 
@@ -628,14 +631,18 @@ describe('StatusSettings', () => {
      * vanish from a dialog they thought they had cancelled.
      */
     it('keeps the confirm open on Escape while the delete is in flight', async () => {
-      const { u, confirm, release } = await startPendingDelete()
+      const { u, confirm, handlers, release } = await startPendingDelete()
 
       await u.keyboard('{Escape}')
 
       expect(screen.getByRole('alertdialog')).toBeVisible()
 
+      // Settled on the write completing, not on the label or the disabled attribute — this is
+      // only draining the in-flight state so it cannot land after the test returns, and a
+      // settle point that is also one of this block's subjects would quietly stop waiting
+      // under the very mutations these tests exist to catch.
       release({ ok: true, value: undefined })
-      await waitFor(() => expect(confirm).toHaveTextContent(/^delete$/i))
+      await waitFor(() => expect(handlers.onDeleted).toHaveBeenCalled())
     })
 
     /**
@@ -653,23 +660,28 @@ describe('StatusSettings', () => {
 
       expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled()
       expect(confirm).toBeDisabled()
+      // And the confirm SAYS it is working. Asserted here rather than relied on as this
+      // block's synchronisation point, so removing the pending label fails one test about the
+      // label instead of three tests about the guards.
+      expect(confirm).toHaveTextContent('Deleting…')
 
       release({ ok: true, value: undefined })
       await waitFor(() => expect(confirm).toBeEnabled())
+      expect(confirm).toHaveTextContent('Delete')
     })
 
     // The consequence the disabled attribute exists for. `submit()` has no re-entrancy check of
     // its own, so without the button's `disabled` a second click calls `deleteProjectStatus`
     // again — a double-click on a slow connection sending two deletes for one intent.
     it('sends only one delete when the confirm button is clicked twice', async () => {
-      const { u, confirm, release } = await startPendingDelete()
+      const { u, confirm, handlers, release } = await startPendingDelete()
 
       await u.click(confirm)
 
       expect(mockDelete).toHaveBeenCalledOnce()
 
       release({ ok: true, value: undefined })
-      await waitFor(() => expect(confirm).toBeEnabled())
+      await waitFor(() => expect(handlers.onDeleted).toHaveBeenCalled())
     })
 
     it('surfaces a has_tickets refusal without calling onDeleted', async () => {
