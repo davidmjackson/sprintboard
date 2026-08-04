@@ -15,6 +15,7 @@ import {
   isSprintStatus,
   isStatusCategory,
   isTicketType,
+  ticketListLabels,
   type ProjectType,
   type TicketInsert,
   type TicketUpdate,
@@ -402,6 +403,47 @@ describe('hasSprints', () => {
   it('answers false for an unrecognised or missing project type (fails CLOSED)', () => {
     expect(hasSprints({ project_type: 'waterfall' as ProjectType })).toBe(false)
     expect(hasSprints({ project_type: undefined as unknown as ProjectType })).toBe(false)
+  })
+})
+
+/**
+ * The wording of the flat ticket-list tab lives in one place so the nav link and the tab's
+ * own empty state cannot word the same thing two ways (SPRIN-83 AC4).
+ *
+ * Same pair as every vocabulary above: a hard-coded test that states today's words, and a
+ * derived one that iterates `PROJECT_TYPES` so a third type cannot ship a blank label. The
+ * derived test is also the control on the pair — a stub returning one object for every
+ * project satisfies the two literal tests when each is read alone.
+ */
+describe('ticketListLabels', () => {
+  it('calls it the backlog on a project with sprints', () => {
+    expect(ticketListLabels({ project_type: 'scrum' })).toEqual({
+      tab: 'Backlog',
+      empty: 'Nothing in the backlog.',
+    })
+  })
+
+  it('calls it all tickets on a project without sprints', () => {
+    expect(ticketListLabels({ project_type: 'kanban' })).toEqual({
+      tab: 'All tickets',
+      empty: 'This project has no tickets.',
+    })
+  })
+
+  // The control. A stub returning one object for every project passes both tests above only
+  // if they are read in isolation; this one says the two types actually disagree, on BOTH
+  // fields. Derived from PROJECT_TYPES so a third type cannot quietly share a neighbour's
+  // wording.
+  it('gives every project type a non-empty label, and the two types differ on both', () => {
+    for (const type of PROJECT_TYPES) {
+      const labels = ticketListLabels({ project_type: type })
+      expect(labels.tab).toBeTruthy()
+      expect(labels.empty).toBeTruthy()
+    }
+    const scrum = ticketListLabels({ project_type: 'scrum' })
+    const kanban = ticketListLabels({ project_type: 'kanban' })
+    expect(scrum.tab).not.toBe(kanban.tab)
+    expect(scrum.empty).not.toBe(kanban.empty)
   })
 })
 

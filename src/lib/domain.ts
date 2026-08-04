@@ -415,3 +415,32 @@ export function isProjectType(value: string): value is ProjectType {
 export function hasSprints(project: Pick<Project, 'project_type'>): boolean {
   return project.project_type === 'scrum'
 }
+
+/** What the flat ticket-list tab is called, and what it says when it is empty. */
+export type TicketListLabels = { tab: string; empty: string }
+
+/**
+ * The wording for the project's flat ticket list — the nav link and the tab's own empty
+ * state — decided in one place so the two cannot drift.
+ *
+ * A project WITH sprints has a backlog in the Scrum sense: the tickets waiting outside a
+ * sprint. A project WITHOUT sprints has no such distinction — `selectBacklogTickets`'
+ * `sprint_id is null` rule is true of every one of its tickets — so the tab is an honest
+ * flat list of everything and says so. The rule itself is unchanged; only the label is.
+ *
+ * A FUNCTION, not a `Record<ProjectType, …>` like the label maps above, and the reason is
+ * structural rather than stylistic: a map must be indexed at the call site, and indexing it
+ * means a component reading the project's type — which `project-type-single-expression.test.ts`
+ * permits in exactly one place in the tree, the header's `PROJECT_TYPE_LABELS` index, and
+ * asserts the count is 1. Taking the project keeps the read in here, where `hasSprints`
+ * already lives. The guard shaped the design rather than being worked around.
+ *
+ * The empty copy deliberately does NOT reuse `BoardColumnEmpty`'s "No tickets yet.": there
+ * that sentence is a claim about a COLUMN, here it would be a claim about the PROJECT. Same
+ * words, two scopes — and a distinct state must never wear another state's face.
+ */
+export function ticketListLabels(project: Pick<Project, 'project_type'>): TicketListLabels {
+  return hasSprints(project)
+    ? { tab: 'Backlog', empty: 'Nothing in the backlog.' }
+    : { tab: 'All tickets', empty: 'This project has no tickets.' }
+}
