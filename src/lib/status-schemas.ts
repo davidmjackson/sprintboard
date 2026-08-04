@@ -26,6 +26,13 @@ const name = z
   .max(40, 'Keep the name to 40 characters or fewer')
 
 /**
+ * What a `'duplicate'` write result means in words. One constant for both the add form and a
+ * row's rename, because they are the same conflict — `project_statuses_project_name_unique` is
+ * case-insensitive and per project — and two copies of this sentence would drift.
+ */
+export const DUPLICATE_NAME = 'A status with that name already exists in this project.'
+
+/**
  * Add's extra rule, and ONLY Add's. `slugForName` prefixes a name whose slug would not start
  * with a letter ("2026 Review"), so the only names left to refuse are those with no character
  * it can derive a slug from at all.
