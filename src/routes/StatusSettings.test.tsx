@@ -631,7 +631,7 @@ describe('StatusSettings', () => {
      * vanish from a dialog they thought they had cancelled.
      */
     it('keeps the confirm open on Escape while the delete is in flight', async () => {
-      const { u, confirm, handlers, release } = await startPendingDelete()
+      const { u, handlers, release } = await startPendingDelete()
 
       await u.keyboard('{Escape}')
 
