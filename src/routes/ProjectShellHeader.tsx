@@ -1,6 +1,12 @@
 import { NavLink } from 'react-router-dom'
 
-import { hasSprints, PROJECT_TYPE_LABELS, type Project, type Ticket } from '@/lib/domain'
+import {
+  hasSprints,
+  PROJECT_TYPE_LABELS,
+  ticketListLabels,
+  type Project,
+  type Ticket,
+} from '@/lib/domain'
 // Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
 // this component, so taking the type from there would close an import cycle — harmless
 // today because `import type` is erased, but not worth leaving for someone to trip over.
@@ -36,6 +42,12 @@ export function ProjectShellHeader({
   ticketsPhase,
   onTicketCreated,
 }: ProjectShellHeaderProps) {
+  // The nav link and the tab's own empty state must word this the same way, so the wording is
+  // decided once in `domain.ts` rather than twice, here and in `BacklogTab` (SPRIN-83 AC4).
+  // This reads the LABEL, not the rule — `hasSprints` below is still what decides whether the
+  // Sprints tab exists at all, and the two questions stay separate.
+  const listLabels = ticketListLabels(project)
+
   return (
     <header className="flex flex-col gap-3 border-b px-8 pt-6">
       <div className="flex items-start justify-between gap-4">
@@ -74,10 +86,15 @@ export function ProjectShellHeader({
         <NavLink to="board" className={tabClass}>
           Board
         </NavLink>
+        {/* SPRIN-83 AC4. The ROUTE stays `backlog` and only the text changes: the tab is the
+            same flat list of tickets outside a sprint either way, and on a project with no
+            sprints that is simply every ticket it has. Renaming the path as well would break
+            every existing deep link and bookmark to buy nothing — the URL is not what the user
+            is reading. */}
         <NavLink to="backlog" className={tabClass}>
-          Backlog
+          {listLabels.tab}
         </NavLink>
-        {/* SPRIN-82 AC1. Board, Backlog and Settings are unconditional; Sprints is not,
+        {/* SPRIN-82 AC1. Board, the ticket list and Settings are unconditional; Sprints is not,
             because a continuously-delivered project has no sprint concept to show — the tab
             would offer "New sprint" on a project that can never have one. Absent rather
             than disabled: a disabled tab advertises a feature this project type does not

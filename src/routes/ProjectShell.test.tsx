@@ -302,9 +302,15 @@ describe('ProjectShell', () => {
   // a header that never rendered — a throw inside `ProjectShellHeader`, a fixture the shell
   // rejected as "not in your list" and redirected home, a route table that lost the shell —
   // and that is this epic's single named failure mode, because every story in it is about
-  // something disappearing. Board, Backlog and Settings prove the nav rendered; the Kanban
-  // badge proves it rendered for THIS project rather than silently falling back to the
-  // scrum fixture, which would make the absence true for the wrong reason.
+  // something disappearing. Board, the ticket-list tab and Settings prove the nav rendered;
+  // the Kanban badge proves it rendered for THIS project rather than silently falling back to
+  // the scrum fixture, which would make the absence true for the wrong reason.
+  //
+  // SPRIN-83 renamed the ticket-list link to "All tickets" for this project type (AC4), so the
+  // control below asks for that name. It is still a control and still exact: it must keep
+  // saying "a link with this precise name really is in the nav". Relaxing it to a regex, or
+  // dropping it, would give back exactly the cover the comment above says this test exists to
+  // remove.
   //
   // TWO ABSENCE ASSERTIONS, ONE SCOPED AND ONE NOT, and they say different things — this
   // is not belt-and-braces. A reviewer proved it by leaking a Sprints link OUTSIDE the
@@ -336,7 +342,7 @@ describe('ProjectShell', () => {
 
     // Controls: the header, its nav and its other three tabs all really rendered…
     expect(within(nav).getByRole('link', { name: 'Board' })).toBeInTheDocument()
-    expect(within(nav).getByRole('link', { name: 'Backlog' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'All tickets' })).toBeInTheDocument()
     expect(within(nav).getByRole('link', { name: 'Settings' })).toBeInTheDocument()
     // …for a project this suite can see is the Kanban one.
     expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Kanban')).toBeVisible()
@@ -353,6 +359,57 @@ describe('ProjectShell', () => {
     const nav = screen.getByRole('navigation')
     expect(within(nav).getByRole('link', { name: /sprint/i })).toBeInTheDocument()
     expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Scrum')).toBeVisible()
+  })
+
+  // SPRIN-83 AC4. The tab is the same route either way — only its name changes, because a
+  // project without sprints has no "outside a sprint" for a backlog to mean. The pair says
+  // "Backlog for one type, All tickets for the other" rather than either name alone: a header
+  // that hard-coded whichever string was written last would satisfy one of these and fail the
+  // other, which is the point of writing both.
+  //
+  // Each carries the Board link as its positive control, in the SAME test and deliberately so:
+  // "there is no Backlog link" is equally true of a header that never rendered at all — a
+  // throw inside `ProjectShellHeader`, or a fixture the shell bounced home as "not in your
+  // list". That is this epic's standing failure mode, named in the SPRIN-82 block above.
+  //
+  // Exact names, not regexes, and here that is the stronger choice rather than the weaker one:
+  // the requirement IS the literal wording, "Backlog" is a substring of nothing else in the
+  // nav, and the two names share no substring, so an exact query is what makes the absence
+  // half mean anything. Both are single text nodes with no `text-transform`, which is the
+  // carve-out CLAUDE.md permits.
+  it('names the ticket-list tab "Backlog" on a scrum project (SPRIN-83 AC4)', () => {
+    renderShell('/projects/p1/board')
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByRole('link', { name: 'Board' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'Backlog' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('link', { name: 'All tickets' })).not.toBeInTheDocument()
+  })
+
+  it('names it "All tickets" on a kanban project (SPRIN-83 AC4)', () => {
+    renderShell('/projects/p1/board', { projects: KANBAN_PROJECTS, loading: false })
+
+    const nav = screen.getByRole('navigation')
+    expect(within(nav).getByRole('link', { name: 'Board' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: 'All tickets' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('link', { name: 'Backlog' })).not.toBeInTheDocument()
+    // The second control: this really is the Kanban fixture, not a silent fallback to the
+    // scrum projects — which would make the absence above true for entirely the wrong reason.
+    expect(within(screen.getByRole('heading', { name: /Apple/ })).getByText('Kanban')).toBeVisible()
+  })
+
+  // The link's TARGET is unchanged, and that is a requirement rather than an incidental: AC4
+  // renames the tab, it does not move it. Nothing else in this file opens the ticket list on a
+  // project without sprints, so without this a `to="all-tickets"` typo — or a rename that
+  // reached for a new route — would ship with every assertion above green and the tab dead.
+  it('still routes to the same tab under its kanban name (SPRIN-83 AC4)', async () => {
+    const user = userEvent.setup()
+    renderShell('/projects/p1/board', { projects: KANBAN_PROJECTS, loading: false })
+
+    await user.click(screen.getByRole('link', { name: 'All tickets' }))
+
+    expect(await screen.findByText('This project has no tickets.')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'To Do' })).not.toBeInTheDocument()
   })
 
   // SPRIN-82 AC2. Hiding the nav link (the pair of tests above) closes the door a user is

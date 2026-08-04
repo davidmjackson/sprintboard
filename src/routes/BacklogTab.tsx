@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
-import { TICKET_TYPE_LABELS } from '@/lib/domain'
-import { selectBacklogTickets } from '@/lib/backlog'
+import { TICKET_TYPE_LABELS, ticketListLabels } from '@/lib/domain'
+import { selectTicketList } from '@/lib/backlog'
 import { selectMatchingTickets } from '@/lib/ticket-search'
 import type { ProjectShellContext } from './ProjectShell'
 import { BlockedBadge } from './BlockedBadge'
@@ -10,10 +10,19 @@ import { LoadFailure } from './LoadFailure'
 import { TicketSearchInput } from './TicketSearchInput'
 
 /**
- * The backlog: the project's tickets with **no sprint**, ordered by number (the order
- * `listTickets` returns and the shell's append-on-create preserves).
+ * The flat ticket list: on a project with sprints, the backlog — the tickets with **no
+ * sprint** — and on a project without them, every ticket the project has. Ordered by number
+ * either way (the order `listTickets` returns and the shell's append-on-create preserves).
  *
- * The `sprint_id is null` rule lives in `selectBacklogTickets`, never inlined here. The
+ * `selectTicketList` owns that choice, and the backlog rule underneath it is untouched: what
+ * SPRIN-83 changed here is what this tab is CALLED (`ticketListLabels`, which the nav link
+ * reads from the same source) and, on review, which QUESTION it asks. `selectBoardScope`
+ * ignores `sprint_id` on a project without sprints, so asking for the backlog here would let
+ * the board show a ticket this list hides — the two tabs disagreeing about the same ticket,
+ * under a link reading "All tickets". The selector's docblock has the full argument.
+ *
+ * Neither rule is inlined here — `selectTicketList` composes with `selectBacklogTickets` in
+ * `@/lib/backlog`, and CLAUDE.md forbids a domain rule living in a component. The search
  * filter runs client-side over the shell's shared list rather than as a second
  * `.is('sprint_id', null)` query: the shell already owns a single, once-fetched list that
  * Board and Backlog both read, so filtering here keeps the two tabs consistent and keeps
@@ -21,15 +30,17 @@ import { TicketSearchInput } from './TicketSearchInput'
  * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
+  const { project, tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
     useOutletContext<ProjectShellContext>()
   const [query, setQuery] = useState('')
 
-  const backlog = selectBacklogTickets(tickets)
+  // `listed`, not `backlog`: on a project without sprints this holds every ticket, and a
+  // name that said otherwise is exactly the kind of half-truth that let the two tabs drift.
+  const listed = selectTicketList(project, tickets)
 
   // Guarded on the phase alone, as `BoardTab` is. `useTaggedRead` derives `phase` and
   // `items` from one binding, so 'loading' already implies an empty list — an extra
-  // `backlog.length === 0` conjunct could never be false here and was only ever
+  // `listed.length === 0` conjunct could never be false here and was only ever
   // transcribed from a plan draft. The branch itself is load-bearing: without it a
   // loading read falls through to "Nothing in the backlog.", the same false claim the
   // `failed` check below exists to prevent.
@@ -45,23 +56,33 @@ export function BacklogTab() {
     return <LoadFailure resource="tickets" onRetry={onRetry} />
   }
 
-  if (backlog.length === 0) {
+  if (listed.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-        {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
-            backlog's point of view those are the same fact. A failed read is NOT one of
-            them and no longer reaches here. */}
-        <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
+        {/* On a project WITH sprints this one sentence covers both "no tickets at all" and
+            "every ticket is in a sprint" — from the backlog's point of view those are the same
+            fact. On a project WITHOUT sprints only the first can ever be true, because there
+            is no sprint for a ticket to be in, so a sentence about a backlog would name a
+            distinction that project does not have. That is why the WORDING varies here and the
+            backlog RULE does not: `selectBacklogTickets` is untouched (SPRIN-83 AC4) — the tab
+            asks `selectTicketList` which question applies, and that is a different decision.
+
+            `ticketListLabels` rather than a comparison written here — it is the same decision
+            the nav link renders, and deciding it twice is how the tab and its link drift into
+            calling the same thing two different names.
+
+            A failed read is NOT one of these states and no longer reaches here. */}
+        <p className="text-muted-foreground text-sm">{ticketListLabels(project).empty}</p>
       </div>
     )
   }
 
-  // Filtered AFTER the empty check above, and that order is the whole of AC5: `backlog` is
-  // the unfiltered list, so "Nothing in the backlog." can only be reached when the project
-  // really has no unsprinted tickets. A filtered-empty result is a different fact and says so
-  // below. Same lesson as the `failed` check above it — a distinct state must never wear
-  // another state's face.
-  const matches = selectMatchingTickets(backlog, query)
+  // Filtered AFTER the empty check above, and that order is the whole of AC5: `listed` is
+  // the unfiltered list, so the empty state above can only be reached when the project really
+  // has nothing to show. A filtered-empty result is a different fact and says so below.
+  // Same lesson as the `failed` check above it — a distinct state must never wear another
+  // state's face.
+  const matches = selectMatchingTickets(listed, query)
 
   return (
     <div className="flex flex-col gap-4">

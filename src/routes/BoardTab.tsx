@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { DragEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
-import type { Ticket, TicketStatus } from '@/lib/domain'
-import { selectActiveSprint, selectBlockedTickets, summariseColumn } from '@/lib/board'
-import { selectSprintTickets } from '@/lib/backlog'
+import type { Sprint, Ticket, TicketStatus } from '@/lib/domain'
+import { selectBlockedTickets, selectBoardScope, summariseColumn } from '@/lib/board'
 import { firstUnready } from '@/lib/project-reads'
 import { statusName } from '@/lib/project-statuses'
 import { isSearchActive, selectMatchingTickets } from '@/lib/ticket-search'
@@ -26,10 +25,12 @@ import { TicketSearchInput } from './TicketSearchInput'
  * `summariseColumn`'s, in `board.ts`, because board rules do not live in components.
  *
  * The first reason is no longer a constraint: SPRIN-76's `firstUnready` refactor bought two
- * branches back and `BoardTab` measures **9 of 10** as of that story (`npx eslint
- * src/routes/BoardTab.tsx --rule '{"complexity":["error",1]}'` — re-measure rather than trust
- * this line). The split stays because it is the right shape and hoisting three conditionals
- * would spend the whole margin; the second reason never depended on the count at all.
+ * branches back, and SPRIN-83 bought two more by moving the caption into `BoardSprintCaption`
+ * and the ticket rule into `selectBoardScope` — `BoardTab` measures **7 of 10** as of that
+ * story (`npx eslint src/routes/BoardTab.tsx --rule '{"complexity":["error",1]}'` — re-measure
+ * rather than trust this line). The split stays because it is the right shape and hoisting
+ * three conditionals would spend most of the margin; the second reason never depended on the
+ * count at all.
  *
  * The caller passes the ALREADY-FILTERED column, so these numbers describe the cards
  * actually on screen — the blocked-only filter and the SPRIN-68 search filter both change
@@ -63,10 +64,11 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  * The `||` lives HERE rather than in `BoardTab` for a reason that was measured when it was
  * written: `BoardTab`'s body then sat at the T2 cyclomatic limit of exactly 10, so computing a
  * filter-active flag up there took it to 11 and reddened `npm run lint`. That is no longer
- * true — SPRIN-76's `firstUnready` refactor left `BoardTab` at **9 of 10** — so this is now a
- * preference, not a forced move. It stays a preference worth keeping: deciding the sentence in
- * its own component costs `BoardTab` nothing, and the remaining margin is better spent on a
- * state the board cannot otherwise tell apart than on inlining a `||`.
+ * true — SPRIN-76's `firstUnready` refactor and SPRIN-83's two extractions left `BoardTab` at
+ * **7 of 10** — so this is now a preference, not a forced move. It stays a preference worth
+ * keeping: deciding the sentence in its own component costs `BoardTab` nothing, and the
+ * remaining margin is better spent on a state the board cannot otherwise tell apart than on
+ * inlining a `||`.
  */
 function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
   const filtering = blockedOnly || isSearchActive(query)
@@ -77,6 +79,45 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
   return (
     <p role="status" className="text-muted-foreground text-xs">
       {filtering ? 'No matches.' : 'No tickets yet.'}
+    </p>
+  )
+}
+
+/**
+ * What the board says about the sprint it is showing — and on a project without sprints, that
+ * is nothing at all.
+ *
+ * Three states, three returns, in its own component rather than as branches in `BoardTab`,
+ * which is where this file already puts per-question rendering (`BoardColumnSummary`,
+ * `BoardColumnEmpty`). Before SPRIN-83 the name/dates and the "No active sprint" message hung
+ * off a single `activeSprint !== null` test that ALSO gated both filters — one test answering
+ * three questions, which is exactly why a board on a project without sprints could not be
+ * given cards without losing its filters.
+ *
+ * `sprintScoped` and `sprint` are two different questions and both are asked here: a project
+ * that has no sprints at all says nothing, while a project that HAS them but has none running
+ * says so out loud, because a row of empty columns must never be mistaken for "you have no
+ * tickets". `selectBoardScope` in `board.ts` decides both — this component only renders them.
+ */
+function BoardSprintCaption({
+  sprintScoped,
+  sprint,
+}: {
+  sprintScoped: boolean
+  sprint: Sprint | null
+}) {
+  if (!sprintScoped) return null
+  if (sprint === null) {
+    return (
+      <p className="text-muted-foreground text-sm">
+        No active sprint — start one from the Sprints tab.
+      </p>
+    )
+  }
+  return (
+    <p className="flex flex-wrap items-baseline gap-2 text-sm">
+      <span className="font-medium">{sprint.name}</span>
+      <SprintDates sprint={sprint} />
     </p>
   )
 }
@@ -96,9 +137,15 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
  * Everything the board keys and writes is the row's SLUG, never its id — the fk is keyed on the
  * slug precisely so renaming a status rewrites no ticket row.
  *
- * It renders the ACTIVE sprint's tickets (S7.1), each in its status column; an empty column
- * says so. The active-sprint rule lives in `selectActiveSprint`; the membership rule in
- * `selectSprintTickets` — the board only composes them.
+ * WHICH tickets it renders is `selectBoardScope`'s answer, not this component's (SPRIN-83).
+ * On a project WITH sprints that is the ACTIVE sprint's tickets (S7.1), each in its status
+ * column, and an empty column says so. On a project WITHOUT sprints it is every ticket the
+ * project has, whatever its `sprint_id` — there is no sprint to scope to, and before SPRIN-83
+ * such a board rendered permanently empty because it asked the sprint question anyway.
+ *
+ * The rules themselves live where board rules live: `selectActiveSprint` and `selectBoardScope`
+ * in `board.ts`, composing `selectSprintTickets`' membership rule from `backlog.ts`. The board
+ * only reads the answer.
  *
  * The board depends on ALL THREE reads. Tickets tell it what exists; sprints tell it which
  * sprint is active; statuses tell it what its columns ARE — without any one of them it cannot
@@ -109,7 +156,9 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
  * however many reads are unready, and `onRetry` reloads all three together.
  *
  * "No active sprint" (sprints loaded, none active) is its own honest state: a caption above the
- * grid, so a row of empty columns is never mistaken for "you have no tickets".
+ * grid, so a row of empty columns is never mistaken for "you have no tickets". It belongs to a
+ * project that HAS sprints — `BoardSprintCaption` renders nothing at all for one that does not,
+ * which would otherwise point its users at a tab SPRIN-82 removed from them.
  *
  * S7.2 makes the board writable: dragging a card to another column changes its `status`. The
  * move is optimistic and rolls back on failure — see `moveTicket`.
@@ -120,6 +169,7 @@ function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query:
  */
 export function BoardTab() {
   const {
+    project,
     tickets,
     ticketsPhase,
     sprints,
@@ -239,8 +289,15 @@ export function BoardTab() {
     )
   }
 
-  const activeSprint = selectActiveSprint(sprints)
-  const boardTickets = activeSprint ? selectSprintTickets(tickets, activeSprint.id) : []
+  // One question, one answer, and the three decisions below all read it: which sprint this
+  // board describes, which tickets it renders, and whether there is anything worth filtering.
+  // They used to be one `activeSprint !== null` test doing all three jobs (SPRIN-83).
+  const {
+    sprint,
+    sprintScoped,
+    tickets: boardTickets,
+    offersFilters,
+  } = selectBoardScope(project, tickets, sprints)
   const visibleTickets = selectMatchingTickets(
     blockedOnly ? selectBlockedTickets(boardTickets) : boardTickets,
     query,
@@ -248,28 +305,19 @@ export function BoardTab() {
 
   return (
     <div className="flex flex-col gap-4">
-      {activeSprint === null ? (
-        <p className="text-muted-foreground text-sm">
-          No active sprint — start one from the Sprints tab.
-        </p>
-      ) : null}
+      <BoardSprintCaption sprintScoped={sprintScoped} sprint={sprint} />
       {moveError ? (
         <p role="alert" className="text-destructive text-sm">
           {moveError}
         </p>
       ) : null}
-      {activeSprint !== null ? (
+      {/* The filters hang off `offersFilters`, NOT off the caption's question. They used to
+          share one test with it, which is why a board with no sprint to describe could not be
+          given cards without silently losing both controls (SPRIN-83). A sprint-scoped board
+          with nothing running still offers nothing: controls that can only narrow nothing to
+          nothing are worse than no controls. */}
+      {offersFilters ? (
         <>
-          {/* The board never said WHICH sprint it was showing. Both children hang off the
-              ONE `activeSprint !== null` test on purpose: when this was written `BoardTab`
-              measured exactly 10 — the T2 limit — and a second test here reddened the lint
-              gate. It measures 9 of 10 now, so grouping them is a preference rather than a
-              constraint; it is still one test for one question, and splitting it would buy
-              nothing. */}
-          <p className="flex flex-wrap items-baseline gap-2 text-sm">
-            <span className="font-medium">{activeSprint.name}</span>
-            <SprintDates sprint={activeSprint} />
-          </p>
           <label className="text-muted-foreground flex w-fit items-center gap-2 text-sm">
             <input
               type="checkbox"

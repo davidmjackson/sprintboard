@@ -44,7 +44,12 @@ const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
 
 function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
   return {
-    project: {} as never,
+    // Explicitly Scrum — the same note as in `BoardTab.test.tsx`. `hasSprints({})` is
+    // `undefined === 'scrum'` → false, so an empty object would silently turn this whole file
+    // into a Kanban suite the moment the tab consults the project (SPRIN-83). Stating it also
+    // makes every "Nothing in the backlog." expectation below a positive control for AC4:
+    // they pass only because this says 'scrum'.
+    project: { project_type: 'scrum' } as never,
     tickets: TICKETS,
     ticketsPhase: 'loaded',
     sprints: [],
@@ -383,5 +388,86 @@ describe('BacklogTab search (SPRIN-68)', () => {
     renderTab(BacklogTab, ctxWith({ tickets: SEARCH_TICKETS }))
     await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'zzz')
     expect(screen.getByRole('status')).toHaveTextContent(/no tickets match your search/i)
+  })
+})
+
+/**
+ * SPRIN-83 AC4 — on a project without sprints this tab is a flat list of every ticket, so its
+ * empty state must speak about the PROJECT rather than about a backlog the project does not
+ * have. `selectBacklogTickets` is unchanged: `sprint_id is null` is simply true of every
+ * ticket there, which is what makes the flat reading honest.
+ *
+ * The two wordings are asserted as a PAIR, in both directions. A test that only checked the
+ * new sentence would pass just as well on an implementation that returned it for every
+ * project type — the Scrum copy would have been silently overwritten and nothing here would
+ * have noticed. Each test therefore names the sentence it expects AND denies the other one.
+ */
+describe('the empty state names what the list is (SPRIN-83 AC4)', () => {
+  it('speaks of the backlog on a project with sprints', () => {
+    renderTab(BacklogTab, ctxWith({ tickets: [] as never }))
+    expect(screen.getByText('Nothing in the backlog.')).toBeInTheDocument()
+    expect(screen.queryByText('This project has no tickets.')).not.toBeInTheDocument()
+  })
+
+  it('speaks of the project on a project without sprints', () => {
+    renderTab(
+      BacklogTab,
+      ctxWith({ tickets: [] as never, project: { project_type: 'kanban' } as never }),
+    )
+    expect(screen.getByText('This project has no tickets.')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing in the backlog.')).not.toBeInTheDocument()
+  })
+
+  // AC4's second half, and the reason the empty-state pair above is not the whole story: on
+  // this project type the tab is a flat list of EVERYTHING, so it must really be everything.
+  // Without this, a "fix" that emptied the list for a project without sprints would satisfy
+  // both tests above perfectly.
+  //
+  // The sprinted ticket is the review finding, not padding. `selectBoardScope` deliberately
+  // ignores `sprint_id` on a project without sprints, so a tab still filtering on
+  // `sprint_id is null` would SHOW this ticket on the board and HIDE it here — two tabs
+  // disagreeing about the same ticket, under a nav link that now reads "All tickets".
+  // `BoardTab.test.tsx`'s own fixture holds exactly this ticket and asserts it renders, so
+  // without this line the two suites pin contradictory behaviour and both stay green. The
+  // state is unreachable today (the type is immutable and SPRIN-82 removed the sprint-create
+  // path) and pinned anyway, for the same reason `selectBoardScope` states its own half.
+  it("lists every one of the project's tickets on a project without sprints", () => {
+    const tickets = [
+      ...(TICKETS as unknown as Record<string, unknown>[]),
+      {
+        id: 't2',
+        key: 'MP-2',
+        number: 2,
+        summary: 'Carried a sprint id',
+        type: 'story',
+        status: 'todo',
+        sprint_id: 's1',
+      },
+    ] as never
+    renderTab(BacklogTab, ctxWith({ tickets, project: { project_type: 'kanban' } as never }))
+    expect(screen.getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /carried a sprint id/i })).toBeInTheDocument()
+    expect(screen.queryByText('This project has no tickets.')).not.toBeInTheDocument()
+  })
+
+  // The other side of the same pair: the backlog RULE is untouched, so a project WITH sprints
+  // still hides a sprinted ticket from this tab. Without it, `selectTicketList` could return
+  // every ticket for every project type and the test above would not notice.
+  it('still hides a sprinted ticket on a project with sprints', () => {
+    const tickets = [
+      ...(TICKETS as unknown as Record<string, unknown>[]),
+      {
+        id: 't2',
+        key: 'MP-2',
+        number: 2,
+        summary: 'Carried a sprint id',
+        type: 'story',
+        status: 'todo',
+        sprint_id: 's1',
+      },
+    ] as never
+    renderTab(BacklogTab, ctxWith({ tickets }))
+    expect(screen.getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /carried a sprint id/i })).not.toBeInTheDocument()
   })
 })

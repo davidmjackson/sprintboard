@@ -58,7 +58,12 @@ const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
 
 function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
   return {
-    project: {} as never,
+    // Explicitly Scrum, which is what every test in this file assumed while the board did
+    // not ask. `hasSprints({})` is false, so an empty object would silently make the whole
+    // file a suite about a project WITHOUT sprints the moment BoardTab consults the project
+    // (SPRIN-83). Stating it also turns every sprint-scoped test below into AC5's positive
+    // control: they pass only because this says 'scrum'.
+    project: { project_type: 'scrum' } as never,
     tickets: TICKETS,
     ticketsPhase: 'loaded',
     sprints: [],
@@ -829,7 +834,10 @@ describe('BoardTab search (SPRIN-68)', () => {
 
   // Mirrors the existing "does NOT offer the filter when there is no active sprint" control
   // for the blocked-only checkbox below. Without this, rendering the search box OUTSIDE the
-  // `activeSprint !== null` guard — over a board with nothing to search — ships undetected.
+  // `offersFilters` guard — over a board with nothing to search — ships undetected. That
+  // guard was spelled `activeSprint !== null` until SPRIN-83 separated "is there a sprint to
+  // describe" from "is there anything to filter"; on a sprint-scoped project it still
+  // answers the same way, which is what keeps this control meaning what it always meant.
   it('does NOT offer the search box when there is no active sprint (negative control)', () => {
     renderTab(BoardTab, boardCtx({ tickets: [], sprints: [] }))
     expect(screen.queryByRole('searchbox', { name: /search/i })).not.toBeInTheDocument()
@@ -838,9 +846,11 @@ describe('BoardTab search (SPRIN-68)', () => {
   // M5 (SPRIN-68 post-merge review): the negative control above sets BOTH `tickets: []` and
   // `sprints: []` at once, so it cannot tell "hidden because there is no active sprint" apart
   // from "hidden because there are no tickets" — gating the box on `boardTickets.length > 0`
-  // instead of `activeSprint !== null` would pass it just as happily. This is the other half:
-  // an ACTIVE sprint with a genuinely empty ticket list must still show the box, because the
-  // gate is the sprint, not the list.
+  // instead of `offersFilters` would pass it just as happily. This is the other half: an
+  // ACTIVE sprint with a genuinely empty ticket list must still show the box, because on a
+  // sprint-scoped project the gate is the sprint, not the list. (Note the two are no longer
+  // interchangeable at all since SPRIN-83: a project without sprints offers filters with an
+  // empty ticket list too, which `boardTickets.length > 0` would also get wrong.)
   it('DOES offer the search box over an active sprint with no tickets yet (positive control)', () => {
     renderTab(BoardTab, boardCtx({ tickets: [] }))
     expect(screen.getByRole('searchbox', { name: /search/i })).toBeInTheDocument()
@@ -929,6 +939,115 @@ describe('BoardTab search (SPRIN-68)', () => {
     await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), '   ')
     expect(screen.getAllByText(/no tickets yet/i).length).toBeGreaterThan(0)
     expect(screen.queryByText(/no matches/i)).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * SPRIN-83 — a project without sprints shows every ticket on its board.
+ *
+ * Before this story such a board was permanently empty under a caption telling the user to
+ * start a sprint from a tab SPRIN-82 had already removed. Each absence assertion below is
+ * paired with a positive control in the same test, because "the caption is not in the
+ * document" passes just as well when nothing rendered at all.
+ */
+describe('BoardTab on a project without sprints (SPRIN-83)', () => {
+  // One unsprinted ticket and one still carrying a sprint id. AC1 is that BOTH appear: the
+  // second is precisely the row the sprint-scoped board filtered away.
+  const FLAT_TICKETS = [
+    {
+      id: 't1',
+      key: 'MP-1',
+      number: 1,
+      summary: 'Do the todo',
+      type: 'story',
+      status: 'todo',
+      sprint_id: null,
+      is_blocked: false,
+    },
+    {
+      id: 't2',
+      key: 'MP-2',
+      number: 2,
+      summary: 'Ship it',
+      type: 'bug',
+      status: 'done',
+      sprint_id: 's-old',
+      is_blocked: true,
+      blocked_reason: 'waiting on API',
+    },
+  ] as never
+
+  function flatCtx(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {
+    return ctxWith({
+      project: { project_type: 'kanban' } as never,
+      tickets: FLAT_TICKETS,
+      ...fields,
+    })
+  }
+
+  // AC1.
+  it('renders every ticket in its status column, including one with a sprint_id', () => {
+    renderTab(BoardTab, flatCtx())
+    const todo = screen.getByRole('heading', { name: 'To Do' }).closest('section')!
+    const done = screen.getByRole('heading', { name: 'Done' }).closest('section')!
+    expect(within(todo).getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+    expect(within(done).getByRole('button', { name: /ship it/i })).toBeInTheDocument()
+    // The scoping control: each card is in its OWN column, not merely somewhere on the page.
+    expect(within(todo).queryByRole('button', { name: /ship it/i })).not.toBeInTheDocument()
+  })
+
+  // AC2. The positive controls are the card and the column heading: the board really
+  // rendered, it just says nothing about sprints. The context deliberately carries an ACTIVE
+  // sprint row — unreachable today, and the rule is that such a board ignores it anyway.
+  it('shows no sprint caption and no "No active sprint" message', () => {
+    renderTab(BoardTab, flatCtx({ sprints: [ACTIVE_SPRINT] as never }))
+    expect(screen.getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'To Do' })).toBeInTheDocument()
+    expect(screen.queryByText(/no active sprint/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Sprint 1')).not.toBeInTheDocument()
+  })
+
+  // AC3, and the non-obvious half of the story: both filters used to hang off the same
+  // `activeSprint !== null` test as the caption, so removing the caption would have removed
+  // them too. Each filter is asserted to NARROW, not merely to be present.
+  it('offers the blocked-only filter, and it narrows the board', async () => {
+    renderTab(BoardTab, flatCtx())
+    const blockedOnly = screen.getByRole('checkbox', { name: /blocked only/i })
+    expect(screen.getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+    await userEvent.click(blockedOnly)
+    expect(screen.getByRole('button', { name: /ship it/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /do the todo/i })).not.toBeInTheDocument()
+  })
+
+  it('offers the search box, and it narrows the board', async () => {
+    renderTab(BoardTab, flatCtx())
+    await userEvent.type(screen.getByRole('searchbox', { name: /search/i }), 'Ship')
+    expect(screen.getByRole('button', { name: /ship it/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /do the todo/i })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * AC5 — the sprint-scoped board is unchanged. The whole `BoardTab` describe at the top of
+ * this file already exercises that, because `ctxWith` now says 'scrum' explicitly. These two
+ * tests name the distinction, so a regression reads as "a Scrum board stopped being
+ * sprint-scoped" rather than as an unrelated failure somewhere in a seventy-test suite.
+ */
+describe('BoardTab on a project with sprints (SPRIN-83 AC5)', () => {
+  it("still shows only the active sprint's tickets, and still captions them", () => {
+    renderTab(BoardTab, ctxWith({ tickets: SPRINT_TICKETS, sprints: [ACTIVE_SPRINT] as never }))
+    expect(screen.getByText('Sprint 1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /do the todo/i })).toBeInTheDocument()
+  })
+
+  it('still says so when no sprint is active, and offers no filters then', () => {
+    renderTab(BoardTab, ctxWith({ tickets: SPRINT_TICKETS, sprints: [] }))
+    expect(screen.getByText(/no active sprint/i)).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: /blocked only/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('searchbox', { name: /search/i })).not.toBeInTheDocument()
+    // The positive control: the columns rendered, so the absences above are about the
+    // filters and the caption rather than about a board that never painted at all.
+    expect(screen.getByRole('heading', { name: 'To Do' })).toBeInTheDocument()
   })
 })
 

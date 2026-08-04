@@ -1,4 +1,5 @@
-import type { Ticket } from './domain'
+import type { Project, Ticket } from './domain'
+import { hasSprints } from './domain'
 
 /**
  * The backlog rule, in one place: **a ticket is in the backlog when `sprint_id is null`.**
@@ -25,6 +26,41 @@ export function isBacklogTicket(ticket: Ticket): boolean {
  */
 export function selectBacklogTickets(tickets: readonly Ticket[]): Ticket[] {
   return tickets.filter(isBacklogTicket)
+}
+
+/**
+ * What the flat ticket-list tab shows — the backlog on a project with sprints, and **every
+ * ticket** on a project without them.
+ *
+ * A SIBLING of `selectBacklogTickets` rather than a change to it, and that is the whole
+ * design: the backlog rule stays `sprint_id is null` (it is the rule the Scrum board, the
+ * sprint planner and the database's `tickets_sprint_idx` all share), and this selector
+ * decides which question the TAB is asking. Two rules, two functions, one caller.
+ *
+ * IT EXISTS BECAUSE THE TWO TABS MUST AGREE ABOUT THE SAME TICKET. `selectBoardScope` in
+ * `board.ts` deliberately ignores `sprint_id` on a project without sprints — a board whose
+ * users cannot see sprints must show all of their work — so a tab still filtering on
+ * `sprint_id is null` would HIDE a ticket the board next door SHOWS, under a nav link
+ * reading "All tickets". Whichever answer is right, the two tabs giving different ones is
+ * the defect; an asymmetric defence is worse than either choice made consistently.
+ *
+ * The divergent state is unreachable today — `project_type` is immutable and SPRIN-82
+ * removed the only path that could put a `sprint_id` on such a ticket — and defended anyway,
+ * mirroring the second half of `selectBoardScope`'s own contract, which is stated for the
+ * same reason. Both are rules written where a test can hold them, not patches over a live
+ * bug.
+ *
+ * `hasSprints` rather than a comparison written here: it is the single expression of the
+ * rule (SPRIN-82 AC5), and `project-type-single-expression.test.ts` makes that mechanical.
+ * The copy on the no-sprints branch keeps the return type `Ticket[]` honest without handing
+ * a caller the shell's own array to mutate — `selectBacklogTickets` returns a fresh array
+ * from `.filter`, and the two branches must not differ in that.
+ */
+export function selectTicketList(
+  project: Pick<Project, 'project_type'>,
+  tickets: readonly Ticket[],
+): Ticket[] {
+  return hasSprints(project) ? selectBacklogTickets(tickets) : [...tickets]
 }
 
 /**

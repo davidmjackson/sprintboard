@@ -52,7 +52,11 @@ vi.mock('./StatusSettings', () => ({
   ),
 }))
 
-const project = { id: 'p1', name: 'Sprintboard', key: 'SPB' } as Project
+// Explicitly Scrum, as `BoardTab.test.tsx` and `BacklogTab.test.tsx` now are. `hasSprints({})`
+// is `undefined === 'scrum'` → false, so leaving the field off would silently turn this whole
+// file into a suite about a project WITHOUT sprints the moment anything in this tab consults
+// the project type (SPRIN-83) — and SPRIN-84 refactors `StatusSettings` right here.
+const project = { id: 'p1', name: 'Sprintboard', key: 'SPB', project_type: 'scrum' } as Project
 
 const STATUSES = [
   { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
