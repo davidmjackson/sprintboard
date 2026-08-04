@@ -32,8 +32,9 @@ const mockDelete = vi.mocked(deleteProjectStatus)
  * A fixture reusing 'To Do'/'In Progress'/'Done' could not tell "renders the row's name" from
  * "renders the row's category", nor "reads the rows" from "reads a constant".
  *
- * TWO confounds are deliberately broken here, and both were found by mutation rather than by
- * reading. A fixture whose values coincide cannot tell two different reads apart.
+ * THREE confounds are deliberately broken here, every one found by mutation rather than by
+ * reading. A fixture whose values coincide cannot tell two different reads apart — and each of
+ * these was found only after the previous one was fixed, so treat the list as open.
  *
  * 1. **`slug` is not the lowercased `name`.** Every status here used to be a single word, so
  *    `slug === name.toLowerCase()` held for all three — and two production call sites that key
@@ -45,6 +46,11 @@ const mockDelete = vi.mocked(deleteProjectStatus)
  *    `statuses[0].id` — so the confirm dialog could name the wrong takeover status on any
  *    project whose initial status is not first. `is_initial` is independent of `position`, and
  *    the fixture now says so.
+ * 3. **`position` is not `index + 1`.** They were 1, 2, 3 in array order, so `move()`'s
+ *    `statuses.indexOf(status) + delta` was indistinguishable from `status.position - 1 + delta`.
+ *    Positions are sparse in any reorderable list — the database only requires them unique and
+ *    ordered per project, never contiguous, and `reorder_project_statuses` assigns from the
+ *    array's ORDINALITY rather than from these numbers.
  */
 function status(overrides: Partial<ProjectStatus> = {}): ProjectStatus {
   return {
@@ -53,7 +59,7 @@ function status(overrides: Partial<ProjectStatus> = {}): ProjectStatus {
     slug: 'triage',
     name: 'Triage',
     category: 'todo',
-    position: 1,
+    position: 10,
     is_initial: true,
     created_at: '2026-08-01T00:00:00+00:00',
     ...overrides,
@@ -66,7 +72,7 @@ const BUILDING = status({
   slug: 'in_build',
   name: 'Building',
   category: 'in_progress',
-  position: 2,
+  position: 20,
   is_initial: true,
 })
 const SHIPPED = status({
@@ -74,7 +80,7 @@ const SHIPPED = status({
   slug: 'shipped',
   name: 'Shipped',
   category: 'done',
-  position: 3,
+  position: 30,
   is_initial: false,
 })
 const STATUSES = [TRIAGE, BUILDING, SHIPPED]
@@ -817,14 +823,16 @@ describe('StatusSettings', () => {
       // And the confirm SAYS it is working. Asserted here rather than relied on as this
       // block's synchronisation point, so removing the pending label fails one test about the
       // label instead of three tests about the guards.
-      expect(confirm).toHaveTextContent('Deleting…')
+      expect(confirm).toHaveTextContent(/^Deleting…$/)
 
       // Both released again once the write lands. Assertions AFTER the drain rather than a
       // `waitFor` doubling as one — `toBeEnabled()` is this test's own subject, so waiting on
       // it would have been the same trap in miniature.
       await settle()
       expect(confirm).toBeEnabled()
-      expect(confirm).toHaveTextContent('Delete')
+      // Anchored like everything else in this file: unanchored, both labels admit an additive
+      // reword ('Delete now', 'Deleting… please wait') that says nothing has broken.
+      expect(confirm).toHaveTextContent(/^Delete$/)
     })
 
     // The consequence the disabled attribute exists for. `submit()` has no re-entrancy check of
