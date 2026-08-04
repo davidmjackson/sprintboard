@@ -516,6 +516,9 @@ for. Don't.
 the endpoint cannot rot underneath the cron. `npm run keepalive` triggers it manually.
 
 ## Key files
+- `docs/HANDOVER.md` — session narrative, open engineering follow-ups, what CI cannot pin, and
+  settled non-issues that should not be re-raised. **Read it before planning a story.** It is the
+  *context* behind the board, never a substitute for it.
 - `docs/sprintboard_phase1_schema.sql` — the database schema.
 - `docs/standards-audit-2026-07-25.md` — banner-marked HISTORICAL, and mostly is. Two
   sections are not: the **eight pre-existing coverage gaps** deliberately left unfixed, and
