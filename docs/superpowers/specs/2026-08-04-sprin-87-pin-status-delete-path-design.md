@@ -77,16 +77,43 @@ expression — kills that. Two cheap tests, one real mutation each.
 `last` is gated in the UI (`deleteBlockReason` disables Delete on a one-status list) and `stale` is
 a race. Both are still reachable write results, and the existing `has_tickets` test already
 establishes the pattern: open the dialog on a status the UI permits, and let the mock return the
-refusal. Each is asserted **twice** — it says its own specific thing, and it is *not* the generic
-retry sentence, which is precisely the mutation that survives today.
+refusal.
 
-### Out of scope, deliberately
+**Each is asserted with an ANCHORED regex, `/^…$/`.** The first version of this section said they
+were asserted "twice — it says its own specific thing, and it is *not* the generic retry sentence",
+and that second assertion was never written; the tests asserted the bare sentence and the docblock
+called it exact. It is not. `toHaveTextContent` with a string is a **substring** match, so
+appending the generic retry copy to the end of the sentence — the precise mutation these tests
+exist to kill — passed all 34 tests. Review caught it, measured; anchoring is what actually makes
+"this sentence and nothing else" true, and it subsumes the pair the spec originally promised.
 
-The story's MINOR list ("count unavailable" copy, the dialog title naming the status, `submit()`'s
-own `setError(null)`, raw `next` vs `parsed.data.name`) is **not** in the ACs. A mutation sweep of
-the whole delete path runs anyway as AC5's evidence; anything it turns up beyond the four ACs is
-recorded in the PR, not fixed here. Widening a story to whatever a sweep finds is how a tests-only
-slice stops being one.
+`has_tickets` was pinned by the fragment `/move them/i` and is now anchored to the same standard,
+for the same reason: it could lose its entire explanation of *why* and stay green.
+
+### What review added, and why the "out of scope" line moved
+
+The original plan was to fix the four ACs and record everything else. Three reviewers (two mutating
+in isolated worktrees, one read-only security pass) changed that, and the honest reason is that the
+findings were **Important**, not that the scope was renegotiated:
+
+- **Two of them were defects in my own new tests** — the substring/anchoring gap above, and a
+  fixture docblock claiming an inert `waitFor` was the synchronisation point when `await u.click`
+  already flushes. A third traded one coupling for another and the commit message overclaimed it.
+- **`submit()`'s `setError(null)`, which this section originally deferred, turned out to have a
+  MIRROR** in `move()`. Fixing one of two mirrored call sites is a mistake this project has made
+  twice. Both are pinned, and so is the fixture that could not tell a slug from a lowercased name —
+  it left the reorder payload and the counts lookup unprotected at once.
+
+**Still out of scope, deliberately, and recorded rather than fixed:**
+
+- The singular `1 ticket` label. The code is correct; only the coverage is missing (mutation 22).
+- `EditableText`'s own `draft !== value` guard, which the row's trim guard shadows on every path
+  this file exercises. It cannot be pinned from here — it needs a component-level test (mutation 23).
+- Wiring `aria-describedby` from a disabled Delete button to the sentence explaining it. The test
+  now refuses an `aria-hidden` reason, but the relationship itself is a **production** change, and
+  this is a tests-only story.
+- A successful delete never calls `setConfirming(false)`; the dialog closes only because the parent
+  removes the row and unmounts it. Real today, latent if the shell ever refetches instead of splicing.
 
 ---
 
