@@ -132,11 +132,37 @@ shaped the design rather than being worked around, which is what a good guard do
 *project*. Same words, two scopes, and this codebase has a standing rule against a distinct
 state wearing another state's face. "This project has no tickets." cannot be misread.
 
-### 5. `selectBacklogTickets` is NOT changed
+### 5. `selectBacklogTickets` is NOT changed — but the tab no longer calls it directly
 
-The rule stays `sprint_id is null`. On a Kanban project that is true of every ticket, so the
-tab becomes an honest flat list beside the column view. The route path stays `backlog` — the
-link text changes, not the URL, so no redirect and no router change.
+The backlog rule stays `sprint_id is null`, untouched. On a Kanban project that is true of
+every ticket, so the tab is an honest flat list beside the column view. The route path stays
+`backlog` — the link text changes, not the URL, so no redirect and no router change.
+
+**Review found the asymmetry that leaves, and it is fixed with a sibling selector rather than
+by touching the rule.** `selectBoardScope` deliberately ignores `sprint_id` on a Kanban project
+and says so in its own docblock; `selectBacklogTickets` cannot, because the backlog rule is
+shared with the Scrum board, the sprint planner and `tickets_sprint_idx`. So a Kanban ticket
+carrying a `sprint_id` would be **shown by the board and hidden by the list**, under a nav link
+reading "All tickets" — two tabs disagreeing about the same ticket. `BoardTab.test.tsx`'s own
+fixture holds exactly that ticket and asserts it renders, so the two suites were pinning
+contradictory behaviour and both were green.
+
+```ts
+export function selectTicketList(
+  project: Pick<Project, 'project_type'>,
+  tickets: readonly Ticket[],
+): Ticket[]
+```
+
+`BacklogTab` calls this instead. Two rules, two functions, one caller: `selectBacklogTickets`
+still answers "what is in the backlog", and `selectTicketList` answers "which question does
+this tab ask". Same shape as the caption decision in §2 — the component composes, it does not
+decide.
+
+The divergent state is unreachable today for the same two reasons `selectBoardScope`'s half is
+(the type is immutable; SPRIN-82 removed the sprint-create path), and is defended anyway for the
+same reason: an asymmetric defence is worse than either choice made consistently, and a rule
+stated in only one of the two places it governs is how the next reader learns the wrong one.
 
 ## The trap that would have shipped this green and wrong
 
