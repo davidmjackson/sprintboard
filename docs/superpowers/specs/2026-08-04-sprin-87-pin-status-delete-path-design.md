@@ -104,11 +104,29 @@ findings were **Important**, not that the scope was renegotiated:
   twice. Both are pinned, and so is the fixture that could not tell a slug from a lowercased name —
   it left the reorder payload and the counts lookup unprotected at once.
 
+### The pattern this story actually found, stated plainly
+
+Four review rounds ran. **Not one found a defect in production code.** Every finding was in this
+story's own tests, or in my claims about them — and three rounds running, the finding was the
+same shape: *a standard articulated in one commit and applied to only one of two sibling sites.*
+Unanchored assertions, `aria-hidden` guards, mirrored controls, fixture confounds. Each round
+swept for "all" sites of a class and missed the next one.
+
+That is not fixable by vigilance, and pretending otherwise is how it recurs a fifth time. **The
+real fix is a lint rule** — forbid `toHaveTextContent` with a bare string, require an anchored
+regex — plus an ADR. That is its own story, and it is the honest conclusion of this one.
+
+The other conclusion worth carrying: **"the code is correct, only the coverage is missing" is not
+a reason to defer.** It is true of every unpinned line. That reasoning kept the singular ticket
+label out of two rounds, next to a zero-count case that had the identical justification.
+
 **Still out of scope, deliberately, and recorded rather than fixed:**
 
-- The singular `1 ticket` label. The code is correct; only the coverage is missing (mutation 22).
 - `EditableText`'s own `draft !== value` guard, which the row's trim guard shadows on every path
-  this file exercises. It cannot be pinned from here — it needs a component-level test (mutation 23).
+  this file exercises. It cannot be pinned from here — it needs a component-level test.
+- Every fixture row's `project_id` equals the `projectId` prop, so the two reads are
+  indistinguishable. Unlike the three confounds that were broken, these are genuinely equal in
+  production, and a fixture separating them would encode an impossible state.
 - Wiring `aria-describedby` from a disabled Delete button to the sentence explaining it. The test
   now refuses an `aria-hidden` reason, but the relationship itself is a **production** change, and
   this is a tests-only story.
