@@ -150,11 +150,14 @@ Engineering items with no story yet. Each is a candidate for one.
   `StatusSettings.test.tsx`** — the row's trim guard shadows it on every path that file exercises.
   It needs a component-level `EditableText` test.
 - **`e2e.yml` shares the global `verify` concurrency group, and the two can cancel EACH OTHER on a
-  single push.** Observed on SPRIN-87: `verify` for the PR head came back `cancelled` while the
-  *previous* commit's `verify` was still running, and the head's `e2e` was queued. The sharing is
-  deliberate (it keeps both off the shared database), but a `cancelled` required check is not a
-  failure and must not be read as one — re-run it and confirm the `headSha`. Whether the group
-  should be split per-workflow-per-SHA is a real question.
+  single push.** Seen twice in session 52 (PRs #84 and #85): `verify` for a PR head came back
+  `cancelled` within a second of `e2e` starting on the same commit. **It is a race, not
+  deterministic** — the same session's pushes at `23afd16` and `d700ccf` both had `verify` and `e2e`
+  succeed side by side. The sharing is deliberate (it keeps both off the shared database), but the
+  consequence is that **a required check can land as `cancelled`, which is not a failure and must
+  not be read as one.** Re-run it and confirm the rerun's `headSha` matches the PR head. Worth
+  deciding whether the group should be keyed per-workflow-per-SHA, which would keep the
+  database-serialising intent while removing the self-cancellation.
 - **Leaked Password Protection** is recommended but has **never been confirmed enabled** in the
   Supabase dashboard. If it is on, the hardcoded signup password in `e2e/happy-path.spec.ts`
   becomes the risk — randomise it.
