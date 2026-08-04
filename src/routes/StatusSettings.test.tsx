@@ -345,6 +345,53 @@ describe('StatusSettings', () => {
 
       expect(mockRename).not.toHaveBeenCalled()
     })
+
+    /**
+     * The rename's zod-failure branch — uncovered until SPRIN-87, and REACHABLE by an ordinary
+     * user: `EditableText` commits whenever `draft !== value`, so clearing the field and
+     * pressing Enter forwards `''` and the schema's `min(1)` refuses it.
+     *
+     * Untested, its copy could be swapped for the generic 'Something went wrong' with nothing
+     * red — telling a user to retry when the fix is to type a name — and dropping its early
+     * `return` was caught only incidentally by `tsc`.
+     */
+    it('refuses an emptied name at the client edge, without a write', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, '{Enter}')
+
+      expect(await within(rowFor('Building')).findByRole('alert')).toHaveTextContent(
+        'Give the status a name',
+      )
+      expect(mockRename).not.toHaveBeenCalled()
+    })
+
+    /**
+     * The SECOND schema message from the same branch, and it is not redundant with the one
+     * above: with only the empty case,
+     * `setError(parsed.error.issues[0]?.message ?? GENERIC_CREATE_ERROR)` can be replaced by the
+     * hardcoded literal `'Give the status a name'` and stay green. Two different messages out of
+     * one expression is what proves the row reports the SCHEMA's reason rather than a constant.
+     */
+    it('refuses an over-long name with the schema’s own message', async () => {
+      const u = userEvent.setup()
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      // 41 characters — one past the cap that mirrors `project_statuses_name_nonempty`.
+      await u.type(input, `${'B'.repeat(41)}{Enter}`)
+
+      expect(await within(rowFor('Building')).findByRole('alert')).toHaveTextContent(
+        'Keep the name to 40 characters or fewer',
+      )
+      expect(mockRename).not.toHaveBeenCalled()
+    })
   })
 
   describe('reordering', () => {
@@ -513,7 +560,21 @@ describe('StatusSettings', () => {
       expect(within(dialog).queryByText(/triage/i)).toBeNull()
     })
 
-    it('calls onDeleted after a successful delete', async () => {
+    /**
+     * THE CRITICAL from the SPRIN-84 review, and the reason SPRIN-87 exists.
+     *
+     * `onDeleted(status.id)` was asserted here and the WRITE's own argument was not —
+     * `mockDelete` was the only one of this file's four mocks with no `toHaveBeenCalledWith`
+     * at all. So `deleteProjectStatus('WRONG-ID-NOT-A-STATUS')` left the whole unit suite
+     * green while the shell removed the right row optimistically and the database lost a
+     * different status: silent, destructive, and green.
+     *
+     * Both halves belong in ONE test. Apart, each says only "some id was used"; together they
+     * say the row that disappears from the list is the row that was deleted from the database.
+     * 'Building' rather than the first row, so a write that ignored its argument and sent the
+     * head of the list would be caught rather than accidentally right.
+     */
+    it('deletes the status the dialog was opened on, and removes that same row', async () => {
       const u = userEvent.setup()
       mockDelete.mockResolvedValue({ ok: true, value: undefined })
       const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
@@ -523,7 +584,92 @@ describe('StatusSettings', () => {
       // Scoped to the dialog: an unscoped /delete/i would also match every row's button.
       await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
 
+      await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('st2'))
+      expect(mockDelete).toHaveBeenCalledOnce()
       await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('st2'))
+    })
+
+    /**
+     * Open Building's confirm and click Delete on a write that never settles, so the in-flight
+     * state can be observed at all. Every caller MUST `release()` before returning: a state
+     * update that lands after the test has finished is an `act()` warning at best and a leak
+     * into the next test at worst.
+     *
+     * The wait is on the button's LABEL rather than a timer — `deleting` is what flips it to
+     * 'Deleting…', so that text appearing is the in-flight state being on screen, not a guess
+     * that enough microtasks have drained.
+     */
+    async function startPendingDelete() {
+      const u = userEvent.setup()
+      let release: (v: { ok: true; value: undefined }) => void = () => {}
+      mockDelete.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve
+        }),
+      )
+      const handlers = renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      const confirm = within(dialog).getByRole('button', { name: /^delete$/i })
+      await u.click(confirm)
+      await waitFor(() => expect(confirm).toHaveTextContent(/deleting/i))
+      return { u, dialog, confirm, handlers, release }
+    }
+
+    /**
+     * The `if (deleting) return` in `onOpenChange`, pinned on the ONE close path it is the sole
+     * defence for.
+     *
+     * Cancel cannot pin it: Cancel is itself `disabled={deleting}`, so "click Cancel, the dialog
+     * stays open" passes with either guard removed and therefore pins neither. Escape reaches
+     * `onOpenChange` without going through a disabled control, so this test fails the moment the
+     * early return goes — leaving a user able to dismiss the confirm mid-write and watch a row
+     * vanish from a dialog they thought they had cancelled.
+     */
+    it('keeps the confirm open on Escape while the delete is in flight', async () => {
+      const { u, confirm, release } = await startPendingDelete()
+
+      await u.keyboard('{Escape}')
+
+      expect(screen.getByRole('alertdialog')).toBeVisible()
+
+      release({ ok: true, value: undefined })
+      await waitFor(() => expect(confirm).toHaveTextContent(/^delete$/i))
+    })
+
+    /**
+     * Both footer buttons' `disabled={deleting}`.
+     *
+     * Cancel's is asserted as the ATTRIBUTE deliberately, not through behaviour: with the
+     * `onOpenChange` guard above still standing, the two defences overlap and the attribute is
+     * the only observable difference between them. A disabled control is itself the user-facing
+     * property — not focusable, visibly unavailable — so this is the honest assertion rather
+     * than a retreat to mechanism. The Delete button gets the behavioural test as well, below,
+     * because nothing else guards it.
+     */
+    it('disables both footer buttons while the delete is in flight', async () => {
+      const { dialog, confirm, release } = await startPendingDelete()
+
+      expect(within(dialog).getByRole('button', { name: /^cancel$/i })).toBeDisabled()
+      expect(confirm).toBeDisabled()
+
+      release({ ok: true, value: undefined })
+      await waitFor(() => expect(confirm).toBeEnabled())
+    })
+
+    // The consequence the disabled attribute exists for. `submit()` has no re-entrancy check of
+    // its own, so without the button's `disabled` a second click calls `deleteProjectStatus`
+    // again — a double-click on a slow connection sending two deletes for one intent.
+    it('sends only one delete when the confirm button is clicked twice', async () => {
+      const { u, confirm, release } = await startPendingDelete()
+
+      await u.click(confirm)
+
+      expect(mockDelete).toHaveBeenCalledOnce()
+
+      release({ ok: true, value: undefined })
+      await waitFor(() => expect(confirm).toBeEnabled())
     })
 
     it('surfaces a has_tickets refusal without calling onDeleted', async () => {
@@ -536,6 +682,52 @@ describe('StatusSettings', () => {
       await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/move them/i)
+      expect(onDeleted).not.toHaveBeenCalled()
+    })
+
+    /**
+     * `DELETE_FAILURE_COPY`'s other two reachable entries. Only `has_tickets` was pinned, so
+     * both of these could be reworded to the generic 'Something went wrong. Please try again.'
+     * with nothing going red — copy that tells the user to retry a write which will refuse
+     * identically every time.
+     *
+     * Driven through the mock, exactly as the `has_tickets` test above is, because the UI gates
+     * both: `deleteBlockReason` disables Delete on a one-status list, and a stale row is a race
+     * with another tab. Gated in the UI is not the same as unreachable from the write — that
+     * is the whole reason the map is total over the tag union.
+     *
+     * The EXACT sentence, not a fragment, so any reword fails rather than only a reword that
+     * happens to drop the word this test chose to look for.
+     */
+    it('explains a last-status refusal in its own words', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'last' })
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        'A project must keep at least one status.',
+      )
+      expect(onDeleted).not.toHaveBeenCalled()
+    })
+
+    // Scoped to the DIALOG, not the page: `AddStatusForm`'s own stale copy also says 'refresh',
+    // so an unscoped assertion here would pass on the wrong element's sentence.
+    it('explains a stale refusal in its own words', async () => {
+      const u = userEvent.setup()
+      mockDelete.mockResolvedValue({ ok: false, error: 'stale' })
+      const { onDeleted } = renderSettings({ counts: KNOWN_ZERO_COUNTS })
+
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: /^delete$/i }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        'This status no longer exists — refresh the page to see the current list.',
+      )
       expect(onDeleted).not.toHaveBeenCalled()
     })
 
