@@ -32,11 +32,19 @@ const mockDelete = vi.mocked(deleteProjectStatus)
  * A fixture reusing 'To Do'/'In Progress'/'Done' could not tell "renders the row's name" from
  * "renders the row's category", nor "reads the rows" from "reads a constant".
  *
- * BUILDING's slug is deliberately NOT its lowercased name. Every status here used to be a
- * single word, so `slug === name.toLowerCase()` held for all three — and two production call
- * sites that key on the SLUG (`counts.get(status.slug)` and the reorder payload) survived being
- * re-keyed on the name with all 34 tests green. The seeded vocabulary is exactly where they
- * diverge: 'In Progress' slugs to `in_progress`. One row that tells them apart is enough.
+ * TWO confounds are deliberately broken here, and both were found by mutation rather than by
+ * reading. A fixture whose values coincide cannot tell two different reads apart.
+ *
+ * 1. **`slug` is not the lowercased `name`.** Every status here used to be a single word, so
+ *    `slug === name.toLowerCase()` held for all three — and two production call sites that key
+ *    on the SLUG (`counts.get(status.slug)` and the reorder payload) survived being re-keyed on
+ *    the name, whole suite green. The seeded vocabulary is exactly where they diverge:
+ *    'In Progress' slugs to `in_progress`.
+ * 2. **The initial status is not the FIRST status.** While TRIAGE was both `is_initial` and
+ *    `statuses[0]`, `removeStatus(statuses, status.id)` survived being re-keyed to
+ *    `statuses[0].id` — so the confirm dialog could name the wrong takeover status on any
+ *    project whose initial status is not first. `is_initial` is independent of `position`, and
+ *    the fixture now says so.
  */
 function status(overrides: Partial<ProjectStatus> = {}): ProjectStatus {
   return {
@@ -52,14 +60,14 @@ function status(overrides: Partial<ProjectStatus> = {}): ProjectStatus {
   } as ProjectStatus
 }
 
-const TRIAGE = status()
+const TRIAGE = status({ is_initial: false })
 const BUILDING = status({
   id: 'st2',
   slug: 'in_build',
   name: 'Building',
   category: 'in_progress',
   position: 2,
-  is_initial: false,
+  is_initial: true,
 })
 const SHIPPED = status({
   id: 'st3',
@@ -278,6 +286,26 @@ describe('StatusSettings', () => {
       await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(renamed))
     })
 
+    // The TRIMMED name is what reaches the write, not the raw commit. Typed with trailing
+    // spaces, which `EditableText` forwards (it compares the raw draft) and the row's own
+    // guard lets through (the trimmed name differs from 'Building') — so this is the only
+    // shape where `parsed.data.name` and `next` are distinguishable. Sending `next` survived
+    // every other test in the file. `renameProjectStatus` trims server-side too, so this is
+    // defence in depth rather than a live bug; it is pinned for the same reason the row's
+    // no-op guard is.
+    it('sends the trimmed name, not the raw commit', async () => {
+      const u = userEvent.setup()
+      mockRename.mockResolvedValue({ ok: true, value: { ...BUILDING, name: 'In Build' } })
+      renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, 'In Build   {Enter}')
+
+      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('st2', 'In Build'))
+    })
+
     it('reports a duplicate rename on the row and hands nothing up', async () => {
       const u = userEvent.setup()
       mockRename.mockResolvedValue({ ok: false, error: 'duplicate' })
@@ -289,9 +317,36 @@ describe('StatusSettings', () => {
       await u.type(input, 'Triage{Enter}')
 
       const alert = await screen.findByRole('alert')
-      expect(alert).toHaveTextContent(/already/i)
+      // Anchored, to the same standard as the three delete sentences. The fragment /already/i
+      // survived an additive reword of DUPLICATE_NAME.
+      expect(alert).toHaveTextContent(/^A status with that name already exists in this project\.$/)
       // On the ROW that failed, not floating at the top of the page.
       expect(within(rowFor('Building')).getByRole('alert')).toBe(alert)
+      expect(onUpdated).not.toHaveBeenCalled()
+    })
+
+    /**
+     * The OTHER side of the rename's failure ternary, and the one with real consequence.
+     *
+     * `setError(result.error === 'duplicate' ? DUPLICATE_NAME : GENERIC_CREATE_ERROR)` could be
+     * collapsed to `setError(DUPLICATE_NAME)` with the whole unit suite green — so a rename that
+     * failed for any other reason would tell the user "a status with that name already exists"
+     * and send them to edit a name that was never the problem. That is precisely the wrong-copy
+     * outcome the delete side's AC4 exists to prevent, on the sibling control, unpinned.
+     */
+    it('shows the generic retry copy when a rename fails for a reason that is not a duplicate', async () => {
+      const u = userEvent.setup()
+      mockRename.mockResolvedValue({ ok: false, error: 'unknown' })
+      const { onUpdated } = renderSettings()
+
+      await u.click(within(rowFor('Building')).getByRole('button', { name: /edit .*building/i }))
+      const input = screen.getByRole('textbox', { name: /building/i })
+      await u.clear(input)
+      await u.type(input, 'In Build{Enter}')
+
+      expect(await within(rowFor('Building')).findByRole('alert')).toHaveTextContent(
+        /^Something went wrong\. Please try again\.$/,
+      )
       expect(onUpdated).not.toHaveBeenCalled()
     })
 
@@ -299,8 +354,12 @@ describe('StatusSettings', () => {
     // that, and the honest statement of why took three mutations to get right:
     //
     //   drop the row's `parsed.data.name === status.name` guard  -> 2 failed, NOT this test
-    //   drop `EditableText`'s `draft !== value` guard            -> 34 passed
+    //   drop `EditableText`'s `draft !== value` guard            -> suite green
     //   drop BOTH                                                -> 3 failed, incl. this test
+    //
+    // Stated as outcomes rather than "N passed" on purpose: an absolute count in a comment is
+    // wrong the moment the next test is added, and a stale "34 passed" in a 36-test suite reads
+    // as two failures — inverting the very claim it was recording.
     //
     // They are overlapping defences and each alone is free to go. An earlier version of this
     // comment claimed the test passed "because of `EditableText`'s own guard, NOT the row's",
@@ -463,6 +522,13 @@ describe('StatusSettings', () => {
           within(rowFor('Shipped')).getByRole('button', { name: /move .* up/i }),
         ).toBeDisabled(),
       )
+      // BOTH directions, because the test says "every move control" and only asserted one:
+      // dropping `disabled={reordering}` from the Move DOWN button left the whole 888-test
+      // unit suite green. The invariant `StatusSettings` states is that every row waits — the
+      // write sends the WHOLE order, so a second one races the first — and half of it was
+      // unobserved.
+      expect(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i })).toBeDisabled()
+
       release({ ok: true, value: STATUSES })
       await waitFor(() =>
         expect(
@@ -576,8 +642,12 @@ describe('StatusSettings', () => {
         // And the COUNT itself says it does not know. Only the gate was pinned, so the span
         // could render a fabricated '0 tickets' directly above "counts are unavailable" —
         // re-introducing on screen the exact `?? 0` lie the `number | undefined` prop exists
-        // to prevent.
-        expect(within(row).getByText('count unavailable')).toBeInTheDocument()
+        // to prevent. Guarded against `aria-hidden` for the same reason the reason paragraph
+        // above is: it is explanatory text for a disabled control, and `getByText` reaches it
+        // either way.
+        const unknown = within(row).getByText('count unavailable')
+        expect(unknown).toBeInTheDocument()
+        expect(unknown).not.toHaveAttribute('aria-hidden')
       }
     })
 
@@ -585,13 +655,16 @@ describe('StatusSettings', () => {
       const u = userEvent.setup()
       renderSettings({ counts: KNOWN_ZERO_COUNTS })
 
-      // TRIAGE is the initial status; BUILDING is the lowest-position survivor, so
-      // `removeStatus` promotes it — the dialog must name it, not re-derive the rule itself.
-      await u.click(screen.getByRole('button', { name: 'Delete Triage' }))
+      // BUILDING is the initial status and is NOT the first row — which is the whole point.
+      // TRIAGE is the lowest-position survivor, so `removeStatus` promotes it and the dialog
+      // must name it rather than re-derive the rule itself. While the initial status was also
+      // `statuses[0]`, `removeStatus(statuses, status.id)` survived being re-keyed to
+      // `statuses[0].id`, because the two reads could not be told apart.
+      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
 
       const dialog = await screen.findByRole('alertdialog')
       expect(dialog).toHaveTextContent(/will start in/i)
-      expect(dialog).toHaveTextContent('Building')
+      expect(dialog).toHaveTextContent('Triage')
     })
 
     // The MIRROR of the test above, and the one that pins the `status.is_initial` guard in
@@ -604,13 +677,16 @@ describe('StatusSettings', () => {
       const u = userEvent.setup()
       renderSettings({ counts: KNOWN_ZERO_COUNTS })
 
-      // BUILDING is not initial; TRIAGE is, and survives this delete as the initial status.
-      await u.click(screen.getByRole('button', { name: 'Delete Building' }))
+      // TRIAGE is not initial; BUILDING is, and survives this delete as the initial status.
+      await u.click(screen.getByRole('button', { name: 'Delete Triage' }))
 
       const dialog = await screen.findByRole('alertdialog')
       expect(dialog).toHaveTextContent(/can’t be undone/i)
       expect(dialog).not.toHaveTextContent(/will start in/i)
-      expect(within(dialog).queryByText(/triage/i)).toBeNull()
+      // The surviving initial status must not be named at all. 'Building' rather than 'Triage'
+      // now that the initial status has moved — the dialog's own title says 'Delete Triage?',
+      // so looking for that name here would match the heading and never the promotion sentence.
+      expect(within(dialog).queryByText(/building/i)).toBeNull()
     })
 
     /**
@@ -642,7 +718,13 @@ describe('StatusSettings', () => {
       // leaving a destructive dialog that does not say which of three identical Delete buttons
       // opened it. A WRONG name was caught only incidentally, by an assertion in a different
       // test about a different sentence.
-      expect(dialog).toHaveTextContent('Delete Building?')
+      //
+      // Scoped to the HEADING and anchored, which the first version of this line was not — it
+      // read `expect(dialog).toHaveTextContent('Delete Building?')`, a substring match over the
+      // whole subtree (title, description AND both buttons), so an additive reword of the title
+      // survived it. That is the same defect this commit's siblings were anchored to fix, three
+      // lines away. `AlertDialogTitle` renders an `h2`, whose name is one text node.
+      expect(within(dialog).getByRole('heading')).toHaveTextContent(/^Delete Building\?$/)
       await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('st2'))
       expect(mockDelete).toHaveBeenCalledOnce()
       await waitFor(() => expect(onDeleted).toHaveBeenCalledWith('st2'))

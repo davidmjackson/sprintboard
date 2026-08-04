@@ -84,7 +84,7 @@ were asserted "twice — it says its own specific thing, and it is *not* the gen
 and that second assertion was never written; the tests asserted the bare sentence and the docblock
 called it exact. It is not. `toHaveTextContent` with a string is a **substring** match, so
 appending the generic retry copy to the end of the sentence — the precise mutation these tests
-exist to kill — passed all 34 tests. Review caught it, measured; anchoring is what actually makes
+exist to kill — left the whole suite green. Review caught it, measured; anchoring is what makes
 "this sentence and nothing else" true, and it subsumes the pair the spec originally promised.
 
 `has_tickets` was pinned by the fragment `/move them/i` and is now anchored to the same standard,
