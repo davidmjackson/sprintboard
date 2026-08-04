@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 
 import { StatusSettings } from './StatusSettings'
 import type { ProjectStatus } from '@/lib/domain'
+import { STATUS_CATEGORIES } from '@/lib/domain'
 import {
   createProjectStatus,
   deleteProjectStatus,
@@ -196,16 +197,40 @@ describe('StatusSettings', () => {
       await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created))
     })
 
-    it('clears the name field after a successful add', async () => {
+    /**
+     * The DEFAULT category, which nothing observed — and the consequence is not cosmetic.
+     *
+     * The only test that asserted a category selected one first, so `STATUS_CATEGORIES[0]` could
+     * become `[2]` with the whole 890-test unit suite green: a user who types a name and clicks
+     * Add without touching the select would silently create a **done-category** status.
+     * `doneSlugs()` treats done-category statuses as terminal, so `completeSprint` would then
+     * carry those tickets out of the sprint — precisely the drift `doneSlugs` was extracted to
+     * prevent. The value is asserted from `STATUS_CATEGORIES[0]` rather than the literal
+     * `'todo'`, because CLAUDE.md says a category value is named in `domain.ts` and nowhere else.
+     */
+    it('defaults the category to the first of the shared list, not an arbitrary one', () => {
+      renderSettings()
+
+      expect(screen.getByRole('combobox', { name: 'Category' })).toHaveValue(STATUS_CATEGORIES[0])
+    })
+
+    it('clears BOTH fields after a successful add', async () => {
       const u = userEvent.setup()
       mockCreate.mockResolvedValue({ ok: true, value: status({ id: 'st4', name: 'Blocked' }) })
       renderSettings()
 
       const name = screen.getByRole('textbox', { name: 'Name' })
+      const category = screen.getByRole('combobox', { name: 'Category' })
       await u.type(name, 'Blocked')
+      await u.selectOptions(category, 'done')
       await u.click(screen.getByRole('button', { name: 'Add status' }))
 
       await waitFor(() => expect(name).toHaveValue(''))
+      // The category too. `form.reset()` narrowed to `form.resetField('name')` was green,
+      // because nothing in the suite ever read this select — the same blind spot that left
+      // the default unpinned above. A stale 'Done' selection is how the next status quietly
+      // becomes terminal.
+      expect(category).toHaveValue(STATUS_CATEGORIES[0])
     })
 
     // AC4: a duplicate is a user-correctable outcome about ONE field, so it is reported on
@@ -245,7 +270,12 @@ describe('StatusSettings', () => {
       await u.click(screen.getByRole('button', { name: 'Add status' }))
 
       const alert = await screen.findByRole('alert')
-      expect(alert).toHaveTextContent(/refresh/i)
+      // Anchored, like the delete dialog's stale sentence three describe-blocks away. The
+      // fragment /refresh/i survived an additive reword; one of three sites was anchored and
+      // two were not, which is this story's recurring failure in miniature.
+      expect(alert).toHaveTextContent(
+        /^This list of statuses is out of date — refresh the page and try adding it again\.$/,
+      )
       expect(alert).not.toHaveTextContent(/already exists/i)
       expect(fieldMessage(field)).not.toMatch(/already/i)
       expect(onCreated).not.toHaveBeenCalled()
@@ -260,7 +290,7 @@ describe('StatusSettings', () => {
       await u.click(screen.getByRole('button', { name: 'Add status' }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent(
-        'Something went wrong. Please try again.',
+        /^Something went wrong\. Please try again\.$/,
       )
       expect(onCreated).not.toHaveBeenCalled()
     })
@@ -279,7 +309,11 @@ describe('StatusSettings', () => {
   describe('renaming a status', () => {
     it('commits the new name and hands the returned row up', async () => {
       const u = userEvent.setup()
-      const renamed = { ...BUILDING, name: 'In Build' }
+      // The server's row carries a `position` the component has no way to derive, so
+      // `onUpdated(result.value)` is distinguishable from `onUpdated({ ...status, name })`.
+      // While the mock resolved exactly what local code could build, the deep-equality
+      // assertion below could not tell "hands the SERVER's row up" from "fabricates one".
+      const renamed = { ...BUILDING, name: 'In Build', position: 99 }
       mockRename.mockResolvedValue({ ok: true, value: renamed })
       const { onUpdated } = renderSettings()
 
@@ -477,7 +511,15 @@ describe('StatusSettings', () => {
   describe('reordering', () => {
     it('sends the COMPLETE swapped slug list when a row moves down', async () => {
       const u = userEvent.setup()
-      mockReorder.mockResolvedValue({ ok: true, value: [BUILDING, TRIAGE, SHIPPED] })
+      // Positions renumbered by the server, which the local splice cannot produce — so
+      // `onReordered(rest)` and `onReordered(result.value)` are distinguishable here rather
+      // than only in `ProjectShell.test.tsx`.
+      const reordered = [
+        { ...BUILDING, position: 10 },
+        { ...TRIAGE, position: 20 },
+        { ...SHIPPED, position: 30 },
+      ]
+      mockReorder.mockResolvedValue({ ok: true, value: reordered })
       const { onReordered } = renderSettings()
 
       await u.click(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i }))
@@ -487,7 +529,7 @@ describe('StatusSettings', () => {
       await waitFor(() =>
         expect(mockReorder).toHaveBeenCalledWith('p1', ['in_build', 'triage', 'shipped']),
       )
-      await waitFor(() => expect(onReordered).toHaveBeenCalledWith([BUILDING, TRIAGE, SHIPPED]))
+      await waitFor(() => expect(onReordered).toHaveBeenCalledWith(reordered))
     })
 
     it('sends the COMPLETE swapped slug list when a row moves up', async () => {
@@ -551,7 +593,7 @@ describe('StatusSettings', () => {
       await u.click(within(rowFor('Triage')).getByRole('button', { name: /move .* down/i }))
 
       expect(await screen.findByRole('alert')).toHaveTextContent(
-        'Something went wrong. Please try again.',
+        /^Something went wrong\. Please try again\.$/,
       )
       expect(onReordered).not.toHaveBeenCalled()
       // The rendered order is the prop's, untouched — the parent owns the list.
@@ -609,6 +651,25 @@ describe('StatusSettings', () => {
       renderSettings({ counts: new Map([['triage', 4]]) })
 
       expect(within(deleteRowFor('Triage')).getByText('4 tickets')).toBeInTheDocument()
+    })
+
+    // ZERO — the count every deletable status has, and the only one that was never asserted.
+    // `4` and `undefined` were both covered; `count === 0 ? '' : …` was green.
+    it('shows a zero count rather than nothing at all', () => {
+      renderSettings({ counts: new Map([['triage', 0]]) })
+
+      expect(within(deleteRowFor('Triage')).getByText('0 tickets')).toBeInTheDocument()
+    })
+
+    // And ONE, which is the singular. Declared as an accepted gap for two review rounds on the
+    // grounds that the code is correct and only the coverage was missing — which is true of
+    // every unpinned line, and is exactly the reasoning that left the count's other two cases
+    // unobserved. Adding the zero case and not this one would have been the mirror-site mistake
+    // this story has now made three times.
+    it('says “1 ticket”, singular, for a status holding one', () => {
+      renderSettings({ counts: new Map([['triage', 1]]) })
+
+      expect(within(deleteRowFor('Triage')).getByText('1 ticket')).toBeInTheDocument()
     })
 
     it('disables Delete on a status holding tickets, and states the reason', () => {
@@ -687,7 +748,12 @@ describe('StatusSettings', () => {
       await u.click(screen.getByRole('button', { name: 'Delete Triage' }))
 
       const dialog = await screen.findByRole('alertdialog')
-      expect(dialog).toHaveTextContent(/can’t be undone/i)
+      // `toHaveTextContent` reads `textContent` and does not honour `aria-hidden`, so the
+      // warning on a DESTRUCTIVE confirm could be hidden from assistive tech with every test
+      // green — the same mechanism already guarded on the row's block-reason and count span,
+      // unapplied to the two sibling sites until now.
+      const undone = within(dialog).getByText(/can’t be undone/i)
+      expect(undone).not.toHaveAttribute('aria-hidden')
       expect(dialog).not.toHaveTextContent(/will start in/i)
       // The surviving initial status must not be named at all. 'Building' rather than 'Triage'
       // now that the initial status has moved — the dialog's own title says 'Delete Triage?',
@@ -980,8 +1046,8 @@ describe('StatusSettings', () => {
     // `listitem`s is equally true of an empty `<ul>`. Unreachable today — the seed trigger
     // guarantees four statuses and there is no DELETE policy — but SPRIN-80 makes it reachable,
     // and a state that only appears once deletion exists is the one least likely to be noticed.
-    expect(
-      screen.getByText('This project has no statuses, so its board has no columns.'),
-    ).toBeVisible()
+    const empty = screen.getByText('This project has no statuses, so its board has no columns.')
+    expect(empty).toBeVisible()
+    expect(empty).not.toHaveAttribute('aria-hidden')
   })
 })
