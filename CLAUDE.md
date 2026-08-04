@@ -260,13 +260,28 @@ Two defences, both load-bearing — do not undo either while "tidying up":
   same cool-down-and-rerun. Classify on the *shape* — status, error class, setup-vs-body,
   blast radius — before reaching for a remedy, and never let "neither documented flake
   matches" become "therefore it is my diff". That inference is backwards. Seen 2026-07-29.
+- **A FOURTH signature is not auth at all: a bare `Test timed out in 5000ms` on a live
+  suite, whose VICTIM MOVES between runs.** Vitest's 5s default is reporting a *slow*
+  database, not a broken one. SPRIN-83 saw `keepalive` die on one run and `rls` ×2 +
+  `sprints` die on the next — same SHA, disjoint tests. **A defect does not move target on
+  an unchanged commit; a starved backend does**, so re-read the second failure's file list
+  before concluding anything. Confirm with `npm run keepalive` — one anon GET, no sign-in,
+  so it cannot rate-limit; it answered in **426 ms** against the 5000 ms budget, settling
+  that the endpoint was healthy and CI was merely starved. The cause is usually the
+  session's own traffic: the `verify` concurrency group serialises CI against itself and
+  does nothing about a local pile-up of seeding, browser sessions, an E2E and a local
+  `verify`. Remedy is a **7-minute** quiet window — longer than the two below — then one
+  rerun.
 - **When it still bites, it is transient — never "fix" it by weakening a suite.** Confirm
-  the failing test matches **one of the three signatures above** — the null-`id` setup
-  crash, the ES256 `unrecognized JWT kid`, or the `status: 0`/`ECONNRESET` transport reset.
+  the failing test matches **one of the four signatures above** — the null-`id` setup
+  crash, the ES256 `unrecognized JWT kid`, the `status: 0`/`ECONNRESET` transport reset, or
+  the moving 5s timeout.
   Anything else is real. (This clause used to read "the null-`id` setup crash, any other
   failure is real", which contradicted the third signature the moment it was added: that
-  one arrives in a test *body*. Naming all three is what keeps this from being read as a
-  general licence to re-run body-level failures.) Then wait ~2–5
+  one arrives in a test *body*. Naming all four is what keeps this from being read as a
+  general licence to re-run body-level failures — and note the fourth was found by a
+  session that had to resist exactly the "no signature matches, so it is my diff"
+  inference.) Then wait ~2–5
   minutes with no sign-ins, then re-run the failed job (`gh run rerun <id> --failed`).
   Confirm the rerun's `headSha` equals the PR head, and trust the CI result over a local
   run. Serialising CI against the shared database (the `verify` concurrency group) already
