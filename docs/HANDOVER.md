@@ -17,12 +17,42 @@ custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, in pro
 fields (71) → sprint cadence (74) → **teams, roles and permissions (75 — the security boundary,
 deliberately last)**.
 
-Epic 73 has six stories: 81, 82, 83, 84 done; **85 (WIP limit)** and **86 (over-limit board)**
-remain, plus **87** (below), which should land before 85.
+Epic 73 has six stories: 81, 82, 83, 84 and **87** done; **85 (WIP limit)** and **86 (over-limit
+board)** remain. 85 is next, and the cluster it threads a WIP prop through is now heavily pinned.
 
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 52 — SPRIN-87, pin the status delete path (PR #84, `f2d4c38`)
+
+Tests only: `StatusSettings.test.tsx` plus its spec, zero production files. 27 tests → 41. The
+Critical it was filed for was real — `deleteProjectStatus(status.id)` could be given a literal id
+with the whole suite green, because `onDeleted(status.id)` was asserted and the write's own
+argument never was.
+
+**Four adversarial rounds ran and NOT ONE found a defect in production code.** Every finding was in
+this story's own tests or in my claims about them. Three rounds running it was the same shape: *a
+standard articulated in one commit, applied to only one of two sibling sites.* Round 1 anchored
+two copy assertions and left three; round 2 added an `aria-hidden` guard to two sites and left two;
+round 2's own new title assertion **was** the unanchored substring it abolished three lines away.
+41 mutations, 40 killed. Details in `docs/superpowers/specs/2026-08-04-sprin-87-…-design.md`.
+
+Three fixture **confounds** were broken, each found only after the previous one was fixed: `slug`
+was the lowercased `name`; the initial status was also `statuses[0]`; `position` was `index + 1`.
+Each one let two different production reads be re-keyed to the other with the suite green. The
+fixture docblock now says the list is **open**, deliberately.
+
+Two methodology scars worth more than the story:
+
+- **A mutation harness needs a POSITIVE control, not just a null one.** The first one here passed
+  `--reporter=basic`, which does not exist in Vitest 4, so every run crashed before executing a
+  test and reported all 12 kills as *survivors*. A null mutation cannot catch that — zero failures
+  is its expected result. Read the runner's own `Tests N passed` line and always include a mutation
+  a pre-existing test must kill.
+- **"The code is correct, only the coverage is missing" is not a reason to defer.** It is true of
+  every unpinned line. It kept the singular `1 ticket` label out of two rounds while its
+  zero-count sibling carried the identical justification.
 
 ### Session 51 — SPRIN-84, split `StatusSettings.tsx` (PR #82, `4a834e4`)
 
@@ -91,9 +121,43 @@ Engineering items with no story yet. Each is a candidate for one.
   so it is invisible until it breaks).
 - **Pre-existing mutation survivor** (`8273ee3`): `BoardTab`'s rollback merges onto `latest` rather
   than `ticket`, invisible to every test, while its docblock claims concurrent-edit preservation.
+  **Note the SPRIN-87 lesson before deferring this again:** "the code is correct, only the coverage
+  is missing" is true of every unpinned line and is not by itself a reason to leave it.
 - **`createProjectStatus`'s `max(position)+1`** is derived from a list nothing refetches. The
   *failure* is honest (`'stale'`), the staleness is not. Note `is_initial` **is** writable on
   INSERT, guarded by a partial index.
+- **A lint rule forbidding `toHaveTextContent` with a bare string**, requiring an anchored regex.
+  This is the real remedy for the class SPRIN-87 hit in three consecutive review rounds: a bare
+  string is a **substring** match, so any *additive* reword of user-facing copy survives. Vigilance
+  demonstrably does not close it — four rounds of sweeping "all" sites each missed the next one.
+  Wants an ADR alongside it. The nearest existing precedent is the `project_type` AST scan in
+  `src/test/project-type-single-expression.test.ts`.
+- **`renameProjectStatus`'s zero-row protection is only INCIDENTAL.** `.single()` errors on 0 rows
+  → `writeError` → `'unknown'` → generic copy, where `deleteProjectStatus` and
+  `reorderProjectStatuses` both check the row count explicitly and comment on why. Fail-closed
+  today, by a less deliberate mechanism than its two siblings. Found by the SPRIN-87 security
+  review; worth settling before SPRIN-75 rewrites these policies.
+- **`StatusSettings`'s `error` state is not keyed on `projectId`**, so a reorder failure would
+  survive the shell swapping the `statuses` prop to another project. The copy is the generic retry
+  string with no data in it, so this is a staleness bug rather than a leak.
+- **A disabled Delete button has no `aria-describedby`** to the sentence explaining why it is
+  disabled. SPRIN-87's tests now refuse an `aria-hidden` reason, but the *relationship* is a
+  production change. `fieldMessage` in the test file already exists for asserting exactly this.
+- **A successful delete never calls `setConfirming(false)`** — the dialog closes only because the
+  parent removes the row and unmounts it. Real today, latent if the shell ever refetches instead
+  of splicing.
+- **`EditableText`'s own `draft !== value` guard is unpinned and unpinnable from
+  `StatusSettings.test.tsx`** — the row's trim guard shadows it on every path that file exercises.
+  It needs a component-level `EditableText` test.
+- **`e2e.yml` shares the global `verify` concurrency group, and the two can cancel EACH OTHER on a
+  single push.** Seen twice in session 52 (PRs #84 and #85): `verify` for a PR head came back
+  `cancelled` within a second of `e2e` starting on the same commit. **It is a race, not
+  deterministic** — the same session's pushes at `23afd16` and `d700ccf` both had `verify` and `e2e`
+  succeed side by side. The sharing is deliberate (it keeps both off the shared database), but the
+  consequence is that **a required check can land as `cancelled`, which is not a failure and must
+  not be read as one.** Re-run it and confirm the rerun's `headSha` matches the PR head. Worth
+  deciding whether the group should be keyed per-workflow-per-SHA, which would keep the
+  database-serialising intent while removing the self-cancellation.
 - **Leaked Password Protection** is recommended but has **never been confirmed enabled** in the
   Supabase dashboard. If it is on, the hardcoded signup password in `e2e/happy-path.spec.ts`
   becomes the risk — randomise it.
@@ -118,7 +182,10 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   guarding the read.
 - **`defaultValue=` on the search box** is inert *only* while nothing but its own `onChange` writes
   `query`. URL sync would inherit a silent bug.
-- **The status delete path** — see SPRIN-87.
+- **The status delete path** — closed by SPRIN-87. What replaces it: **every fixture row's
+  `project_id` equals the `projectId` prop**, so those two reads are indistinguishable. Unlike the
+  three confounds SPRIN-87 broke, these are genuinely equal in production and separating them would
+  encode an impossible state — declared rather than fixed.
 
 ## Settled — do not re-raise
 
