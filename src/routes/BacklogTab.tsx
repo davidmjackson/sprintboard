@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
-import { TICKET_TYPE_LABELS } from '@/lib/domain'
+import { TICKET_TYPE_LABELS, ticketListLabels } from '@/lib/domain'
 import { selectBacklogTickets } from '@/lib/backlog'
 import { selectMatchingTickets } from '@/lib/ticket-search'
 import type { ProjectShellContext } from './ProjectShell'
@@ -13,6 +13,11 @@ import { TicketSearchInput } from './TicketSearchInput'
  * The backlog: the project's tickets with **no sprint**, ordered by number (the order
  * `listTickets` returns and the shell's append-on-create preserves).
  *
+ * On a project with no sprints that rule selects every ticket the project has, so the same tab
+ * is an honest flat list rather than a subset — which is why SPRIN-83 changed only what this
+ * tab is CALLED (`ticketListLabels`, and the nav link reads the same source) and left the
+ * selector alone.
+ *
  * The `sprint_id is null` rule lives in `selectBacklogTickets`, never inlined here. The
  * filter runs client-side over the shell's shared list rather than as a second
  * `.is('sprint_id', null)` query: the shell already owns a single, once-fetched list that
@@ -21,7 +26,7 @@ import { TicketSearchInput } from './TicketSearchInput'
  * split that source of truth and reintroduce the stale-response race S4.1 removed.
  */
 export function BacklogTab() {
-  const { tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
+  const { project, tickets, ticketsPhase, onRetry, currentUser, onOpenTicket } =
     useOutletContext<ProjectShellContext>()
   const [query, setQuery] = useState('')
 
@@ -48,19 +53,28 @@ export function BacklogTab() {
   if (backlog.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed">
-        {/* Covers both "no tickets at all" and "every ticket is in a sprint" — from the
-            backlog's point of view those are the same fact. A failed read is NOT one of
-            them and no longer reaches here. */}
-        <p className="text-muted-foreground text-sm">Nothing in the backlog.</p>
+        {/* On a project WITH sprints this one sentence covers both "no tickets at all" and
+            "every ticket is in a sprint" — from the backlog's point of view those are the same
+            fact. On a project WITHOUT sprints only the first can ever be true, because there
+            is no sprint for a ticket to be in, so a sentence about a backlog would name a
+            distinction that project does not have. That is why the WORDING varies here and the
+            RULE above does not: `selectBacklogTickets` is untouched (SPRIN-83 AC4).
+
+            `ticketListLabels` rather than a comparison written here — it is the same decision
+            the nav link renders, and deciding it twice is how the tab and its link drift into
+            calling the same thing two different names.
+
+            A failed read is NOT one of these states and no longer reaches here. */}
+        <p className="text-muted-foreground text-sm">{ticketListLabels(project).empty}</p>
       </div>
     )
   }
 
   // Filtered AFTER the empty check above, and that order is the whole of AC5: `backlog` is
-  // the unfiltered list, so "Nothing in the backlog." can only be reached when the project
-  // really has no unsprinted tickets. A filtered-empty result is a different fact and says so
-  // below. Same lesson as the `failed` check above it — a distinct state must never wear
-  // another state's face.
+  // the unfiltered list, so the empty state above can only be reached when the project really
+  // has no unsprinted tickets. A filtered-empty result is a different fact and says so below.
+  // Same lesson as the `failed` check above it — a distinct state must never wear another
+  // state's face.
   const matches = selectMatchingTickets(backlog, query)
 
   return (
