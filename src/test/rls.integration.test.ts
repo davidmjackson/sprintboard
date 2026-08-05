@@ -1540,4 +1540,202 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(still).toHaveLength(1)
     })
   })
+
+  /**
+   * SPRIN-90 — the project_fields table (epic SPRIN-71, custom fields).
+   *
+   * Story 1 is READ-ONLY by design: the migration grants `authenticated` SELECT and
+   * UPDATE(name), and nothing else. So every fixture row here is created through
+   * adminClient(), which uses the service_role key and bypasses both RLS and the grants.
+   * That is the only way to get rows onto a table the app role cannot insert into — and it
+   * is the honest way, because it does not quietly widen the privilege under test.
+   *
+   * WHAT IS NOT ASSERTED HERE, AND WHY. There is no "B cannot INSERT another tenant's field"
+   * test. `authenticated` holds no INSERT at all, so such a write is refused by the missing
+   * GRANT before `fields_owner_insert` is ever consulted — and a revoked grant and an RLS
+   * WITH CHECK violation BOTH raise 42501. With nobody holding INSERT there is no positive
+   * control able to tell those two apart, so the test would pass with the policy deleted
+   * outright. Story 2 grants INSERT and proves the policy there, where a refusal is
+   * attributable. Asserting it now would be a control that cannot fail.
+   */
+  describe('a project can define custom fields, owner-scoped (SPRIN-90)', () => {
+    let fieldA: string
+
+    beforeAll(async () => {
+      const { data, error } = await adminClient()
+        .from('project_fields')
+        .insert([
+          { project_id: projectA, slug: 'customer_ref', name: 'Customer ref', type: 'text' },
+          { project_id: projectB, slug: 'squad', name: 'Squad', type: 'select' },
+        ])
+        .select('id, project_id')
+      if (error) throw new Error(`Fixture: could not seed project_fields: ${error.message}`)
+      fieldA = data!.find((r) => r.project_id === projectA)!.id
+    })
+
+    // ---- AC3: the type vocabulary is enforced by the DATABASE, not only by zod ----
+
+    it('accepts every type the client declares, and rejects one it does not', async () => {
+      // The positive half first, so the rejection below cannot pass because inserts are
+      // broken generally. Uses adminClient for the same reason as the fixture.
+      const ok = await adminClient()
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'notes_long', name: 'Notes', type: 'paragraph' })
+        .select('id')
+      expect(ok.error).toBeNull()
+      expect(ok.data).toHaveLength(1)
+
+      const bad = await adminClient()
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'is_urgent', name: 'Urgent', type: 'checkbox' })
+        .select('id')
+
+      // 23514 is check_violation. Asserting the CONSTRAINT NAME too, not just the SQLSTATE:
+      // `message` is the only channel PostgREST exposes for constraint identity, and without
+      // it this passes on ANY check failing — including the slug-format one, which a typo in
+      // the fixture would trip.
+      expect(bad.error?.code).toBe('23514')
+      expect(bad.error?.message).toMatch(/project_fields_type_check/)
+    })
+
+    it('rejects a slug that is not a legal identifier', async () => {
+      const { error } = await adminClient()
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'Customer Ref', name: 'Customer ref', type: 'text' })
+
+      expect(error?.code).toBe('23514')
+      expect(error?.message).toMatch(/project_fields_slug_format/)
+    })
+
+    // ---- AC4: slug and type are IMMUTABLE, and that is a column privilege ----
+
+    /**
+     * The whole point of this test is the POSITIVE CONTROL in it.
+     *
+     * A blanket row-level refusal — no UPDATE privilege at all, or an RLS policy that denies
+     * everything — would make the two refusals below pass while proving nothing about
+     * COLUMN-level grants. The `name` update on the SAME ROW is what separates "this column
+     * is not writable" from "this row is not writable".
+     *
+     * Type immutability is not a tidiness rule: story 3's ticket_field_values carries a
+     * denormalised copy of `type` so its "the populated column matches the type" CHECK can be
+     * written at all, and that copy is sound ONLY while the original cannot change.
+     */
+    it('refuses UPDATE to slug and to type, while name still updates on the same row', async () => {
+      const slug = await a.from('project_fields').update({ slug: 'moved' }).eq('id', fieldA)
+      expect(slug.error?.code).toBe('42501')
+
+      const type = await a.from('project_fields').update({ type: 'number' }).eq('id', fieldA)
+      expect(type.error?.code).toBe('42501')
+
+      const name = await a
+        .from('project_fields')
+        .update({ name: 'Customer reference' })
+        .eq('id', fieldA)
+        .select('id, slug, type, name')
+      expect(name.error).toBeNull()
+      expect(name.data).toHaveLength(1)
+      expect(name.data![0]).toMatchObject({
+        name: 'Customer reference',
+        slug: 'customer_ref',
+        type: 'text',
+      })
+    })
+
+    // ---- AC5: read isolation. RLS FILTERS on USING — it does not raise ----
+
+    it("B sees none of A's custom fields, while A sees its own", async () => {
+      // UNFILTERED reads in both directions. `fields_owner_read` reaches project_fields
+      // through an EXISTS on projects; delete its correlating clause and the predicate
+      // becomes "does this caller own any project at all", which compiles and leaks every
+      // row to every user who owns one. A `.eq('project_id', …)` read would not catch that.
+      const asB = await b.from('project_fields').select('project_id')
+      expect(asB.error).toBeNull()
+      expect(asB.data!.filter((r) => r.project_id === projectA)).toEqual([])
+      // Positive control INSIDE the same read: B does see its own, so an empty result cannot
+      // mean the read was simply broken.
+      expect(asB.data!.filter((r) => r.project_id === projectB)).toHaveLength(1)
+
+      const asA = await a.from('project_fields').select('project_id')
+      expect(asA.error).toBeNull()
+      expect(asA.data!.filter((r) => r.project_id === projectB)).toEqual([])
+      expect(asA.data!.filter((r) => r.project_id === projectA).length).toBeGreaterThan(0)
+    })
+
+    it("B cannot UPDATE A's field, even on the one writable column", async () => {
+      // RLS FILTERS an UPDATE rather than raising, so the tell is the ROW COUNT, not an
+      // error. Asserting `error` alone would pass on a policy that matched every row.
+      const { data, error } = await b
+        .from('project_fields')
+        .update({ name: 'Hijacked' })
+        .eq('id', fieldA)
+        .select()
+      expect(error).toBeNull()
+      expect(data).toHaveLength(0)
+
+      const { data: intact } = await adminClient()
+        .from('project_fields')
+        .select('name')
+        .eq('id', fieldA)
+      expect(intact![0]?.name).not.toBe('Hijacked')
+    })
+
+    /**
+     * ALTER DEFAULT PRIVILEGES grants `anon` full DML on every new table in `public` —
+     * measured against pg_default_acl (anon=arwdDxtm), not assumed. This migration revoked
+     * insert/update/delete and deliberately left SELECT.
+     *
+     * anon reads zero rows because `auth.uid()` is NULL, NOT because no policy covers it:
+     * all four policies are created without a `TO` clause, so they apply to `public`, which
+     * includes anon (verified against pg_policies). Stating that precisely matters — the
+     * wrong explanation would let someone add a public-sharing SELECT policy believing anon
+     * was excluded structurally.
+     *
+     * The three halves fail DIFFERENTLY and a test must pick the right shape for each: a
+     * privilege refusal is 42501 with `data === null`, whereas an RLS filter is
+     * `error: null, data: []`. Asserting the wrong one passes for the wrong reason.
+     */
+    it('an anonymous caller reads nothing and cannot write at all', async () => {
+      const anon = anonClient()
+
+      const read = await anon.from('project_fields').select('id')
+      expect(read.error).toBeNull()
+      expect(read.data).toEqual([]) // RLS filtering, not a privilege error
+
+      const write = await anon
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'sneaky', name: 'Sneaky', type: 'text' })
+      // 42501 ALONE CANNOT SAY WHICH CONTROL REFUSED THIS. Because fields_owner_insert also
+      // applies to anon (roles = {public}) and its EXISTS is false for a NULL auth.uid(), a
+      // WITH CHECK violation raises 42501 too — so the code alone would stay green if a later
+      // migration handed INSERT back to anon, which is exactly the fat-fingered-role-list
+      // mistake the documented REVOKE-cascade invites. `permission denied` is emitted by the
+      // privilege check; an RLS refusal says "violates row-level security policy" instead.
+      expect(write.error?.code).toBe('42501')
+      expect(write.error?.message).toMatch(/permission denied/)
+
+      const del = await anon.from('project_fields').delete().eq('id', fieldA)
+      expect(del.error?.code).toBe('42501')
+
+      // Positive control: the rows the anon read could not see do exist.
+      const { data: exists } = await adminClient()
+        .from('project_fields')
+        .select('id')
+        .eq('id', fieldA)
+      expect(exists).toHaveLength(1)
+    })
+
+    it('an authenticated owner still holds no INSERT or DELETE on their own fields', async () => {
+      // Story 1 ships no write path; stories 2 and 6 grant these. Pinning the CURRENT state
+      // means those stories cannot widen the privilege without this test going red, which is
+      // the review moment we want — "deny by default, widen visibly".
+      const ins = await a
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'nope', name: 'Nope', type: 'text' })
+      expect(ins.error?.code).toBe('42501')
+
+      const del = await a.from('project_fields').delete().eq('id', fieldA)
+      expect(del.error?.code).toBe('42501')
+    })
+  })
 })

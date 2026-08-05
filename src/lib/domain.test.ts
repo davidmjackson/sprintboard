@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  CUSTOM_FIELD_TYPES,
+  CUSTOM_FIELD_TYPE_LABELS,
   DEFAULT_PROJECT_STATUSES,
   PROJECT_TYPES,
   PROJECT_TYPE_LABELS,
@@ -12,6 +14,7 @@ import {
   TICKET_TYPE_LABELS,
   hasSprints,
   hasWipLimits,
+  isCustomFieldType,
   isProjectType,
   isSprintStatus,
   isStatusCategory,
@@ -313,6 +316,58 @@ describe('domain vocabulary matches the database check constraints', () => {
    */
   it('project types match the schema', () => {
     expect(checkConstraintValues('projects', 'project_type')).toEqual([...PROJECT_TYPES])
+  })
+
+  /**
+   * SPRIN-90. Same shape and same caveat as the assertion above: both sides are derived,
+   * so the anchor that stops it being circular is the hard-coded list in "lists every
+   * custom field type" below. Delete that and this pins the two to each other and to
+   * nothing else.
+   *
+   * ORDER MATTERS — `toEqual` on arrays is ordered, so the check constraint must spell the
+   * values in `CUSTOM_FIELD_TYPES` order.
+   *
+   * What this does NOT cover, and it is the same gap the file's own header records: the
+   * schema doc is not the database. This migration was applied by hand, so a sixth value
+   * could reach the live database without touching this file. Only the live integration
+   * test can see that, which is why `rls.integration.test.ts` asserts the constraint by
+   * NAME on a real rejection rather than trusting this.
+   */
+  it('custom field types match the schema', () => {
+    expect(checkConstraintValues('project_fields', 'type')).toEqual([...CUSTOM_FIELD_TYPES])
+  })
+})
+
+/**
+ * The same pair every other vocabulary in this file gets — one hard-coded (the anchor that
+ * keeps the schema assertion above from being circular) and one derived.
+ */
+describe('custom field types and their labels', () => {
+  it('lists every custom field type', () => {
+    expect([...CUSTOM_FIELD_TYPES]).toEqual(['text', 'paragraph', 'number', 'date', 'select'])
+  })
+
+  it('has a non-empty label for every custom field type', () => {
+    for (const type of CUSTOM_FIELD_TYPES) {
+      expect(CUSTOM_FIELD_TYPE_LABELS[type]).toBeTruthy()
+    }
+  })
+
+  /**
+   * `paragraph` reads as "Text (multi-line)" rather than "Paragraph" deliberately: paired
+   * with "Text" it explains itself, where "Text" vs "Paragraph" asks the user to guess what
+   * distinguishes them. Pinned so the wording is a decision rather than an accident.
+   */
+  it('labels the two text types as a pair', () => {
+    expect(CUSTOM_FIELD_TYPE_LABELS.text).toBe('Text')
+    expect(CUSTOM_FIELD_TYPE_LABELS.paragraph).toBe('Text (multi-line)')
+  })
+
+  it('accepts every declared type and rejects one outside the union', () => {
+    for (const type of CUSTOM_FIELD_TYPES) {
+      expect(isCustomFieldType(type)).toBe(true)
+    }
+    expect(isCustomFieldType('checkbox')).toBe(false)
   })
 })
 

@@ -5,6 +5,7 @@ import type { ProjectsContext } from './AppLayout'
 import {
   hasSprints,
   type Project,
+  type ProjectField,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -14,6 +15,7 @@ import { useTaggedRead } from '@/lib/project-reads'
 import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
 import { doneSlugs, listProjectStatuses, removeStatus } from '@/lib/project-statuses'
+import { listProjectFields } from '@/lib/project-fields'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
@@ -54,6 +56,14 @@ export type ProjectShellContext = {
    *  same rows. */
   statuses: ProjectStatus[]
   statusesPhase: ReadPhase
+  /** The project's custom field definitions, in creation order (SPRIN-90). `[]` while
+   *  loading AND when the read failed — always read `fieldsPhase` before treating an empty
+   *  list as "no custom fields", which here is the COMMON case rather than an edge one:
+   *  every project starts with zero and nothing seeds them, so an empty list is exactly what
+   *  a degraded read looks like. Shared from the shell for the same reason as statuses —
+   *  story 3's detail sidebar and story 2's settings form need the same rows. */
+  fields: ProjectField[]
+  fieldsPhase: ReadPhase
   /** A status was added from the Settings tab (SPRIN-77). Appended, because the write gives
    *  it `max(position)+1` — so appending IS the board's column order, not a guess at it. */
   onStatusCreated: (status: ProjectStatus) => void
@@ -125,12 +135,20 @@ export function ProjectShell() {
   const [reloadNonce, setReloadNonce] = useState(0)
   const onRetry = () => setReloadNonce((n) => n + 1)
 
-  // Three reads, one implementation. `listTickets`/`listSprints`/`listProjectStatuses` are
-  // module-level functions, so the references are stable and the effects do not re-run
-  // every render. All three share `reloadNonce`, so Retry covers all three.
+  // Four reads, one implementation. `listTickets`/`listSprints`/`listProjectStatuses`/
+  // `listProjectFields` are module-level functions, so the references are stable and the
+  // effects do not re-run every render. All four share `reloadNonce`, so Retry covers all
+  // four.
+  //
+  // The fourth (SPRIN-90) was added while this component sat at exactly 10 of 10 cyclomatic.
+  // It costs ZERO points, measured rather than assumed: `useTaggedRead` is a hook CALL, not
+  // a branch, and so is the destructure below. That is why this epic needed no
+  // `StatusSettings`-style split story before it could begin — a conditional here would have
+  // been unaffordable, but a read is not.
   const ticketRead = useTaggedRead(activeProjectId, reloadNonce, listTickets)
   const sprintRead = useTaggedRead(activeProjectId, reloadNonce, listSprints)
   const statusRead = useTaggedRead(activeProjectId, reloadNonce, listProjectStatuses)
+  const fieldRead = useTaggedRead(activeProjectId, reloadNonce, listProjectFields)
 
   if (loading) {
     return (
@@ -145,6 +163,7 @@ export function ProjectShell() {
   const { phase: ticketsPhase, items: tickets } = ticketRead
   const { phase: sprintsPhase, items: sprints } = sprintRead
   const { phase: statusesPhase, items: statuses } = statusRead
+  const { phase: fieldsPhase, items: fields } = fieldRead
 
   const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
 
@@ -271,6 +290,8 @@ export function ProjectShell() {
                 sprintsPhase,
                 statuses,
                 statusesPhase,
+                fields,
+                fieldsPhase,
                 onStatusCreated,
                 onStatusUpdated,
                 onStatusesReordered,

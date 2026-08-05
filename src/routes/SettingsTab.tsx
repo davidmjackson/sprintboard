@@ -5,6 +5,7 @@ import type { ProjectShellContext } from './ProjectShell'
 import type { ProjectStatus } from '@/lib/domain'
 import { hasWipLimits } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
+import { CustomFieldSettings } from './CustomFieldSettings'
 import { LoadFailure } from './LoadFailure'
 import { StatusSettings } from './StatusSettings'
 
@@ -75,6 +76,8 @@ export function SettingsTab() {
     project,
     statuses,
     statusesPhase,
+    fields,
+    fieldsPhase,
     onRetry,
     onStatusCreated,
     onStatusUpdated,
@@ -88,15 +91,24 @@ export function SettingsTab() {
   if (statusesPhase !== 'loaded') return <p className="text-muted-foreground text-sm">Loading…</p>
 
   return (
-    <StatusSettings
-      projectId={project.id}
-      statuses={statuses}
-      counts={counts}
-      hasWipLimits={hasWipLimits(project)}
-      onCreated={onStatusCreated}
-      onUpdated={onStatusUpdated}
-      onDeleted={onStatusDeleted}
-      onReordered={onStatusesReordered}
-    />
+    <div className="flex flex-col gap-8">
+      <StatusSettings
+        projectId={project.id}
+        statuses={statuses}
+        counts={counts}
+        hasWipLimits={hasWipLimits(project)}
+        onCreated={onStatusCreated}
+        onUpdated={onStatusUpdated}
+        onDeleted={onStatusDeleted}
+        onReordered={onStatusesReordered}
+      />
+
+      {/* SPRIN-90. Carries its OWN phase rather than sharing the statuses gate above, so a
+          failed fields read shows its own failure instead of an empty list — and, in the
+          other direction, a healthy fields list is not hidden by a statuses failure any more
+          than it has to be. The statuses gate above still short-circuits the whole tab when
+          statuses fail; that is pre-existing behaviour and not this story's to change. */}
+      <CustomFieldSettings fields={fields} phase={fieldsPhase} onRetry={onRetry} />
+    </div>
   )
 }

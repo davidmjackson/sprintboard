@@ -129,6 +129,9 @@ function ctxWith(
     sprintsPhase: 'loaded',
     statuses: rows,
     statusesPhase: 'loaded',
+    // SPRIN-90. Shape parity with `ProjectShell`'s real context; the board reads neither.
+    fields: [],
+    fieldsPhase: 'loaded',
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),

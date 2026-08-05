@@ -74,6 +74,11 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     sprintsPhase: 'loaded',
     statuses: SEEDED_STATUSES,
     statusesPhase: 'loaded',
+    // SPRIN-90. The board renders no custom fields, so these exist only to keep the context
+    // shape identical to the one `ProjectShell` publishes — a harness missing them would be
+    // a different shell from the real one.
+    fields: [],
+    fieldsPhase: 'loaded',
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),

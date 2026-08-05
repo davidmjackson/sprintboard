@@ -10,9 +10,10 @@ import { SprintsTab } from './SprintsTab'
 import { SettingsTab } from './SettingsTab'
 import type { ProjectsContext } from './AppLayout'
 import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
-import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
+import { listProjectFields } from '@/lib/project-fields'
 import {
   createProjectStatus,
   deleteProjectStatus,
@@ -54,6 +55,17 @@ vi.mock('@/lib/sprints', async (orig) => ({
   startSprint: vi.fn(),
   completeSprint: vi.fn(),
 }))
+// SPRIN-90's fourth read. NOT optional, and not merely tidiness: without this mock the real
+// `listProjectFields` runs in every test in this file and issues a live PostgREST request.
+// MEASURED at review: 63 entries and 90 outbound requests from this one file. They are
+// invisible because `useTaggedRead` catches the rejection — so the suite stays green while
+// the "unit" half hammers the shared database, which in CI is the REAL project. CLAUDE.md
+// attributes the moving 5s-timeout flake to exactly that kind of self-inflicted traffic, and
+// it also made `fieldsPhase` nondeterministic in ~60 tests that never meant to exercise it.
+vi.mock('@/lib/project-fields', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-fields')>()),
+  listProjectFields: vi.fn(),
+}))
 
 // What `seed_project_statuses()` writes for every new project, so the default mock describes
 // a project the database could actually produce. It resolved `[]` when Task 4 first wired this
@@ -70,7 +82,9 @@ const mockList = vi.mocked(listTickets)
 const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
 const mockListStatuses = vi.mocked(listProjectStatuses)
+const mockListFields = vi.mocked(listProjectFields)
 beforeEach(() => {
+  mockListFields.mockReset().mockResolvedValue([])
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
   mockDelete.mockReset()
@@ -161,6 +175,35 @@ const onBoard = (t: Ticket): Ticket => ({ ...t, sprint_id: activeSprint.id })
  * the real tab could not tell the two apart and passed against the un-hoisted code. This
  * probe can only see what the shell put on the context, so it fails until the load moves.
  */
+/**
+ * SPRIN-90. Reads `fields`/`fieldsPhase` straight off the context, for the same reason the
+ * two probes below it exist: driving the real Settings tab cannot distinguish what the SHELL
+ * published from what the tab computed.
+ *
+ * It renders `statusesPhase` alongside deliberately. `SettingsTab` gates the whole tab on
+ * statuses, so a `fieldsPhase` accidentally sourced from `statusesPhase` is invisible through
+ * any real surface — the tab only renders once statuses are loaded, by which time the two
+ * agree. Showing both, and driving them to DIFFERENT values in the test below, is what makes
+ * that substitution observable at all.
+ */
+function FieldContextProbe() {
+  const { fields, fieldsPhase, statusesPhase, onRetry } = useOutletContext<ProjectShellContext>()
+  return (
+    <div>
+      <p>fields phase: {fieldsPhase}</p>
+      <p>statuses phase: {statusesPhase}</p>
+      <ul>
+        {fields.map((f) => (
+          <li key={f.id}>{f.name}</li>
+        ))}
+      </ul>
+      <button type="button" onClick={onRetry}>
+        probe retry
+      </button>
+    </div>
+  )
+}
+
 function SprintContextProbe() {
   const { sprints, sprintsPhase } = useOutletContext<ProjectShellContext>()
   return (
@@ -241,6 +284,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="settings" element={<SettingsTab />} />
             <Route path="probe" element={<SprintContextProbe />} />
             <Route path="ticket-probe" element={<TicketContextProbe />} />
+            <Route path="field-probe" element={<FieldContextProbe />} />
             <Route path="crash" element={<CrashProbe />} />
             <Route path="crash-flaky" element={<FlakyCrashProbe />} />
           </Route>
@@ -701,6 +745,76 @@ describe('ProjectShell', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load sprints.')
     expect(screen.queryByText('No sprints yet.')).not.toBeInTheDocument()
+  })
+
+  /**
+   * SPRIN-90's fourth read, pinned at the SHELL boundary.
+   *
+   * Added after review, and these are not speculative: four type-valid, lint-clean, typecheck-
+   * clean mutations of this wiring ALL SURVIVED the suite as originally shipped —
+   * `fieldsPhase` sourced from `statusesPhase`, the published list forced empty, the read
+   * pinned to nonce 0 so Retry stopped refetching, and the read given `undefined` for the
+   * project id. The same four mutations applied to `sprints` were killed 41 and 13 tests deep,
+   * which is how we know the gap was in the coverage rather than in the technique.
+   *
+   * `SettingsTab.test.tsx` covers the tab → component seam. It cannot see this one: it hands
+   * the props in itself, so it passes just as well when the shell forwards nothing.
+   */
+  describe("the project's custom fields (SPRIN-90)", () => {
+    const FIELD = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'customer_ref',
+      name: 'Customer ref',
+      type: 'text',
+      created_at: '2026-08-05T10:00:00Z',
+    } as unknown as ProjectField
+
+    it("loads the project's custom fields itself, scoped to the project id", async () => {
+      renderShell('/projects/p1/field-probe')
+      await waitFor(() => expect(mockListFields).toHaveBeenCalledWith('p1'))
+      expect(mockListFields).toHaveBeenCalledTimes(1)
+    })
+
+    it('publishes the loaded fields on the outlet context', async () => {
+      mockListFields.mockResolvedValue([FIELD])
+      renderShell('/projects/p1/field-probe')
+
+      expect(await screen.findByText('Customer ref')).toBeVisible()
+      expect(screen.getByText('fields phase: loaded')).toBeVisible()
+    })
+
+    /**
+     * The one that matters most, and the reason the probe renders BOTH phases.
+     *
+     * Statuses resolve, fields reject — so the two phases must disagree. A `fieldsPhase`
+     * derived from `statusesPhase` reads `loaded` here and renders "No custom fields yet."
+     * over a failed read, which is S4.6's defect on the surface `CustomFieldSettings`'s own
+     * docblock calls the easiest place to ship it. Driving them apart is what makes the
+     * substitution observable; with both reads resolving, the mutation is invisible.
+     */
+    it("publishes 'failed' for a rejected fields read even while statuses load fine", async () => {
+      mockListStatuses.mockResolvedValue(SEEDED_STATUSES)
+      mockListFields.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/field-probe')
+
+      expect(await screen.findByText('fields phase: failed')).toBeVisible()
+      // The positive control that makes the assertion above mean something: the OTHER read
+      // succeeded, so `failed` is this read's own outcome and not a shell-wide collapse.
+      expect(screen.getByText('statuses phase: loaded')).toBeVisible()
+    })
+
+    it('re-runs the fields read on Retry, so one nonce still drives all four', async () => {
+      mockListFields.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([FIELD])
+      renderShell('/projects/p1/field-probe')
+
+      expect(await screen.findByText('fields phase: failed')).toBeVisible()
+
+      await userEvent.click(screen.getByRole('button', { name: 'probe retry' }))
+
+      expect(await screen.findByText('Customer ref')).toBeVisible()
+      expect(screen.getByText('fields phase: loaded')).toBeVisible()
+    })
   })
 
   // The prepend moved from SprintsTab's own state into the shell, so the assertion that
