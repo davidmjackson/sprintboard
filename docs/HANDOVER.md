@@ -170,6 +170,16 @@ Engineering items with no story yet. Each is a candidate for one.
   **untested** — a single transaction has no second session to contend with. Deserves its own story.
 - **`lg:grid-cols-4` in `BoardTab` is a fixed column count** under a status list users can now
   grow — a fifth status wraps. Deferred three times; needs a layout story.
+- **Nothing pins `listProjectStatuses`'s no-arg `.select()`, and SPRIN-86 gave that a
+  user-visible consequence.** `project-statuses.ts` selects every column and casts the rows
+  unchecked; SPRIN-86 is the first reader of `wip_limit`, and its strict `limit === null` check
+  renders the literal `· limit undefined` on every Kanban column if the field ever stops
+  arriving. **Measured in review:** narrowing that `.select()` to an explicit column list, and
+  separately deleting the `wip_limit` line from `BoardTab.test.tsx`'s fixture, each left the
+  whole suite green while the board rendered `undefined`. `project-statuses.test.ts`'s mock is
+  `vi.fn(() => ({ eq }))` — argument-agnostic, so it cannot see the narrowing. A story should
+  either pin the select's argument list or make a `wip_limit`-less fixture go red. Note this is
+  a **class**, not one column: every future first-reader of a column inherits it.
 - **Lint budget, re-measure rather than recall.** `TicketDetailDialog` and `ProjectShell` are both
   at cyclomatic **10/10**, so one added branch reddens the gate; `TicketDetailSidebar` is at 9/10
   and is being kept there for SPRIN-71. `BoardTab` is at 7/10. A **default parameter costs a
