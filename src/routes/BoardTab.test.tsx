@@ -54,6 +54,10 @@ const SEEDED_STATUSES = DEFAULT_PROJECT_STATUSES.map((status, i) => ({
   ...status,
   id: `1ecd8f0${i}-0000-4000-8000-000000000000`,
   project_id: 'p1',
+  // Stated, never omitted, for the same reason `sprint_id` is stated on every ticket above:
+  // `wip_limit` is `number | null` and `listProjectStatuses` selects every column, so a row
+  // without the field is one the database cannot produce. SPRIN-86 reads it.
+  wip_limit: null,
 })) as unknown as ProjectStatus[]
 
 function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext {

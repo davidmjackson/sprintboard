@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Project, ProjectType, Sprint, Ticket } from './domain'
+import type { Project, ProjectStatus, ProjectType, Sprint, Ticket } from './domain'
 import {
+  isBoardFiltered,
   selectActiveSprint,
   selectBlockedTickets,
   selectBoardScope,
+  selectColumnLimit,
   summariseColumn,
 } from './board'
 
@@ -28,6 +30,11 @@ function ticket(fields: Partial<Ticket> & Pick<Ticket, 'id' | 'is_blocked'>): Ti
 /** A project with only the field the board rule reads. */
 function project(project_type: ProjectType): Pick<Project, 'project_type'> {
   return { project_type }
+}
+
+/** A status with only the field this rule reads. `wip_limit` is always stated. */
+function status(wip_limit: number | null): Pick<ProjectStatus, 'wip_limit'> {
+  return { wip_limit }
 }
 
 describe('selectActiveSprint', () => {
@@ -160,5 +167,58 @@ describe('summariseColumn', () => {
       ticket({ id: 't2', is_blocked: false, story_points: 2 }),
     ]
     expect(summariseColumn(column)).toEqual({ count: 2, points: 2, unestimated: 0 })
+  })
+})
+
+describe('isBoardFiltered', () => {
+  it('is false when neither filter is on', () => {
+    expect(isBoardFiltered(false, '')).toBe(false)
+  })
+
+  it('is true under the blocked-only filter alone', () => {
+    expect(isBoardFiltered(true, '')).toBe(true)
+  })
+
+  it('is true under a search query alone', () => {
+    expect(isBoardFiltered(false, 'MP-1')).toBe(true)
+  })
+
+  // Whitespace is not a query — `isSearchActive` trims, and this rule must not second-guess
+  // it. A board showing everything must not claim to be filtered.
+  it('is false when the query is only whitespace', () => {
+    expect(isBoardFiltered(false, '   ')).toBe(false)
+  })
+
+  it('is true when both filters are on', () => {
+    expect(isBoardFiltered(true, 'MP-1')).toBe(true)
+  })
+})
+
+describe('selectColumnLimit', () => {
+  it('gives a kanban column its limit when nothing is filtered', () => {
+    expect(selectColumnLimit(project('kanban'), status(3), false)).toBe(3)
+  })
+
+  it('gives null when the status has no limit', () => {
+    expect(selectColumnLimit(project('kanban'), status(null), false)).toBeNull()
+  })
+
+  /**
+   * The gate that makes SPRIN-86 AC5 true. A CHECK body may not contain a subquery, so the
+   * database WILL store a `wip_limit` on a Scrum project's status row (SPRIN-85 §3.4) — the
+   * row below is one the database can really hold, not an impossible one. The project type is
+   * the only thing keeping that value inert.
+   */
+  it('gives null on a scrum project even when the row carries a limit', () => {
+    expect(selectColumnLimit(project('scrum'), status(3), false)).toBeNull()
+  })
+
+  /**
+   * SPRIN-86 §5.1. The column summary describes the cards on screen; under a filter it is
+   * showing fewer cards than the column holds, so it makes no WIP claim at all rather than an
+   * understated one.
+   */
+  it('gives null while the board is filtered, limit or no limit', () => {
+    expect(selectColumnLimit(project('kanban'), status(3), true)).toBeNull()
   })
 })
