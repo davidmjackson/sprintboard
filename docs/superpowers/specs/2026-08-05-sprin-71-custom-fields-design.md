@@ -372,6 +372,19 @@ Consequences that shape the stories:
 
 Order: **1 → 2 → 3 → 4**; **5** after 3; **6** after 3.
 
+**The Jira keys are NOT in story order.** They were created in parallel and the board handed
+them out in a different sequence, so reading build order off the key numbers gives the wrong
+answer — stories 3 and 4 carry the *lowest* keys:
+
+| Story | Key | Migration |
+|---|---|---|
+| 1 — the `project_fields` table and the field list | **SPRIN-90** | A |
+| 2 — add and rename a custom field | **SPRIN-91** | — |
+| 3 — values on the ticket detail sidebar | **SPRIN-88** | B |
+| 4 — values on the create-ticket dialog | **SPRIN-89** | — |
+| 5 — single-select fields | **SPRIN-92** | C |
+| 6 — delete a field, with its value count | **SPRIN-93** | — |
+
 ### Story 1 — The `project_fields` table and the field list
 
 Migration A. `domain.ts` vocabulary. `src/lib/project-fields.ts` with `listProjectFields`.
