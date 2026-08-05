@@ -219,7 +219,7 @@ describe('a column with no limit to show', () => {
   /**
    * AC5. The status rows carry REAL limits and the board must still show none, because the
    * project is Scrum. SPRIN-85 §3.4: a CHECK body may not contain a subquery, so it cannot
-   * reach `projects.project_type` and the database will genuinely store these values. Written
+   * reach the type column on `projects`, and the database will genuinely store these. Written
    * with null limits instead, this test would pass with the `hasWipLimits` gate deleted.
    *
    * TWO THINGS MAKE THIS TEST NON-VACUOUS, and it needs both. The limits above are real, and

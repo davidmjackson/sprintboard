@@ -143,7 +143,8 @@ export function summariseColumn(tickets: readonly Ticket[]): ColumnSummary {
  * TWO GATES, AND BOTH ARE LOAD-BEARING.
  *
  * `hasWipLimits` is what makes AC5 true. SPRIN-85 §3.4 recorded that a CHECK body may not
- * contain a subquery, so the constraint cannot reach `projects.project_type` and the database
+ * contain a subquery, so the constraint cannot reach the type column on `projects` — and the
+ * database therefore
  * WILL store a `wip_limit` on a Scrum project's status row. That value is inert only because
  * nothing reads it — and this function is the thing that reads it. Deleting this gate does not
  * relax a preference; it puts a Kanban-only feature on a Scrum board, using data the database
