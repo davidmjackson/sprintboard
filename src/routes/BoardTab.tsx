@@ -3,10 +3,16 @@ import type { DragEvent } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
 import type { Sprint, Ticket, TicketStatus } from '@/lib/domain'
-import { selectBlockedTickets, selectBoardScope, summariseColumn } from '@/lib/board'
+import {
+  isBoardFiltered,
+  selectBlockedTickets,
+  selectBoardScope,
+  selectColumnLimit,
+  summariseColumn,
+} from '@/lib/board'
 import { firstUnready } from '@/lib/project-reads'
 import { statusName } from '@/lib/project-statuses'
-import { isSearchActive, selectMatchingTickets } from '@/lib/ticket-search'
+import { selectMatchingTickets } from '@/lib/ticket-search'
 import { updateTicket } from '@/lib/tickets'
 import type { ProjectShellContext } from './ProjectShell'
 import { LoadFailure } from './LoadFailure'
@@ -39,15 +45,42 @@ import { TicketSearchInput } from './TicketSearchInput'
  *
  * Nothing is rendered for an empty column: `BoardColumnEmpty` already says something —
  * "No tickets yet." or, since SPRIN-68, "No matches." when a filter is active — and either
- * one says it better than "0 cards · 0 points" would.
+ * one says it better than "0 cards · 0 points" would. An empty column also cannot be over its
+ * WIP limit, so SPRIN-86 changed nothing about that early return.
+ *
+ * SPRIN-86 adds the WIP-limit segment. WHAT the limit is — and whether there is one to show at
+ * all — is `selectColumnLimit`'s answer in `board.ts`, arriving here as a prop; this component
+ * only decides UNDER versus OVER, from the same `count` it renders, so the number the word
+ * "over" refers to is provably the number on screen.
+ *
+ * `limit === null` is strict on purpose. `ProjectStatus.wip_limit` is `number | null` and
+ * `listProjectStatuses` calls `.select()` with no column list, so the column always arrives:
+ * `undefined` can only come from a test fixture that omitted it, and such a fixture then
+ * renders "limit undefined" and reddens loudly rather than being silently absorbed by a
+ * nullish check.
+ *
+ * THE COLOUR IS REINFORCEMENT AND NEVER THE CARRIER. AC2 requires the over-limit state in
+ * TEXT, and the word "over" is what satisfies it; `text-destructive` only makes it easier to
+ * spot. Two separate tests pin the two halves, deliberately — one test asserting both would
+ * still pass with either half deleted.
  */
-function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
+function BoardColumnSummary({
+  tickets,
+  limit,
+}: {
+  tickets: readonly Ticket[]
+  limit: number | null
+}) {
   const { count, points, unestimated } = summariseColumn(tickets)
   if (count === 0) return null
+  const over = limit !== null && count > limit
   return (
-    <span className="text-muted-foreground text-xs tabular-nums">
+    <span
+      className={`${over ? 'text-destructive' : 'text-muted-foreground'} text-xs tabular-nums`}
+    >
       {count === 1 ? '1 card' : `${count} cards`} · {points} points
       {unestimated > 0 ? ` · ${unestimated} unestimated` : ''}
+      {limit === null ? '' : ` · ${over ? 'over limit' : 'limit'} ${limit}`}
     </span>
   )
 }
@@ -61,17 +94,17 @@ function BoardColumnSummary({ tickets }: { tickets: readonly Ticket[] }) {
  * the board already had it before this story: with blocked-only on, a column holding no
  * blocked cards has always said "No tickets yet."
  *
- * The `||` lives HERE rather than in `BoardTab` for a reason that was measured when it was
- * written: `BoardTab`'s body then sat at the T2 cyclomatic limit of exactly 10, so computing a
- * filter-active flag up there took it to 11 and reddened `npm run lint`. That is no longer
- * true — SPRIN-76's `firstUnready` refactor and SPRIN-83's two extractions left `BoardTab` at
- * **7 of 10** — so this is now a preference, not a forced move. It stays a preference worth
- * keeping: deciding the sentence in its own component costs `BoardTab` nothing, and the
- * remaining margin is better spent on a state the board cannot otherwise tell apart than on
- * inlining a `||`.
+ * The `||` used to live HERE, and no longer does. It was put here for a reason that was
+ * measured at the time: `BoardTab`'s body then sat at the T2 cyclomatic limit of exactly 10,
+ * so computing a filter-active flag up there took it to 11 and reddened `npm run lint`.
+ * SPRIN-76's `firstUnready` refactor and SPRIN-83's two extractions left `BoardTab` at **7 of
+ * 10**, which made the location a preference rather than a forced move — and SPRIN-86 settled
+ * that preference the other way, because the WIP-limit segment is suppressed while a filter is
+ * active (`selectColumnLimit`) and two components must not answer the same question privately
+ * and separately. The rule is `isBoardFiltered` in `board.ts` now. This component still decides
+ * the SENTENCE, which was always its job.
  */
-function BoardColumnEmpty({ blockedOnly, query }: { blockedOnly: boolean; query: string }) {
-  const filtering = blockedOnly || isSearchActive(query)
+function BoardColumnEmpty({ filtering }: { filtering: boolean }) {
   // `role="status"`, not `role="alert"`: this appears in direct response to typing or
   // toggling a filter, the same informational case `TicketDetailHeader.tsx` announces with
   // `role="status"`. `role="alert"` stays reserved for actual failures (`LoadFailure`,
@@ -302,6 +335,11 @@ export function BoardTab() {
     blockedOnly ? selectBlockedTickets(boardTickets) : boardTickets,
     query,
   )
+  // One answer, read twice below: by the empty column's sentence, and by every column's WIP
+  // limit — which is suppressed while filtering, because the summary describes the cards on
+  // screen and those are no longer the column's real occupancy. A function call rather than a
+  // branch: `BoardTab` measured 7 of 10 cyclomatic before SPRIN-86 and still does.
+  const filtered = isBoardFiltered(blockedOnly, query)
 
   return (
     <div className="flex flex-col gap-4">
@@ -342,10 +380,13 @@ export function BoardTab() {
             >
               <div className="flex flex-wrap items-baseline justify-between gap-x-2">
                 <h2 className="text-sm font-medium">{status.name}</h2>
-                <BoardColumnSummary tickets={column} />
+                <BoardColumnSummary
+                  tickets={column}
+                  limit={selectColumnLimit(project, status, filtered)}
+                />
               </div>
               {column.length === 0 ? (
-                <BoardColumnEmpty blockedOnly={blockedOnly} query={query} />
+                <BoardColumnEmpty filtering={filtered} />
               ) : (
                 column.map((ticket) => (
                   <TicketCard

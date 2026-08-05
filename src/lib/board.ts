@@ -1,6 +1,7 @@
 import { selectSprintTickets } from './backlog'
-import type { Project, Sprint, Ticket } from './domain'
-import { hasSprints } from './domain'
+import type { Project, ProjectStatus, Sprint, Ticket } from './domain'
+import { hasSprints, hasWipLimits } from './domain'
+import { isSearchActive } from './ticket-search'
 
 /**
  * The board rule, in one place: **the board shows the ACTIVE sprint** — the one sprint whose
@@ -88,6 +89,23 @@ export function selectBlockedTickets(tickets: readonly Ticket[]): Ticket[] {
   return tickets.filter((t) => t.is_blocked)
 }
 
+/**
+ * Whether the board is narrowing what it shows — the blocked-only filter, the SPRIN-68
+ * search, or both.
+ *
+ * This `||` lived inside `BoardColumnEmpty` until SPRIN-86, where its docblock recorded that
+ * the location was once forced by complexity pressure and had since become "a preference, not
+ * a forced move". Two callers need the same answer now — the empty column's sentence, and the
+ * WIP-limit segment, which is suppressed while filtering (see `selectColumnLimit`) — so the
+ * rule is named once here, where board rules live, rather than computed twice.
+ *
+ * Whitespace is not a query: `isSearchActive` trims, and this composes with that rule rather
+ * than re-deciding it.
+ */
+export function isBoardFiltered(blockedOnly: boolean, query: string): boolean {
+  return blockedOnly || isSearchActive(query)
+}
+
 /** What a board column is worth, in one pass: how many cards, how many points, and how
  *  many of those cards carry no estimate at all.
  *
@@ -115,4 +133,36 @@ export function summariseColumn(tickets: readonly Ticket[]): ColumnSummary {
     else points += t.story_points
   }
   return { count: tickets.length, points, unestimated }
+}
+
+/**
+ * The WIP limit this column should display, or `null` for "display none" — the whole of
+ * SPRIN-86's "should this column show a limit at all" rule, in one place a unit test can
+ * attack. The board only renders the answer.
+ *
+ * TWO GATES, AND BOTH ARE LOAD-BEARING.
+ *
+ * `hasWipLimits` is what makes AC5 true. SPRIN-85 §3.4 recorded that a CHECK body may not
+ * contain a subquery, so the constraint cannot reach `projects.project_type` and the database
+ * WILL store a `wip_limit` on a Scrum project's status row. That value is inert only because
+ * nothing reads it — and this function is the thing that reads it. Deleting this gate does not
+ * relax a preference; it puts a Kanban-only feature on a Scrum board, using data the database
+ * really holds. Written as `hasWipLimits(project)` rather than a comparison here: this module
+ * may not compare the project type itself, and a test says so.
+ *
+ * `filtered` is the design's §5.1. A WIP limit is a claim about the column's REAL occupancy,
+ * but the summary renders the ALREADY-FILTERED column, so under a filter the two disagree —
+ * five cards against a limit of three read as "1 card" the moment Blocked-only is ticked.
+ * Judging against the visible count was rejected: a filtered count is always <= the real one,
+ * so an over-limit column would quietly stop warning with nothing saying the number was
+ * partial. The board declines to make the claim instead, which keeps the summary's own
+ * invariant whole — nothing on that line ever disagrees with the cards below it.
+ */
+export function selectColumnLimit(
+  project: Pick<Project, 'project_type'>,
+  status: Pick<ProjectStatus, 'wip_limit'>,
+  filtered: boolean,
+): number | null {
+  if (filtered || !hasWipLimits(project)) return null
+  return status.wip_limit
 }
