@@ -295,6 +295,47 @@ export async function renameProjectStatus(
 }
 
 /**
+ * Set (or clear) a status's WIP limit. `null` means no limit.
+ *
+ * `wip_limit` is the ONLY column sent, which is a privilege property rather than tidiness:
+ * `authenticated` holds UPDATE on exactly (name, category, position, wip_limit) as of
+ * SPRIN-85's migration, so a patch touching `slug` or `is_initial` is refused by Postgres
+ * before any policy is consulted. `satisfies ProjectStatusUpdate` is what makes that
+ * structural — the generated row type offers every column, so a wrong write would otherwise
+ * compile and fail only at runtime, against the live database, somewhere a mocked-client
+ * unit test never goes.
+ *
+ * **The row count is checked EXPLICITLY, and that is a departure from `renameProjectStatus`
+ * next door.** RLS FILTERS an UPDATE rather than raising on it, so a row belonging to
+ * another tenant, or one another tab already deleted, returns exactly `error: null,
+ * data: []` — a write that changed nothing, indistinguishable from one that worked unless
+ * the count is checked. `renameProjectStatus` gets that protection only INCIDENTALLY, via
+ * `.single()` erroring on zero rows; this is the deliberate shape `deleteProjectStatus` and
+ * `reorderProjectStatuses` both use, and the one new code should be written in.
+ *
+ * Every failure collapses to the generic tags: the caller chose a number, not a name, so
+ * there is no `duplicate` to reach. A check-constraint violation is unreachable from the
+ * app — `WipLimitSchema` refuses the same set the constraint does — and if it somehow
+ * arrives it is `unknown` with generic retry copy, which is the honest answer to a refusal
+ * the user cannot act on.
+ */
+export async function setStatusWipLimit(
+  id: string,
+  wipLimit: number | null,
+): Promise<StatusWriteResult<ProjectStatus>> {
+  const { data, error } = await supabase
+    .from('project_statuses')
+    .update({ wip_limit: wipLimit } satisfies ProjectStatusUpdate)
+    .eq('id', id)
+    .select()
+
+  if (error) return { ok: false, error: writeError(error) }
+  const rows = (data ?? []) as ProjectStatus[]
+  if (rows.length !== 1) return { ok: false, error: 'stale' }
+  return { ok: true, value: rows[0]! }
+}
+
+/**
  * Reorder, through an RPC rather than N patches.
  *
  * `project_statuses_project_position_unique` is DEFERRABLE INITIALLY DEFERRED, and that

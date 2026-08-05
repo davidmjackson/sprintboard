@@ -10,6 +10,7 @@ import {
   removeStatus,
   renameProjectStatus,
   reorderProjectStatuses,
+  setStatusWipLimit,
   slugForName,
   statusName,
   statusOptions,
@@ -29,8 +30,23 @@ vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn(), rpc: vi.fn() } }))
 //   listProjectStatuses:   from().select().eq().order()
 //   createProjectStatus:   from().insert().select().single()
 //   renameProjectStatus:   from().update().eq().select().single()
+//   setStatusWipLimit:     from().update().eq().select()          <- TERMINAL, no .single()
 //   deleteProjectStatus:   from().delete().eq().select()
 //   ticketCountsByStatus:  from().select().eq().eq()   (on the 'tickets' table, not this one)
+//
+// renameProjectStatus and setStatusWipLimit share the first three links (update/eq/select) and
+// diverge at the fourth: rename calls `.single()` on what `.select()` returns, so `selectUpdate`
+// defaults to `{ single }` below. setStatusWipLimit's `.select()` IS the awaited call — there is
+// no `.single()` after it — so its tests override the default with
+// `selectUpdate.mockResolvedValue({ data, error })`, making `selectUpdate()` itself return the
+// terminal `{ data, error }` payload instead of `{ single }`.
+//
+// `selectUpdate` is declared bare (`vi.fn()`, like `single`/`order`/`selectDelete` below)
+// rather than `vi.fn(() => ({ single }))`, precisely so its type is not locked to `{ single
+// }` at construction. A typed default would make `selectUpdate.mockResolvedValue({ data,
+// error })` a compile error in setStatusWipLimit's tests — TS build caught exactly this the
+// first time this file was written this way. `beforeEach` supplies the `{ single }` default
+// renameProjectStatus's tests rely on; setStatusWipLimit's tests override it per-test.
 const order = vi.fn()
 const eq = vi.fn(() => ({ order }))
 const select = vi.fn(() => ({ eq }))
@@ -38,7 +54,7 @@ const select = vi.fn(() => ({ eq }))
 const single = vi.fn()
 const selectInsert = vi.fn(() => ({ single }))
 const insert = vi.fn(() => ({ select: selectInsert }))
-const selectUpdate = vi.fn(() => ({ single }))
+const selectUpdate = vi.fn()
 const eqUpdate = vi.fn(() => ({ select: selectUpdate }))
 const update = vi.fn(() => ({ eq: eqUpdate }))
 
@@ -545,6 +561,57 @@ describe('renameProjectStatus', () => {
     await renameProjectStatus('s1', '  In QA  ')
 
     expect(update).toHaveBeenCalledWith({ name: 'In QA' })
+  })
+})
+
+describe('setStatusWipLimit', () => {
+  it('sends wip_limit and nothing else', async () => {
+    selectUpdate.mockResolvedValue({ data: [{ id: 'st1', wip_limit: 4 }], error: null })
+    vi.mocked(supabase.from).mockReturnValue({ update } as never)
+
+    await setStatusWipLimit('st1', 4)
+
+    expect(update).toHaveBeenCalledWith({ wip_limit: 4 })
+    // The payload is the WHOLE argument, not a superset containing it. `toHaveBeenCalledWith`
+    // is already exact on objects, and that exactness is the point: the request must stay
+    // inside the column grant, and an extra key would be a 42501 against the live database
+    // on a path this mocked test never reaches.
+    expect(eqUpdate).toHaveBeenCalledWith('id', 'st1')
+  })
+
+  it('sends null to clear the limit', async () => {
+    selectUpdate.mockResolvedValue({ data: [{ id: 'st1', wip_limit: null }], error: null })
+    vi.mocked(supabase.from).mockReturnValue({ update } as never)
+
+    const result = await setStatusWipLimit('st1', null)
+
+    expect(update).toHaveBeenCalledWith({ wip_limit: null })
+    expect(result).toEqual({ ok: true, value: { id: 'st1', wip_limit: null } })
+  })
+
+  /**
+   * THE GUARD THAT MATTERS. RLS FILTERS an UPDATE rather than raising on it, so a row
+   * belonging to another tenant — or one another tab already deleted — comes back as
+   * exactly `error: null, data: []`. Without the row-count check that is indistinguishable
+   * from a write that worked, and the caller would patch its list with a row the database
+   * never touched.
+   */
+  it("reports 'stale' when the update matched no row and did not error", async () => {
+    selectUpdate.mockResolvedValue({ data: [], error: null })
+    vi.mocked(supabase.from).mockReturnValue({ update } as never)
+
+    const result = await setStatusWipLimit('gone', 4)
+
+    expect(result).toEqual({ ok: false, error: 'stale' })
+  })
+
+  it("reports 'unknown' on a write error", async () => {
+    selectUpdate.mockResolvedValue({ data: null, error: { code: '23514', message: 'check' } })
+    vi.mocked(supabase.from).mockReturnValue({ update } as never)
+
+    const result = await setStatusWipLimit('st1', 0)
+
+    expect(result).toEqual({ ok: false, error: 'unknown' })
   })
 })
 
