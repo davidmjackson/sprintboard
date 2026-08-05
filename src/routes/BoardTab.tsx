@@ -75,9 +75,7 @@ function BoardColumnSummary({
   if (count === 0) return null
   const over = limit !== null && count > limit
   return (
-    <span
-      className={`${over ? 'text-destructive' : 'text-muted-foreground'} text-xs tabular-nums`}
-    >
+    <span className={`${over ? 'text-destructive' : 'text-muted-foreground'} text-xs tabular-nums`}>
       {count === 1 ? '1 card' : `${count} cards`} · {points} points
       {unestimated > 0 ? ` · ${unestimated} unestimated` : ''}
       {limit === null ? '' : ` · ${over ? 'over limit' : 'limit'} ${limit}`}

@@ -55,7 +55,7 @@ function statuses(limits: { todo: number | null; doing: number | null }): Projec
 // Three cards in To Do — one of them blocked, one unestimated — and one in Doing. Every row
 // states `sprint_id: null`: these boards are Kanban, where `selectBoardScope` shows every
 // ticket whatever its sprint, and an omitted field would be a row the database never returns.
-const TICKETS = [
+const TICKET_ROWS = [
   {
     id: 't1',
     key: 'MP-1',
@@ -100,7 +100,21 @@ const TICKETS = [
     story_points: 2,
     is_blocked: false,
   },
-] as never
+]
+
+const TICKETS = TICKET_ROWS as never
+
+/**
+ * The same cards, but inside a running sprint — needed only by the Scrum case below.
+ *
+ * A Scrum board shows the ACTIVE sprint's tickets, so without a sprint it renders no cards,
+ * every column is empty, and `BoardColumnSummary` returns null before it ever consults a
+ * limit. An AC5 test written that way passes with the `hasWipLimits` gate DELETED. That is not
+ * a hypothetical: the first draft of this suite was written that way and a mutation run proved
+ * it vacuous — the gate was removed and this file stayed green.
+ */
+const ACTIVE_SPRINT = [{ id: 's1', project_id: 'p1', name: 'Sprint 1', status: 'active' }] as never
+const SPRINT_TICKETS = TICKET_ROWS.map((t) => ({ ...t, sprint_id: 's1' })) as never
 
 function ctxWith(
   project_type: ProjectType,
@@ -207,9 +221,23 @@ describe('a column with no limit to show', () => {
    * project is Scrum. SPRIN-85 §3.4: a CHECK body may not contain a subquery, so it cannot
    * reach `projects.project_type` and the database will genuinely store these values. Written
    * with null limits instead, this test would pass with the `hasWipLimits` gate deleted.
+   *
+   * TWO THINGS MAKE THIS TEST NON-VACUOUS, and it needs both. The limits above are real, and
+   * the board is given a running sprint so its columns actually hold cards — an empty column
+   * renders no summary at all, so the absence of the word "limit" would otherwise prove
+   * nothing about the gate. The first assertion is the positive control for exactly that.
    */
   it('shows nothing on a Scrum board whose rows carry limits', () => {
-    renderTab(BoardTab, ctxWith('scrum', statuses({ todo: 2, doing: 3 })))
+    renderTab(
+      BoardTab,
+      ctxWith('scrum', statuses({ todo: 2, doing: 3 }), {
+        sprints: ACTIVE_SPRINT,
+        tickets: SPRINT_TICKETS,
+      }),
+    )
+    // Positive control: the cards ARE on screen, so a summary is rendering and a missing gate
+    // would have put "over limit 2" in it.
+    expect(within(column('To Do')).getByText(/3 cards/i)).toBeInTheDocument()
     expect(screen.queryByText(/limit/i)).not.toBeInTheDocument()
   })
 
@@ -253,10 +281,7 @@ describe('the WIP limit is soft', () => {
     } as never)
     const onTicketUpdated = vi.fn()
     // Doing holds one card against a limit of one — full. To Do is the source.
-    renderTab(
-      BoardTab,
-      ctxWith('kanban', statuses({ todo: null, doing: 1 }), { onTicketUpdated }),
-    )
+    renderTab(BoardTab, ctxWith('kanban', statuses({ todo: null, doing: 1 }), { onTicketUpdated }))
     expect(within(column('Doing')).getByText(/limit 1/i)).toBeInTheDocument()
 
     fireEvent.dragStart(screen.getByRole('button', { name: /first/i })) // t1, status todo
