@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SettingsTab } from './SettingsTab'
 import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
-import type { Project, ProjectStatus } from '@/lib/domain'
+import type { Project, ProjectField, ProjectStatus } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
@@ -81,6 +81,8 @@ function renderTab(
     project?: Project
     statuses?: ProjectStatus[]
     statusesPhase?: ReadPhase
+    fields?: ProjectField[]
+    fieldsPhase?: ReadPhase
     onRetry?: () => void
   } = {},
 ) {
@@ -88,6 +90,12 @@ function renderTab(
     project,
     statuses: STATUSES,
     statusesPhase: 'loaded',
+    // SPRIN-90. Defaulted to a LOADED EMPTY list rather than left off: the cast below is
+    // `as unknown as ProjectShellContext`, so omitting these compiles clean and hands the
+    // component `undefined`, which reads as "not loaded" and renders the spinner forever —
+    // a harness silently testing a state the real shell never produces.
+    fields: [],
+    fieldsPhase: 'loaded',
     onRetry: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
@@ -241,5 +249,81 @@ describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix 
     renderTab({ project: { ...project, project_type: 'kanban' } })
 
     expect(screen.getAllByRole('spinbutton', { name: /wip limit/i })).toHaveLength(STATUSES.length)
+  })
+})
+
+/**
+ * SPRIN-90 AC1 and AC2, asserted through the TAB rather than against
+ * `CustomFieldSettings` directly.
+ *
+ * `CustomFieldSettings.test.tsx` covers the component's own three phases in isolation. These
+ * cover the SEAM: that the tab actually reads `fields`/`fieldsPhase` off the outlet context
+ * and forwards them. A component test cannot see that wiring — it hands the props in itself,
+ * so it passes just as well when the tab forwards nothing at all.
+ */
+describe('SettingsTab custom fields', () => {
+  const FIELDS = [
+    { id: 'f1', slug: 'customer_ref', name: 'Customer ref', type: 'text' },
+    { id: 'f2', slug: 'due', name: 'Due', type: 'date' },
+  ] as unknown as ProjectField[]
+
+  beforeEach(() => {
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+  })
+
+  it("lists the project's custom fields, with each type's label", () => {
+    renderTab({ fields: FIELDS })
+
+    const list = screen.getByRole('heading', { name: 'Custom fields' }).closest('section')
+    expect(list).not.toBeNull()
+
+    // Scoped with `within`, not a bare getByText: an unscoped query says the text exists
+    // somewhere on the tab and nothing about whether it is in THIS section.
+    expect(within(list!).getByText('Customer ref')).toBeInTheDocument()
+    expect(within(list!).getByText('Text')).toBeInTheDocument()
+    expect(within(list!).getByText('Due')).toBeInTheDocument()
+    expect(within(list!).getByText('Date')).toBeInTheDocument()
+
+    // The empty state must NOT also be on screen — otherwise "lists the fields" would pass
+    // for a component rendering both.
+    expect(screen.queryByText('No custom fields yet.')).not.toBeInTheDocument()
+  })
+
+  it('shows the empty state when the project has no custom fields', () => {
+    renderTab({ fields: [], fieldsPhase: 'loaded' })
+
+    expect(screen.getByText('No custom fields yet.')).toBeInTheDocument()
+  })
+
+  it('shows neither the list nor the empty state while the fields are still loading', () => {
+    renderTab({ fields: [], fieldsPhase: 'loading' })
+
+    // The same `[]` again, for a third distinct reason. If "loading" rendered the empty
+    // state, a slow read would flash "No custom fields yet." at every user on every visit.
+    expect(screen.queryByText('No custom fields yet.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Custom fields' })).toBeInTheDocument()
+  })
+
+  it('shows a failed fields read as a failure, never as "no custom fields"', () => {
+    renderTab({ fields: [], fieldsPhase: 'failed' })
+
+    // The claim under test: an empty list from a FAILED read must not render the same as an
+    // empty list from a project that genuinely has none. Both arrive as `[]`.
+    expect(screen.getByRole('alert')).toHaveTextContent(/^Could not load custom fields\.$/)
+    expect(screen.queryByText('No custom fields yet.')).not.toBeInTheDocument()
+
+    // POSITIVE CONTROL. Without this, the assertions above pass just as well if the whole tab
+    // failed to render — which is shape 4 of green-for-the-wrong-reason, and the exact
+    // vacuous-absence trap SPRIN-86's review found in this project's own work.
+    expect(screen.getByRole('heading', { name: 'Custom fields' })).toBeInTheDocument()
+  })
+
+  it('forwards the tab-level Retry to the fields failure', async () => {
+    const ctx = renderTab({ fields: [], fieldsPhase: 'failed' })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+    expect(ctx.onRetry).toHaveBeenCalledTimes(1)
   })
 })

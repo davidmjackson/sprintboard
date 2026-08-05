@@ -94,6 +94,29 @@ export type SprintStatus = 'future' | 'active' | 'complete'
  */
 export type ProjectType = 'scrum' | 'kanban'
 
+/**
+ * The type of a project-defined custom field (SPRIN-90, epic SPRIN-71).
+ *
+ * `text` is single-line and `paragraph` is multi-line. They share one storage primitive
+ * and differ only in the control rendered and the length cap — Jira splits them the same
+ * way ("Text Field (single line)" / "(multi-line)"), and keeping them apart here is what
+ * lets the renderer be a map keyed by type rather than a chain of conditionals.
+ *
+ * Still `text` + a `check` constraint in the database, never a Postgres enum, for the same
+ * reason as every other vocabulary in this file.
+ *
+ * **The order of the array below is load-bearing**: `domain.test.ts` parses the check
+ * constraint out of `docs/sprintboard_phase1_schema.sql` and compares it ORDERED, so the
+ * constraint must spell the values in the same order. That pins the doc, NOT the database —
+ * migrations are hand-applied, so only `rls.integration.test.ts` (which asserts the
+ * constraint by name on a real rejection) can see the live vocabulary.
+ *
+ * `select` is a member from the start even though story 5 is what renders it — the database
+ * check accepts it already, and a client union narrower than the column would make
+ * `isCustomFieldType` reject a value the database calls valid.
+ */
+export type CustomFieldType = 'text' | 'paragraph' | 'number' | 'date' | 'select'
+
 export const TICKET_TYPES = [
   'epic',
   'story',
@@ -102,6 +125,14 @@ export const TICKET_TYPES = [
 ] as const satisfies readonly TicketType[]
 
 export const PROJECT_TYPES = ['scrum', 'kanban'] as const satisfies readonly ProjectType[]
+
+export const CUSTOM_FIELD_TYPES = [
+  'text',
+  'paragraph',
+  'number',
+  'date',
+  'select',
+] as const satisfies readonly CustomFieldType[]
 
 export const SPRINT_STATUSES = [
   'future',
@@ -181,6 +212,23 @@ export const PROJECT_TYPE_LABELS: Record<ProjectType, string> = {
 }
 
 /**
+ * Human-readable custom-field-type labels, keyed by type. Same rule as every label map
+ * above: display names live here and nowhere else, so the settings list and story 2's add
+ * form cannot word the same type two ways.
+ *
+ * `paragraph` reads as "Text (multi-line)" rather than "Paragraph" because the pairing is
+ * what makes the choice legible — a user picking between "Text" and "Paragraph" has to
+ * guess what distinguishes them; one between "Text" and "Text (multi-line)" does not.
+ */
+export const CUSTOM_FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
+  text: 'Text',
+  paragraph: 'Text (multi-line)',
+  number: 'Number',
+  date: 'Date',
+  select: 'Select',
+}
+
+/**
  * Human-readable category labels, keyed by category — the settings surface (SPRIN-77) shows a
  * status's category on its row and offers the three in the add form, and `in_progress` is not
  * a thing to put in front of a user.
@@ -237,12 +285,20 @@ export type AssertProjectTypesExhaustive = Expect<
   Exact<ProjectType, (typeof PROJECT_TYPES)[number]>
 >
 
+export type AssertCustomFieldTypesExhaustive = Expect<
+  Exact<CustomFieldType, (typeof CUSTOM_FIELD_TYPES)[number]>
+>
+
 export type AssertTicketTypeColumn = Assignable<TicketType, Tables<'tickets'>['type']>
 /* No AssertTicketStatusColumn: `TicketStatus` is `string` as of Task 3 of SPRIN-76, so
  * `Assignable<string, string>` would be vacuous — it would compile without checking
  * anything, which is worse than no guard because it still reads like one. */
 export type AssertSprintStatusColumn = Assignable<SprintStatus, Tables<'sprints'>['status']>
 export type AssertProjectTypeColumn = Assignable<ProjectType, Tables<'projects'>['project_type']>
+export type AssertCustomFieldTypeColumn = Assignable<
+  CustomFieldType,
+  Tables<'project_fields'>['type']
+>
 export type AssertStatusCategoryColumn = Assignable<
   StatusCategory,
   Tables<'project_statuses'>['category']
@@ -275,6 +331,25 @@ export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus 
  */
 export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
   category: StatusCategory
+}
+
+/**
+ * One project's custom field DEFINITION (SPRIN-90). The values themselves live in a
+ * separate table added by story 3 — `tickets` is never reshaped, so core fields stay real
+ * columns and only custom ones go in a flexible store.
+ *
+ * `type` is narrowed from the column's `string` to the domain union, the same narrowing
+ * `ProjectStatus` makes for `category`. That narrowing is a CLAIM about data the database
+ * returns, not a check — `listProjectFields` is where it is enforced, and it rejects a row
+ * whose type is unrecognised rather than casting past it.
+ *
+ * There is deliberately no UPDATE counterpart yet. The migration grants UPDATE on `name`
+ * alone, so story 2 — which is what actually renames a field — owns the `ProjectFieldUpdate`
+ * type and the `Exact<>` key-set assertion that mirrors the grant. Adding it here, with no
+ * writer, would be an unpinned claim about a privilege nothing exercises.
+ */
+export type ProjectField = Omit<Tables<'project_fields'>, 'type'> & {
+  type: CustomFieldType
 }
 export type Ticket = Omit<Tables<'tickets'>, 'status' | 'type'> & {
   status: TicketStatus
@@ -409,6 +484,10 @@ export function isStatusCategory(value: string): value is StatusCategory {
 
 export function isProjectType(value: string): value is ProjectType {
   return (PROJECT_TYPES as readonly string[]).includes(value)
+}
+
+export function isCustomFieldType(value: string): value is CustomFieldType {
+  return (CUSTOM_FIELD_TYPES as readonly string[]).includes(value)
 }
 
 /**

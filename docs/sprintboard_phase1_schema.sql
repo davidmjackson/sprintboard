@@ -190,6 +190,63 @@ create table project_statuses (
     unique (id, project_id)
 );
 
+-- One project's CUSTOM FIELD DEFINITIONS (SPRIN-90, epic SPRIN-71). Applied by
+-- docs/migrations/sprin-90-project-fields.sql.
+--
+-- ADDITIVE, and that is the epic's central rule rather than a preference: core ticket fields
+-- stay real columns and only custom ones go in a flexible store, which is what Jira itself
+-- does. `tickets` is not reshaped by this table or by any later story in the epic. A future
+-- reader will be tempted to "unify" the two; that direction costs query performance, type
+-- safety and every existing index.
+create table project_fields (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(id) on delete cascade,
+
+  -- Stable machine identity; users rename `name`, never this. Same division as
+  -- project_statuses.slug and projects.key.
+  slug       text not null,
+
+  -- The field's label. The ONLY column authenticated may UPDATE (see the grants below).
+  name       text not null,
+
+  -- NEVER an enum, for the same reason as every other vocabulary in this file: widening a
+  -- check is one line, altering an enum type is a migration.
+  --
+  -- IMMUTABLE after insert, enforced by the grant rather than by a trigger. That is not
+  -- tidiness: story 3's ticket_field_values carries a DENORMALISED COPY of this value, so
+  -- that its "the populated value column matches the field's type" CHECK can be written at
+  -- all (a CHECK body may not contain a subquery). The copy is sound only while the original
+  -- cannot change. Granting UPDATE on this column would silently re-type existing values.
+  type       text not null
+               check (type in ('text','paragraph','number','date','select')),
+
+  created_at timestamptz not null default now(),
+
+  constraint project_fields_slug_format
+    check (slug ~ '^[a-z][a-z0-9_]{0,29}$'),
+  constraint project_fields_name_nonempty
+    check (btrim(name) <> '' and length(name) <= 40),
+
+  constraint project_fields_project_slug_unique unique (project_id, slug),
+
+  -- Redundant on their own (id is the PK). They exist so story 3's ticket_field_values can
+  -- point at a definition with COMPOSITE fks: (field_id, project_id) makes "a ticket in
+  -- project A holding project B's field" unrepresentable, and (field_id, type) is what lets
+  -- the value row carry the type copy described above. Same device as
+  -- tickets_id_project_unique. Do not drop them as unused before story 3 lands.
+  constraint project_fields_id_project_unique unique (id, project_id),
+  constraint project_fields_id_type_unique    unique (id, type)
+);
+
+-- No separate index on project_id: project_fields_project_slug_unique leads with it, which
+-- is what the fk lookup uses. Adding one would be a duplicate index and a new advisor
+-- warning. (Verified after applying: get_advisors reported no new lints.)
+
+-- There is deliberately NO `position` column and no ordering UI. Fields sort by
+-- (created_at, slug) — `created_at` is the intent, `slug` breaks ties so the sequence is
+-- total and stable across reads. A position column with no reorder surface would be
+-- created_at with extra machinery; reordering is its own story if ever wanted.
+
 -- At most one initial status per project. Same idiom as sprints_one_active_per_project,
 -- and the same limitation: it prevents two, not zero.
 create unique index project_statuses_one_initial_per_project
@@ -603,6 +660,7 @@ alter table profiles          enable row level security;
 alter table projects          enable row level security;
 alter table project_counters  enable row level security;
 alter table project_statuses  enable row level security;
+alter table project_fields    enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
@@ -763,6 +821,66 @@ grant  update (name, category, position, wip_limit) on project_statuses to authe
 --      Nothing goes red to ask for this. That is why it is written next to the line that
 --      causes it rather than only in the migration file nobody will reopen.
 revoke update on projects from authenticated, anon;
+
+-- SPRIN-90: project_fields. Four owner-scoped policies, all written with `(select
+-- auth.uid())` rather than the bare call — wrapped in a scalar subquery it plans as an
+-- InitPlan, evaluated once per query instead of once per row, which keeps them out of
+-- Supabase's auth_rls_initplan advisor. Eight such warnings are outstanding on the older
+-- tables above and are SPRIN-75's to fix when every policy is rewritten to a membership
+-- check; this table's job was to add ZERO, and it did (verified with get_advisors after
+-- applying). Do not "make it consistent" with the bare-call policies — wrong direction.
+--
+-- DO NOT add `force row level security` here either, for the reason recorded on
+-- project_statuses: definer-owned triggers are exempt from RLS only while FORCE is off.
+create policy fields_owner_read on project_fields
+  for select
+  using (exists (select 1 from projects p
+                 where p.id = project_fields.project_id
+                   and p.owner_id = (select auth.uid())));
+
+create policy fields_owner_insert on project_fields
+  for insert
+  with check (exists (select 1 from projects p
+                      where p.id = project_fields.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy fields_owner_update on project_fields
+  for update
+  using      (exists (select 1 from projects p
+                      where p.id = project_fields.project_id
+                        and p.owner_id = (select auth.uid())))
+  with check (exists (select 1 from projects p
+                      where p.id = project_fields.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy fields_owner_delete on project_fields
+  for delete
+  using (exists (select 1 from projects p
+                 where p.id = project_fields.project_id
+                   and p.owner_id = (select auth.uid())));
+
+-- THE TABLE WAS BORN WITH FULL CRUD FOR BOTH APP ROLES. Measured from pg_default_acl (not
+-- information_schema, whose grant views return zero rows under a read-only role and read
+-- exactly like "no privileges"): public tables default to anon=arwdDxtm, authenticated=
+-- arwdDxtm. So this revoke is the statement that changes something — "we never granted it"
+-- was never true of any table here.
+--
+-- Story 1 ships no write path, so insert and delete are revoked and NOT granted back;
+-- stories 2 and 6 grant them, visibly, and a live test pins the current state so they
+-- cannot do it silently. UPDATE(name) alone is granted, which also gives AC4's refusal test
+-- a positive control on the same row — without one, a blanket row-level refusal would be
+-- indistinguishable from a working column privilege.
+--
+-- The revoke is TABLE-WIDE with the column granted back afterwards, because the obvious
+-- form is a silent no-op (a column-level REVOKE cannot hole a table-level grant) and
+-- because a table-level REVOKE **cascades** to column grants. Any later migration widening
+-- this set must RESTATE EVERY GRANTED COLUMN, not just add its new one.
+revoke insert, update, delete on project_fields from authenticated, anon;
+grant  update (name) on project_fields to authenticated;
+
+-- SELECT is deliberately left as the default grant for both roles: authenticated needs it,
+-- and anon holding it is filtered to zero rows by the absence of a read policy — the same
+-- contract the keepalive cron depends on elsewhere.
 
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors

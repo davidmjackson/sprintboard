@@ -82,6 +82,41 @@ export type Database = {
           },
         ]
       }
+      project_fields: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          project_id: string
+          slug: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          project_id: string
+          slug: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          project_id?: string
+          slug?: string
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'project_fields_project_id_fkey'
+            columns: ['project_id']
+            isOneToOne: false
+            referencedRelation: 'projects'
+            referencedColumns: ['id']
+          },
+        ]
+      }
       project_statuses: {
         Row: {
           category: string

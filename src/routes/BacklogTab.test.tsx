@@ -56,6 +56,9 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     sprintsPhase: 'loaded',
     statuses: SEEDED_STATUSES,
     statusesPhase: 'loaded',
+    // SPRIN-90. Shape parity with `ProjectShell`'s real context; the backlog reads neither.
+    fields: [],
+    fieldsPhase: 'loaded',
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),
