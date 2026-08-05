@@ -34,11 +34,17 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
   let userAId: string
   let projectId: string
   let projectKey: string
+  // `@/lib/tickets` imports `./supabase`, which calls `getEnv()` at MODULE scope — a
+  // static import here would throw at file-load time whenever the environment is
+  // missing, turning this file's loud, deliberate skip into a hard error. Imported
+  // lazily in beforeAll instead, same reasoning as `updateTicket` below (S6.2).
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = await userId(a)
     b = await signIn('B')
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
     projectKey = runKey()
     const { data, error } = await a
       .from('projects')
@@ -57,7 +63,7 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
   it('assigns PROJECTKEY-1, number 1, and status todo to the first ticket', async () => {
     const { data, error } = await a
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'First ticket' })
+      .insert(ticketInsertPayload({ project_id: projectId, summary: 'First ticket' }))
       .select()
       .single()
 
@@ -67,8 +73,16 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
 
   it('gives consecutive, unique numbers to tickets created in quick succession', async () => {
     const [t1, t2] = await Promise.all([
-      a.from('tickets').insert({ project_id: projectId, summary: 'Race A' }).select().single(),
-      a.from('tickets').insert({ project_id: projectId, summary: 'Race B' }).select().single(),
+      a
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: projectId, summary: 'Race A' }))
+        .select()
+        .single(),
+      a
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: projectId, summary: 'Race B' }))
+        .select()
+        .single(),
     ])
 
     expect(t1.error).toBeNull()
@@ -84,7 +98,7 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
     // denies the row. Either way the insert fails and nothing is created.
     const { data, error } = await b
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'Intruder' })
+      .insert(ticketInsertPayload({ project_id: projectId, summary: 'Intruder' }))
       .select()
       .single()
 
@@ -154,7 +168,13 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
 
       const { data, error } = await a
         .from('tickets')
-        .insert({ project_id: disposableProjectId, summary: 'No status given', type: 'story' })
+        .insert(
+          ticketInsertPayload({
+            project_id: disposableProjectId,
+            summary: 'No status given',
+            type: 'story',
+          }),
+        )
         .select('status')
         .single()
 
@@ -176,12 +196,15 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
   let ticketId: string
   // A project owned by B, used only as the (forbidden) reparent target below.
   let bProjectId: string
+  // See S4.1's note above: `@/lib/tickets` cannot be a static import here.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = await userId(a)
     b = await signIn('B')
     userBId = await userId(b)
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
     const { data: proj, error: projErr } = await a
       .from('projects')
       .insert({ owner_id: userAId, name: 'Update contract', key: runKey() })
@@ -191,7 +214,7 @@ describe.skipIf(!hasRlsCredentials)('S4.2 ticket-update contract', () => {
     projectId = proj!.id
     const { data: tkt, error: tktErr } = await a
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'Original' })
+      .insert(ticketInsertPayload({ project_id: projectId, summary: 'Original' }))
       .select()
       .single()
     if (tktErr) throw tktErr
@@ -294,11 +317,14 @@ describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
   let b: SupabaseClient<Database>
   let userAId: string
   let projectId: string
+  // See S4.1's note above: `@/lib/tickets` cannot be a static import here.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = await userId(a)
     b = await signIn('B')
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
     const { data: proj, error: projErr } = await a
       .from('projects')
       .insert({ owner_id: userAId, name: 'Delete contract', key: runKey() })
@@ -315,7 +341,7 @@ describe.skipIf(!hasRlsCredentials)('S4.3 ticket-delete contract', () => {
   async function newTicket(): Promise<string> {
     const { data, error } = await a
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'To delete' })
+      .insert(ticketInsertPayload({ project_id: projectId, summary: 'To delete' }))
       .select()
       .single()
     if (error) throw error
@@ -360,11 +386,14 @@ describe.skipIf(!hasRlsCredentials)('S4.4 ticket-block contract', () => {
   let b: SupabaseClient<Database>
   let userAId: string
   let projectId: string
+  // See S4.1's note above: `@/lib/tickets` cannot be a static import here.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = await userId(a)
     b = await signIn('B')
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
     const { data: proj, error: projErr } = await a
       .from('projects')
       .insert({ owner_id: userAId, name: 'Block contract', key: runKey() })
@@ -381,7 +410,7 @@ describe.skipIf(!hasRlsCredentials)('S4.4 ticket-block contract', () => {
   async function newTicket(): Promise<string> {
     const { data, error } = await a
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'To block' })
+      .insert(ticketInsertPayload({ project_id: projectId, summary: 'To block' }))
       .select()
       .single()
     if (error) throw error
@@ -490,6 +519,8 @@ describe.skipIf(!hasRlsCredentials)(
     let epic1: string
     let story1: string
     let epic2: string
+    // See S4.1's note above: `@/lib/tickets` cannot be a static import here.
+    let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
     async function newProject(name: string): Promise<string> {
       const { data, error } = await a
@@ -508,7 +539,7 @@ describe.skipIf(!hasRlsCredentials)(
     ): Promise<string> {
       const { data, error } = await a
         .from('tickets')
-        .insert({ project_id: project, type, summary })
+        .insert(ticketInsertPayload({ project_id: project, type, summary }))
         .select()
         .single()
       if (error) throw error
@@ -518,6 +549,7 @@ describe.skipIf(!hasRlsCredentials)(
     beforeAll(async () => {
       a = await signIn('A')
       userAId = await userId(a)
+      ;({ ticketInsertPayload } = await import('@/lib/tickets'))
       p1 = await newProject('Epic contract P1')
       p2 = await newProject('Epic contract P2')
       epic1 = await newTicket(p1, 'epic', 'Epic one')
@@ -583,7 +615,14 @@ describe.skipIf(!hasRlsCredentials)(
       const parent = await newTicket(p1, 'epic', 'Doomed epic')
       const { data: child, error: childErr } = await a
         .from('tickets')
-        .insert({ project_id: p1, type: 'story', summary: 'Orphan-to-be', parent_epic_id: parent })
+        .insert(
+          ticketInsertPayload({
+            project_id: p1,
+            type: 'story',
+            summary: 'Orphan-to-be',
+            parent_epic_id: parent,
+          }),
+        )
         .select()
         .single()
       if (childErr) throw childErr
@@ -717,10 +756,13 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
   // else here, so RLS is not what stops the write.
   let otherProjectId: string
   let otherSprintId: string
+  // See S4.1's note above: `@/lib/tickets` cannot be a static import here.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
     userAId = await userId(a)
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
 
     const { data: project, error: projectErr } = await a
       .from('projects')
@@ -772,7 +814,9 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
 
     const { data: backlog, error: backlogErr } = await a
       .from('tickets')
-      .insert({ project_id: projectId, summary: 'Not yet sprinted', type: 'story' })
+      .insert(
+        ticketInsertPayload({ project_id: projectId, summary: 'Not yet sprinted', type: 'story' }),
+      )
       .select()
       .single()
     if (backlogErr) throw backlogErr
@@ -844,12 +888,14 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
 
     const { data: ticket, error: ticketErr } = await a
       .from('tickets')
-      .insert({
-        project_id: projectId,
-        summary: 'Sprint about to vanish',
-        type: 'task',
-        sprint_id: sprint!.id,
-      })
+      .insert(
+        ticketInsertPayload({
+          project_id: projectId,
+          summary: 'Sprint about to vanish',
+          type: 'task',
+          sprint_id: sprint!.id,
+        }),
+      )
       .select()
       .single()
     if (ticketErr) throw ticketErr
@@ -892,7 +938,9 @@ describe.skipIf(!hasRlsCredentials)('S5.1 backlog rule', () => {
     // in the wrong project's sprint with this entire suite still green. This is that net.
     const { data: ticket, error: ticketErr } = await a
       .from('tickets')
-      .insert({ project_id: projectId, type: 'task', summary: 'Sprint fk probe' })
+      .insert(
+        ticketInsertPayload({ project_id: projectId, type: 'task', summary: 'Sprint fk probe' }),
+      )
       .select()
       .single()
     if (ticketErr) throw ticketErr
@@ -964,6 +1012,7 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
   // The app's real data layer, imported lazily — see beforeAll.
   let appClient: typeof import('@/lib/supabase').supabase
   let updateTicket: typeof import('@/lib/tickets').updateTicket
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   beforeAll(async () => {
     a = await signIn('A')
@@ -991,7 +1040,7 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
     // six describes. Inside a skipIf'd beforeAll, the import only happens when the
     // credentials that make it valid are present.
     ;({ supabase: appClient } = await import('@/lib/supabase'))
-    ;({ updateTicket } = await import('@/lib/tickets'))
+    ;({ updateTicket, ticketInsertPayload } = await import('@/lib/tickets'))
 
     // `updateTicket` takes no client — it closes over the app singleton. Signing that
     // singleton in as A is what makes the app's write path owner-scoped here exactly as
@@ -1029,7 +1078,7 @@ describe.skipIf(!hasRlsCredentials)('S6.2 sprint membership via updateTicket', (
   async function newTicket(summary: string): Promise<string> {
     const { data, error } = await a
       .from('tickets')
-      .insert({ project_id: projectId, type: 'story', summary })
+      .insert(ticketInsertPayload({ project_id: projectId, type: 'story', summary }))
       .select()
       .single()
     if (error) throw error

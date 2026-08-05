@@ -295,8 +295,21 @@ export type Ticket = Omit<Tables<'tickets'>, 'status' | 'type'> & {
  * columns with defaults and offers them to you. Omitting them here makes the
  * wrong call untypeable. The database backstops it anyway: a BEFORE UPDATE
  * trigger restores both columns if anyone tries to change them.
+ *
+ * `status` is a different category from `key`/`number`, and is handled differently:
+ * SPRIN-80 dropped the column's `DEFAULT` so that `resolve_initial_ticket_status()`, a
+ * BEFORE INSERT trigger, is the single source of a new ticket's status — but that trigger
+ * only fills `status` **when the caller omits it**; it never overwrites one the caller
+ * sent. A client value is never wrong the way a client-chosen `key` is, so the column is
+ * re-admitted here as OPTIONAL rather than excluded: a caller may choose a starting
+ * status, and if it does not, the database resolves the project's initial one. The
+ * generated type cannot express "required unless a trigger fills it", so it types the
+ * now-defaultless NOT NULL column as required on insert — over-constraining a contract
+ * that is actually optional. `ticketInsertPayload` in `tickets.ts` bridges that gap.
  */
-export type TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number'>
+export type TicketInsert = Omit<TablesInsert<'tickets'>, 'key' | 'number' | 'status'> & {
+  status?: TicketStatus
+}
 
 /** Same reasoning as TicketInsert, plus `id`/`project_id` (a ticket cannot change
  *  project) and the trigger-owned timestamps: `updated_at` is set by the

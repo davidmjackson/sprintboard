@@ -80,6 +80,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
    */
   let projectB: string
   let statusA: string
+  // `@/lib/tickets` imports `./supabase`, which calls `getEnv()` at MODULE scope — a
+  // static import here would throw at file-load time whenever the environment is
+  // missing, turning this file's loud, deliberate skip into a hard error. Imported
+  // lazily in beforeAll instead, same reasoning as `tickets.integration.test.ts`'s
+  // `updateTicket`.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   /**
    * Shared by the SPRIN-77 and SPRIN-80 blocks below — both are project-status suites
@@ -103,6 +109,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     b = await signIn('B')
     userAId = await userId(a)
     userBId = await userId(b)
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
 
     keyA = runKey()
 
@@ -124,7 +131,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
     const { data: ticket, error: tErr } = await a
       .from('tickets')
-      .insert({ project_id: projectA, summary: "A's ticket" })
+      .insert(ticketInsertPayload({ project_id: projectA, summary: "A's ticket" }))
       .select()
       .single()
     if (tErr) throw new Error(`Fixture: could not create A's ticket: ${tErr.message}`)
@@ -336,7 +343,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it('assign_ticket_key increments — the second ticket is KEY-2, not KEY-1', async () => {
       const { data, error } = await a
         .from('tickets')
-        .insert({ project_id: projectA, summary: 'Second' })
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'Second' }))
         .select()
         .single()
       expect(error).toBeNull()
@@ -474,7 +481,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it("B cannot INSERT a ticket into A's project", async () => {
       const { data, error } = await b
         .from('tickets')
-        .insert({ project_id: projectA, summary: 'planted by B' })
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'planted by B' }))
         .select()
 
       expect(data).toBeNull()
@@ -598,7 +605,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
       const { error: tErr } = await a
         .from('tickets')
-        .insert({ project_id: proj!.id, summary: 'rides the cascade' })
+        .insert(ticketInsertPayload({ project_id: proj!.id, summary: 'rides the cascade' }))
       expect(tErr).toBeNull()
 
       // The ticket references a status row that is about to be deleted by the same
@@ -1155,7 +1162,9 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
       const { data: bystander } = await a
         .from('tickets')
-        .insert({ project_id: dp, summary: 'Bystander on todo', type: 'story' })
+        .insert(
+          ticketInsertPayload({ project_id: dp, summary: 'Bystander on todo', type: 'story' }),
+        )
         .select('id, status')
         .single()
       expect(bystander!.status).toBe('todo') // not 'qa': the delete below must not touch it
@@ -1213,7 +1222,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it('REFUSES to delete a status holding tickets, and that ticket survives intact (AC2, AC3, AC5)', async () => {
       const { data: t } = await a
         .from('tickets')
-        .insert({ project_id: dp, summary: 'Sits on todo', type: 'story' })
+        .insert(ticketInsertPayload({ project_id: dp, summary: 'Sits on todo', type: 'story' }))
         .select()
         .single()
 
@@ -1317,7 +1326,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         // proving the BEFORE INSERT resolution and the AFTER DELETE promotion together.
         const { data: fresh } = await a
           .from('tickets')
-          .insert({ project_id: p, summary: 'After promotion', type: 'story' })
+          .insert(ticketInsertPayload({ project_id: p, summary: 'After promotion', type: 'story' }))
           .select('status')
           .single()
         expect(fresh!.status).toBe(expected.slug)
