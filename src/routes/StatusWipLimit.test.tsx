@@ -114,8 +114,31 @@ describe('StatusWipLimitField', () => {
 
     expect(mockSet).not.toHaveBeenCalled()
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      /A limit must be at least 1\. Leave it empty for no limit\./,
+      /^A limit must be at least 1\. Leave it empty for no limit\.$/,
     )
+  })
+
+  /**
+   * Pins the ordering the component's docblock claims but nothing else tests: the error is
+   * cleared BEFORE the no-op check runs, not after it. A no-op commit still reaches
+   * `setError(null)` even though it sends nothing, so a stale refusal from an earlier attempt
+   * does not linger on screen describing a request the user never made.
+   */
+  it('clears a stale error message on a no-op commit', async () => {
+    const user = userEvent.setup()
+    const input = field()
+
+    await user.clear(input)
+    await user.type(input, '0')
+    await user.tab()
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    await user.clear(input)
+    await user.type(input, '4')
+    await user.tab()
+
+    expect(mockSet).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('reverts the draft on Escape without committing', async () => {
