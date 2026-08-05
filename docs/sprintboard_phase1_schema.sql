@@ -879,8 +879,13 @@ revoke insert, update, delete on project_fields from authenticated, anon;
 grant  update (name) on project_fields to authenticated;
 
 -- SELECT is deliberately left as the default grant for both roles: authenticated needs it,
--- and anon holding it is filtered to zero rows by the absence of a read policy — the same
--- contract the keepalive cron depends on elsewhere.
+-- and anon reads zero rows.
+--
+-- NOT because there is no read policy for anon — there is. These four are created with no
+-- `TO` clause, so they apply to `public`, which includes anon (verified against pg_policies:
+-- roles = {public} on all four). anon reads nothing because `auth.uid()` is NULL, so the
+-- EXISTS matches no project. Anyone adding a public-sharing SELECT policy here must scope it
+-- explicitly; believing anon is excluded by policy absence would open this table silently.
 
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors

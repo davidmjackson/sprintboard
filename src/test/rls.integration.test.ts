@@ -1683,9 +1683,15 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     /**
      * ALTER DEFAULT PRIVILEGES grants `anon` full DML on every new table in `public` —
      * measured against pg_default_acl (anon=arwdDxtm), not assumed. This migration revoked
-     * insert/update/delete; SELECT is deliberately left, filtered by the absence of a policy.
+     * insert/update/delete and deliberately left SELECT.
      *
-     * The two halves fail DIFFERENTLY and a test must pick the right shape for each: a
+     * anon reads zero rows because `auth.uid()` is NULL, NOT because no policy covers it:
+     * all four policies are created without a `TO` clause, so they apply to `public`, which
+     * includes anon (verified against pg_policies). Stating that precisely matters — the
+     * wrong explanation would let someone add a public-sharing SELECT policy believing anon
+     * was excluded structurally.
+     *
+     * The three halves fail DIFFERENTLY and a test must pick the right shape for each: a
      * privilege refusal is 42501 with `data === null`, whereas an RLS filter is
      * `error: null, data: []`. Asserting the wrong one passes for the wrong reason.
      */
@@ -1699,7 +1705,14 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       const write = await anon
         .from('project_fields')
         .insert({ project_id: projectA, slug: 'sneaky', name: 'Sneaky', type: 'text' })
-      expect(write.error?.code).toBe('42501') // the revoke, before any policy is consulted
+      // 42501 ALONE CANNOT SAY WHICH CONTROL REFUSED THIS. Because fields_owner_insert also
+      // applies to anon (roles = {public}) and its EXISTS is false for a NULL auth.uid(), a
+      // WITH CHECK violation raises 42501 too — so the code alone would stay green if a later
+      // migration handed INSERT back to anon, which is exactly the fat-fingered-role-list
+      // mistake the documented REVOKE-cascade invites. `permission denied` is emitted by the
+      // privilege check; an RLS refusal says "violates row-level security policy" instead.
+      expect(write.error?.code).toBe('42501')
+      expect(write.error?.message).toMatch(/permission denied/)
 
       const del = await anon.from('project_fields').delete().eq('id', fieldA)
       expect(del.error?.code).toBe('42501')

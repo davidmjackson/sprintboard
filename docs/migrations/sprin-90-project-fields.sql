@@ -159,9 +159,20 @@ revoke insert, update, delete on project_fields from authenticated, anon;
 grant update (name) on project_fields to authenticated;
 
 -- SELECT is deliberately left as the default grant for BOTH roles. authenticated needs it
--- (listProjectFields), and anon holding it is harmless and consistent with every other
--- table here: with no read policy, RLS filters anon to zero rows. That is the same contract
--- the keepalive cron depends on elsewhere — an empty array is the success signal.
+-- (listProjectFields), and anon holding it is harmless: anon reads zero rows.
+--
+-- BE PRECISE ABOUT WHY, because the obvious explanation is wrong and the wrong one is
+-- dangerous. It is NOT that anon is excluded by the absence of a policy. Every policy above
+-- is created without a `TO` clause, so all four apply to `public` — which INCLUDES anon
+-- (verified: `select policyname, roles from pg_policies where tablename='project_fields'`
+-- returns `{public}` four times). anon reads nothing because `auth.uid()` is NULL for an
+-- unauthenticated caller, so the EXISTS matches no project and the policy evaluates false.
+--
+-- The distinction matters to the next person: someone who believes anon is excluded by
+-- policy ABSENCE could add a public-sharing SELECT policy and silently open this table to
+-- unauthenticated callers. Under the real mechanism, any new SELECT policy must state its
+-- own role scoping. Same outcome as the keepalive contract elsewhere — an empty array is
+-- the success signal — but for this reason, not that one.
 
 commit;
 
