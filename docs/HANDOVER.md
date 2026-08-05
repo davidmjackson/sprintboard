@@ -14,19 +14,98 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:
 custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done** 2026-08-05) →
-**custom fields (71 — next)** → sprint cadence (74) → **teams, roles and permissions (75 — the
-security boundary, deliberately last)**.
+**custom fields (71 — in progress)** → sprint cadence (74) → **teams, roles and permissions (75 —
+the security boundary, deliberately last)**.
 
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
 
-**Next is SPRIN-71, custom fields.** CLAUDE.md already fixes its shape and that rule still binds:
-core ticket fields stay real columns, and custom fields are **additive** — new tables alongside,
-never a reshaping of `tickets`. Query the board for its stories rather than planning from here.
+**Epic SPRIN-71 is designed and story 1 has shipped.** The design is
+`docs/superpowers/specs/2026-08-05-sprin-71-custom-fields-design.md` — six stories, three
+migrations, all additive. Read it before planning any of them.
+
+**THE JIRA KEYS ARE NOT IN STORY ORDER.** They were created in parallel and the board raced, so
+stories 3 and 4 carry the lowest numbers. Reading build order off the key numbers gives the wrong
+answer:
+
+| Story | Key | State | Migration |
+|---|---|---|---|
+| 1 — the `project_fields` table and the field list | SPRIN-90 | **Done** | A, applied |
+| 2 — add and rename a custom field | **SPRIN-91 ← next** | To Do | — |
+| 3 — values on the ticket detail sidebar | SPRIN-88 | To Do | B |
+| 4 — values on the create-ticket dialog | SPRIN-89 | To Do | — |
+| 5 — single-select fields | SPRIN-92 | To Do | C |
+| 6 — delete a field, with its value count | SPRIN-93 | To Do | — |
 
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 55 — SPRIN-71 designed, and SPRIN-90 shipped (PRs #90 `cb65b8a`, #91 `b6a19ca`)
+
+Two things landed: the epic-level design for custom fields, and its first story — the
+`project_fields` table, its RLS and grants, and a read-only Settings list. **Migration A applied
+live**, `get_advisors` unchanged at zero new lints. 65 → 66 test files, 1052 → 1080 tests.
+
+**A new table is BORN writable by `anon`, and the migration was rewritten around that.** The
+instinct — "a new table starts with no privileges" — is false here. Measured from
+`pg_default_acl` (not `information_schema`, whose grant views return zero rows under the
+read-only MCP role and read exactly like "no privileges"):
+
+```
+public, tables: anon=arwdDxtm/postgres, authenticated=arwdDxtm/postgres
+```
+
+`ALTER DEFAULT PRIVILEGES` hands **both** app roles full CRUD the moment `create table` runs, so
+the revoke is the statement that changes something. The existing tables show this was narrowed
+inconsistently: `project_statuses` and `projects` had UPDATE revoked, `tickets` still carries
+`arwdDxtm` for `anon`. `project_fields` ends up the **most restrictive table in the schema**.
+
+**`UPDATE(name)` is granted for one reason: AC4 needs a positive control.** Story 1 has no write
+path, so the strict reading is "revoke everything". But then the `slug`/`type` refusal test has no
+permitted column to contrast against, and a blanket row-level refusal is indistinguishable from a
+working column privilege — the gap already recorded below against the `is_initial` test.
+
+**AC5 lost its insert half, deliberately.** With INSERT revoked, a cross-tenant insert dies on the
+missing grant before `fields_owner_insert` is consulted — and a revoked grant and an RLS
+`WITH CHECK` violation both raise `42501`. With nobody holding INSERT there is no positive control
+to separate them, so the test would have passed with the policy deleted. **SPRIN-91 owes it**,
+along with the `grant insert` itself (restating every column, per the REVOKE-cascade rule).
+
+**The review found two Important defects, both mine, neither reachable by reading.** One reviewer,
+43 mutations:
+
+- **The shell → context seam for the new read was entirely unpinned.** Four type-valid, lint-clean,
+  typecheck-clean mutations survived, including `fieldsPhase = statusesPhase` — which is the exact
+  defect the story existed to prevent, because `SettingsTab` gates on statuses, so a failed fields
+  read would have rendered "No custom fields yet." The commit message's claim that
+  `SettingsTab.test.tsx` "covers the seam" was half true: it covers tab → component, not shell →
+  tab, where the read lives. Fixed with a `FieldContextProbe` that renders **both** phases, since
+  with both reads resolving the substitution is invisible.
+- **The unit suite was issuing ~90 live HTTP requests per run.** `ProjectShell.test.tsx` never
+  mocked `@/lib/project-fields`, so the real read ran in every test — 63 entries, 90 outbound
+  PostgREST calls, measured by instrumentation. Invisible because `useTaggedRead` catches the
+  rejection. Locally it died at DNS; **in CI that is the real project**, which is the self-inflicted
+  traffic this file already blames for the moving 5s-timeout flake.
+
+**The technique worth stealing: a SEAM CONTROL.** Four survivors is ambiguous — untested code, or a
+harness that cannot see the class. The reviewer applied the identical mutations to `sprints` and
+they killed 41 and 13 tests. That table is what made the finding unarguable rather than a shrug.
+
+**Three comments described the wrong mechanism.** "With no read policy, RLS filters anon to zero
+rows" is wrong: every policy here is written without a `TO` clause, so all four apply to `public`,
+which **includes `anon`** (verified against `pg_policies`). Anon reads nothing because `auth.uid()`
+is NULL. Same outcome, different reason — and the wrong one would let someone add a public-sharing
+SELECT policy believing anon was excluded structurally.
+
+**A docblock cited a test file that does not exist** (`CustomFieldSettings.test.tsx`). Same class as
+SPRIN-86's, and it is precisely what made the missing shell seam read as covered.
+
+**Local `verify` could not run the live half at all**, and it is worth knowing the shape: this
+environment's `VITE_SUPABASE_URL` is the placeholder `example.supabase.co`, so all seven integration
+files failed on `ENOTFOUND` — seven red files that look exactly like a broken diff. Absent config
+skips loudly; **placeholder config fails hard.** `npm run keepalive` names the host it tried, which
+is how to classify it in one command. CI holds the real secrets and is the authority.
 
 ### Session 54 — SPRIN-86, the board flags an over-limit column (PR #88, `144fdd2`)
 
@@ -222,6 +301,19 @@ are **soft** (they warn, they do not block).
 
 Engineering items with no story yet. Each is a candidate for one.
 
+- **Every table grants TRUNCATE (`D`) to both `anon` and `authenticated`, and RLS does not apply
+  to TRUNCATE.** Measured on all six tables 2026-08-05. Not currently reachable — PostgREST maps
+  no HTTP verb to it and no `public` function truncates (all 11 checked) — so this is
+  defence-in-depth, not a live hole. It stops being theoretical the day someone adds an RPC.
+  Uniform across the schema, so it wants **one deliberate sweep**, not a piecemeal revoke on
+  whichever table is being touched. Belongs with SPRIN-75.
+- **`tickets` still carries full `arwdDxtm` for `anon`** — an anonymous caller holds UPDATE and
+  DELETE on it, with only RLS in front. `project_statuses` and `projects` were narrowed;
+  `tickets` never was, and `project_fields` (SPRIN-90) is now the most restrictive table in the
+  schema. The inconsistency is the finding, not any single table. Same sweep as above.
+- **`listProjectStatuses` still uses a bare `.select()`**, unlike `listProjectFields`, which names
+  its columns and has a test asserting the exact string. The class is recorded below; SPRIN-90
+  shows what closing it looks like, so the remaining work is mechanical.
 - **Is a deadlock reachable** between the SPRIN-80 delete guard's `FOR UPDATE` on `projects` and
   the `projects → project_statuses` RI cascade? The migration records this **unresolved**. If
   reachable it is rare, non-corrupting and retryable (`40P01`). The lock's mutual exclusion is
