@@ -253,7 +253,7 @@ export type AssertStatusCategoryColumn = Assignable<
  *  assignable to the generated update type. `Exact<>` is what makes adding `slug` back a
  *  compile error rather than a silent re-widening. */
 export type AssertProjectStatusUpdateColumns = Expect<
-  Exact<keyof ProjectStatusUpdate, 'name' | 'category' | 'position'>
+  Exact<keyof ProjectStatusUpdate, 'name' | 'category' | 'position' | 'wip_limit'>
 >
 
 /* ------------------------------------------------------------------ *
@@ -381,10 +381,16 @@ export type SprintStatusUpdate = Pick<TablesUpdate<'sprints'>, 'status'>
  * and `SprintStatusUpdate` make for their invariants. `AssertProjectStatusUpdateColumns` above
  * pins the key set, so widening this alias is itself a compile error rather than a quiet
  * loosening of the grant's client-side mirror.
+ *
+ * SPRIN-85 added `wip_limit`, and the grant was rewritten in the same commit
+ * (docs/migrations/sprin-85-wip-limit.sql). The two must move together: a table REVOKE
+ * cascades to column grants, so that migration re-grants ALL FOUR columns, and this alias
+ * is the client-side mirror of exactly that list. `slug` and `is_initial` remain absent
+ * from both.
  */
 export type ProjectStatusUpdate = Pick<
   TablesUpdate<'project_statuses'>,
-  'name' | 'category' | 'position'
+  'name' | 'category' | 'position' | 'wip_limit'
 >
 
 /* ------------------------------------------------------------------ */
@@ -427,6 +433,24 @@ export function isProjectType(value: string): value is ProjectType {
  */
 export function hasSprints(project: Pick<Project, 'project_type'>): boolean {
   return project.project_type === 'scrum'
+}
+
+/**
+ * Whether a project's board columns carry WIP limits. THE single expression of the rule —
+ * no component, filter or test may write the comparison itself, and
+ * `src/test/project-type-single-expression.test.ts` says so in a form that goes red.
+ *
+ * Deliberately a SECOND predicate rather than `!hasSprints(project)`. They are two
+ * different questions that happen to share an answer while there are exactly two project
+ * types; a third would separate them, and a single negated predicate would not survive it.
+ * `hasSprints`'s own docblock promised this function would arrive in SPRIN-85 with its
+ * first caller rather than earlier as an unreferenced export.
+ *
+ * Takes the narrowest shape it reads, matching `hasSprints`, so a test can pass
+ * `{ project_type: 'kanban' }` without inventing eight irrelevant columns.
+ */
+export function hasWipLimits(project: Pick<Project, 'project_type'>): boolean {
+  return project.project_type === 'kanban'
 }
 
 /** What the flat ticket-list tab is called, and what it says when it is empty. */
