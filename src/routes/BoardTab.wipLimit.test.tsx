@@ -172,8 +172,10 @@ describe('a Kanban column with a WIP limit', () => {
   it('shows its count against the limit when under it', () => {
     renderTab(BoardTab, ctxWith('kanban', statuses({ todo: null, doing: 3 })))
     const doing = within(column('Doing'))
-    expect(doing.getByText(/1 card/i)).toBeInTheDocument()
-    expect(doing.getByText(/limit 3/i)).toBeInTheDocument()
+    // The WHOLE line, exactly as rendered, separators included. A substring regex anchored on
+    // "limit" leaves the ` · ` join unpinned — a review mutation dropped it and rendered
+    // "1 card · 2 points limit 3" with every assertion in this file still green.
+    expect(doing.getByText('1 card · 2 points · limit 3')).toBeInTheDocument()
     expect(doing.queryByText(/over limit/i)).not.toBeInTheDocument()
   })
 
@@ -182,8 +184,10 @@ describe('a Kanban column with a WIP limit', () => {
   it('does not say over at exactly the limit', () => {
     renderTab(BoardTab, ctxWith('kanban', statuses({ todo: 3, doing: null })))
     const todo = within(column('To Do'))
-    expect(todo.getByText(/3 cards/i)).toBeInTheDocument()
-    expect(todo.getByText(/limit 3/i)).toBeInTheDocument()
+    // Exact, so this test cannot stop being a BOUNDARY test without failing: with the loose
+    // `/limit 3/i`, changing this fixture to a limit of 30 left it green while no longer
+    // exercising the boundary at all. Measured in review.
+    expect(todo.getByText('3 cards · 8 points · 1 unestimated · limit 3')).toBeInTheDocument()
     expect(todo.queryByText(/over limit/i)).not.toBeInTheDocument()
   })
 
@@ -192,15 +196,35 @@ describe('a Kanban column with a WIP limit', () => {
   // would still pass with either half deleted.
   it('says "over limit" in words when the count exceeds it', () => {
     renderTab(BoardTab, ctxWith('kanban', statuses({ todo: 2, doing: null })))
-    expect(within(column('To Do')).getByText(/over limit 2/i)).toBeInTheDocument()
+    const summary = within(column('To Do')).getByText(
+      '3 cards · 8 points · 1 unestimated · over limit 2',
+    )
+    // `toBeInTheDocument` is not `toBeVisible`, and `getByText` ignores only script/style — it
+    // matches an aria-hidden subtree happily. Review mutations added `aria-hidden="true"` and
+    // `hidden` to this span and both survived the first version of this test: AC2's text would
+    // have been in the DOM and reaching nobody.
+    expect(summary).toBeVisible()
+    expect(summary).not.toHaveAttribute('aria-hidden')
   })
 
   // AC2 — colour as REINFORCEMENT, never the carrier. The second expectation is the negative
   // control: without it, a component that painted every summary red would pass.
+  //
+  // The EXACT class list, not `toHaveClass`, which is a SUBSET check. A review mutation
+  // rendered `text-destructive text-muted-foreground` together — both `toHaveClass`
+  // assertions passed while Tailwind's emitted rule order, not the `over` branch, decided the
+  // colour. The same exactness catches an `sr-only` added to this span, which no visibility
+  // assertion can see under jsdom because no stylesheet is ever loaded.
   it('renders the over-limit summary in the destructive colour', () => {
     renderTab(BoardTab, ctxWith('kanban', statuses({ todo: 2, doing: null })))
-    expect(within(column('To Do')).getByText(/over limit 2/i)).toHaveClass('text-destructive')
-    expect(within(column('Doing')).getByText(/1 card/i)).toHaveClass('text-muted-foreground')
+    expect(within(column('To Do')).getByText(/over limit 2/i)).toHaveAttribute(
+      'class',
+      'text-destructive text-xs tabular-nums',
+    )
+    expect(within(column('Doing')).getByText(/1 card/i)).toHaveAttribute(
+      'class',
+      'text-muted-foreground text-xs tabular-nums',
+    )
   })
 })
 

@@ -53,11 +53,18 @@ import { TicketSearchInput } from './TicketSearchInput'
  * only decides UNDER versus OVER, from the same `count` it renders, so the number the word
  * "over" refers to is provably the number on screen.
  *
- * `limit === null` is strict on purpose. `ProjectStatus.wip_limit` is `number | null` and
- * `listProjectStatuses` calls `.select()` with no column list, so the column always arrives:
- * `undefined` can only come from a test fixture that omitted it, and such a fixture then
- * renders "limit undefined" and reddens loudly rather than being silently absorbed by a
- * nullish check.
+ * `limit === null` is strict on purpose — and the reasoning has a MEASURED hole in it, stated
+ * here rather than papered over. `ProjectStatus.wip_limit` is `number | null` and
+ * `listProjectStatuses` calls `.select()` with no column list, so the column always arrives;
+ * `undefined` can only come from a row that omitted it, and such a row renders the literal
+ * "· limit undefined".
+ *
+ * AN EARLIER DRAFT OF THIS PARAGRAPH CLAIMED THAT REDDENS LOUDLY. IT DOES NOT. SPRIN-86's
+ * review narrowed that `.select()` to an explicit column list, and separately deleted the
+ * `wip_limit` line from `BoardTab.test.tsx`'s fixture; the suite stayed green both times while
+ * the board rendered "limit undefined". So the strict check makes the failure loud ON SCREEN
+ * and never in CI. Pinning the no-arg `.select()` is a follow-up — it is not a control this
+ * file may claim to have.
  *
  * THE COLOUR IS REINFORCEMENT AND NEVER THE CARRIER. AC2 requires the over-limit state in
  * TEXT, and the word "over" is what satisfies it; `text-destructive` only makes it easier to
