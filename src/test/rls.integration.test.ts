@@ -798,6 +798,103 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
+     * SPRIN-85 AC2 and AC3, and the POSITIVE CONTROL for the widened grant. Every refusal
+     * below is evidence only if this passes: if `wip_limit` had been left out of the
+     * rewritten grant, this is the test that says so, and nothing else would.
+     *
+     * Written as set-then-read-back-then-clear rather than three tests, because AC2 is
+     * literally "persists across a reload" — a second, separate SELECT is what a reload is.
+     */
+    it('the owner can set, re-read and clear a wip_limit', async () => {
+      const set = await a
+        .from('project_statuses')
+        .update({ wip_limit: 3 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(set.error).toBeNull()
+      expect(set.data).toHaveLength(1)
+
+      // AC2: a FRESH read, which is what "persists across a reload" means.
+      const reread = await a
+        .from('project_statuses')
+        .select('slug, wip_limit')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(reread.data).toEqual([{ slug: 'qa', wip_limit: 3 }])
+
+      // AC3: empty clears to null, and null is stored as null rather than 0.
+      const cleared = await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select('slug, wip_limit')
+      expect(cleared.error).toBeNull()
+      expect(cleared.data).toEqual([{ slug: 'qa', wip_limit: null }])
+    })
+
+    /**
+     * SPRIN-85 AC4, the DATABASE half — and it is TWO mechanisms with two SQLSTATEs, which
+     * is why they are asserted separately rather than as one "the database refuses it".
+     *
+     *   0 and -1 parse fine as integers and are refused by the CHECK      -> 23514
+     *   1.5 never reaches the check; the COLUMN TYPE refuses it            -> 22P02
+     *
+     * A test asserting one code for all three would be asserting something false, and would
+     * go green if the check constraint were dropped entirely (the type would still catch
+     * 1.5, and 0 would then be stored happily).
+     */
+    it.each([0, -1])('the database refuses a wip_limit of %i', async (value) => {
+      const { error } = await a
+        .from('project_statuses')
+        .update({ wip_limit: value })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(error!.code).toBe('23514') // OBSERVED: project_statuses_wip_limit_positive.
+    })
+
+    it('the database refuses a fractional wip_limit', async () => {
+      const { error } = await a
+        .from('project_statuses')
+        .update({ wip_limit: 1.5 } as never)
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(error!.code).toBe('22P02') // OBSERVED: invalid input syntax for type integer.
+    })
+
+    /**
+     * NOT AN AC — and in scope anyway. SPRIN-85's migration RESTATES the whole column list
+     * in one grant, so a typo silently DROPS a column. Three of the four have a live
+     * witness: `name` in the rename above, `position` through the reorder RPC (which is
+     * SECURITY INVOKER and so writes as the caller), and `wip_limit` in the test above.
+     *
+     * `category` had NONE — it is only ever written on INSERT in this suite — so dropping
+     * it from the rewritten grant would have shipped green. This closes the last
+     * unwitnessed column of the exact control this story rewrites.
+     */
+    it('the owner can recategorise a status', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .update({ category: 'done' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select('slug, category')
+      expect(error).toBeNull()
+      expect(data).toEqual([{ slug: 'qa', category: 'done' }])
+
+      // Put it back: the tests in this block run in order and share the `qa` row, and a
+      // later reorder test counts on the vocabulary it was given.
+      await a
+        .from('project_statuses')
+        .update({ category: 'in_progress' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+    })
+
+    /**
      * SPRIN-80 gave `project_statuses` a DELETE policy, so "nobody can delete a
      * status — not even the owner" is no longer true and this test used to assert
      * exactly that. Only the STRANGER half survives: an owner deleting their OWN

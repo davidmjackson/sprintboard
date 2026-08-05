@@ -149,6 +149,18 @@ create table project_statuses (
   -- delete guard plus the promotion trigger below are what prevent ZERO.
   is_initial  boolean not null default false,
 
+  -- Soft WIP limit for this board column, NULL meaning no limit (SPRIN-85). Read only for
+  -- Kanban projects; a value on a Scrum project's row is inert, and stays inert because
+  -- project_type is immutable in the database. A CHECK body may not subquery, so this
+  -- column cannot be constrained to Kanban projects — recorded, accepted, and inherited by
+  -- any future project-type conversion story.
+  --
+  -- The limit WARNS, it never blocks. Nothing here refuses a ticket entering an at-limit
+  -- status, deliberately: a hard limit would need a trigger on tickets counting sibling
+  -- rows, the exact shape that broke the cascade in SPRIN-80, and it would strand work
+  -- whenever a limit was lowered below a column's occupancy.
+  wip_limit   int,
+
   created_at  timestamptz not null default now(),
 
   constraint project_statuses_slug_format
@@ -157,6 +169,8 @@ create table project_statuses (
     check (btrim(name) <> '' and length(name) <= 40),
   constraint project_statuses_position_positive
     check (position > 0),
+  constraint project_statuses_wip_limit_positive
+    check (wip_limit is null or wip_limit > 0),
 
   -- The fk target for tickets. NON-deferrable, so it remains a legal fk target and
   -- can still arbitrate ON CONFLICT.
@@ -715,8 +729,16 @@ revoke delete on project_statuses from anon;
 -- it: it is seeded on `todo` and moved only by project_statuses_promote_initial().
 -- `position` IS granted because reorder_project_statuses below is SECURITY INVOKER and
 -- therefore writes that column as the caller.
+--
+-- SPRIN-85 added `wip_limit` to the granted set. THE LIST IS RESTATED IN FULL ON PURPOSE
+-- and must stay that way: a table-level REVOKE cascades to column grants ("When revoking
+-- privileges on a table, the corresponding column privileges (if any) are automatically
+-- revoked on each column of the table, as well" — PostgreSQL REVOKE reference), so a
+-- migration that revokes and then grants only the NEW column leaves authenticated able to
+-- write that column and nothing else. `src/lib/domain.ts`'s ProjectStatusUpdate mirrors
+-- this list and its Exact<> assertion makes widening one without the other a compile error.
 revoke update on project_statuses from authenticated, anon;
-grant  update (name, category, position) on project_statuses to authenticated;
+grant  update (name, category, position, wip_limit) on project_statuses to authenticated;
 
 -- SPRIN-82: `projects` holds NO update privilege at all, and nothing is granted back —
 -- because nothing in src/ updates the table (createProject inserts, listProjects selects).
