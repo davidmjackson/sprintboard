@@ -13,17 +13,75 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 ## Where the project is
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:
-custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, in progress**) → custom
-fields (71) → sprint cadence (74) → **teams, roles and permissions (75 — the security boundary,
-deliberately last)**.
+custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done** 2026-08-05) →
+**custom fields (71 — next)** → sprint cadence (74) → **teams, roles and permissions (75 — the
+security boundary, deliberately last)**.
 
-Epic 73 has six stories: 81, 82, 83, 84, **85** and 87 done. **Only 86 (the board flags an
-over-limit column) remains**, and it is the last story of the epic. `wip_limit` exists, is
-writable, and is inert until 86 renders it — deliberately, and nothing reads it yet.
+Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
+SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
+
+**Next is SPRIN-71, custom fields.** CLAUDE.md already fixes its shape and that rule still binds:
+core ticket fields stay real columns, and custom fields are **additive** — new tables alongside,
+never a reshaping of `tickets`. Query the board for its stories rather than planning from here.
 
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 54 — SPRIN-86, the board flags an over-limit column (PR #88, `144fdd2`)
+
+The last story of epic **SPRIN-73**, which is now Done. A Kanban column whose status carries a
+`wip_limit` shows `· limit 3`, or `· over limit 3` when over, appended to the existing summary
+line. No migration. 64 → 65 test files, 1035 → 1052 tests.
+
+**The Jira issue's complexity figure was stale and the story was designed around re-measuring
+it.** It said `BoardTab` sat at 10/10 cyclomatic after SPRIN-83; it measures **7**, because
+SPRIN-76's `firstUnready` refactor and SPRIN-83's two extractions bought four branches back. The
+rendering still went into `BoardColumnSummary` as a prop — not from necessity, but because that is
+what the component is for.
+
+**Two new selectors, both in `board.ts`.** `selectColumnLimit(project, status, filtered)` holds
+the entire "should this column show a limit" rule behind two gates: `hasWipLimits(project)`, and
+whether a board filter is active. `isBoardFiltered(blockedOnly, query)` is the `||` that used to
+live inside `BoardColumnEmpty`, named once now that two components need the same answer.
+
+**A filtered board makes no WIP claim at all.** The summary renders the already-filtered column,
+so under *Blocked only* or a search its count is not the column's real occupancy — five cards
+against a limit of three read as "1 card". Judging against the visible count was rejected because
+a filtered count is always ≤ the real one, so an over-limit column would quietly stop warning with
+nothing saying the number was partial. Suppressing the segment keeps the existing invariant whole:
+nothing on that line ever disagrees with the cards below it. The accepted cost is that the warning
+disappears while filtering.
+
+**The `hasWipLimits` gate is load-bearing, not decoration.** SPRIN-85 §3.4 recorded that a CHECK
+body may not contain a subquery, so the database will store a `wip_limit` on a **Scrum** project's
+status row. That value was inert only because nothing read it — this story is the first reader. So
+AC5's test uses a Scrum project whose rows carry *real* limits.
+
+**One reviewer, briefed to mutate rather than read, planted 44 mutations; 6 survived.** Every
+AC-level mutation was killed, including three independent shapes of the hard block AC3 exists to
+forbid. Four survivors were closed and each re-proven: the ` · ` separator was unpinned (dropping
+it rendered `1 unestimatedover limit 2` with the suite green); `aria-hidden` and `hidden` on the
+summary span both survived, since `getByText` + `toBeInTheDocument` sees neither; `toHaveClass` is
+a **subset** check, so rendering `text-destructive text-muted-foreground` together passed both
+colour assertions; and a substring regex let the boundary fixture change from 3 to 30, silently
+ending the boundary test. One exact-string assertion per line closed three of the four.
+
+**The mutation matrix found a vacuous test of my own, twice over.** AC5's board test asserted that
+no limit appears on a Scrum board — but that board had no active sprint, so it rendered no cards,
+every column was empty, and `BoardColumnSummary` returns `null` at `count === 0` before it ever
+consults a limit. It passed with the gate deleted. Fixed by giving the board a running sprint plus
+a positive control asserting the cards are on screen. Separately, a docblock I wrote claimed a
+missing `wip_limit` "reddens loudly"; **it does not** — the review narrowed `listProjectStatuses`'s
+`.select()` and deleted the fixture's `wip_limit` line, and the suite stayed green both times
+while the board rendered `· limit undefined`. The comment now says what is true and points at the
+follow-up recorded above.
+
+**`project-type-single-expression.test.ts` reads prose as code.** Its read scan is a raw text
+regex, so a docblock explaining SPRIN-85's CHECK gap failed `verify` merely for containing the
+literal `projects.project_type`. That false positive is worth paying — teaching the scan to strip
+comments means parsing, and the guard's whole design is "no parser, one chokepoint, no allowlist".
+Reword the prose.
 
 ### Session 53 — SPRIN-85, a WIP limit per status (PR #86, `7224a5b`)
 
