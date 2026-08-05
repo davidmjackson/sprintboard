@@ -21,6 +21,12 @@
  * calling a function this file has never seen is a compile error rather than a
  * silent `string`.
  *
+ * SPRIN-85 added `project_statuses.wip_limit`, which arrives as `number | null` —
+ * a NULLABLE column, and the nullability is the meaning rather than an accident:
+ * `null` is "no limit". Note it also appears in `reorder_project_statuses`'
+ * `Returns`, because that RPC returns `setof project_statuses` and so widens
+ * whenever the table does.
+ *
  * The narrowed domain unions live in `domain.ts`, which is hand-owned precisely so
  * that regenerating this file cannot clobber them.
  */
@@ -86,6 +92,7 @@ export type Database = {
           position: number
           project_id: string
           slug: string
+          wip_limit: number | null
         }
         Insert: {
           category?: string
@@ -96,6 +103,7 @@ export type Database = {
           position: number
           project_id: string
           slug: string
+          wip_limit?: number | null
         }
         Update: {
           category?: string
@@ -106,6 +114,7 @@ export type Database = {
           position?: number
           project_id?: string
           slug?: string
+          wip_limit?: number | null
         }
         Relationships: [
           {
@@ -226,7 +235,7 @@ export type Database = {
           parent_epic_id?: string | null
           project_id: string
           sprint_id?: string | null
-          status?: string
+          status: string
           story_points?: number | null
           summary: string
           type?: string
@@ -302,6 +311,7 @@ export type Database = {
           position: number
           project_id: string
           slug: string
+          wip_limit: number | null
         }[]
         SetofOptions: {
           from: '*'

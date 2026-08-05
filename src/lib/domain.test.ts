@@ -11,6 +11,7 @@ import {
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   hasSprints,
+  hasWipLimits,
   isProjectType,
   isSprintStatus,
   isStatusCategory,
@@ -403,6 +404,29 @@ describe('hasSprints', () => {
   it('answers false for an unrecognised or missing project type (fails CLOSED)', () => {
     expect(hasSprints({ project_type: 'waterfall' as ProjectType })).toBe(false)
     expect(hasSprints({ project_type: undefined as unknown as ProjectType })).toBe(false)
+  })
+})
+
+describe('hasWipLimits', () => {
+  /**
+   * A SECOND predicate, not a negated `hasSprints`. "Has sprints" and "has WIP limits" are
+   * two different questions that share an answer only while there are exactly two project
+   * types; a third would separate them. Asserted independently here for that reason —
+   * writing `expect(hasWipLimits(p)).toBe(!hasSprints(p))` would encode the coincidence
+   * this design exists to avoid.
+   */
+  it('is true for a Kanban project', () => {
+    expect(hasWipLimits({ project_type: 'kanban' })).toBe(true)
+  })
+
+  it('is false for a Scrum project', () => {
+    expect(hasWipLimits({ project_type: 'scrum' })).toBe(false)
+  })
+
+  it('covers every project type', () => {
+    // The exhaustiveness control: if a third type ships, this fails until someone decides
+    // which side of the predicate it falls on, rather than silently defaulting to false.
+    expect(PROJECT_TYPES.filter((t) => hasWipLimits({ project_type: t }))).toEqual(['kanban'])
   })
 })
 

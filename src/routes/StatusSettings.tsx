@@ -162,6 +162,7 @@ export function StatusSettings({
   projectId,
   statuses,
   counts,
+  hasWipLimits,
   onCreated,
   onUpdated,
   onDeleted,
@@ -172,6 +173,11 @@ export function StatusSettings({
   /** Ticket counts by status SLUG (matching `ticketCountsByStatus`'s own keying), used to gate
    *  and explain each row's Delete control before any write is attempted. */
   counts: ReadonlyMap<string, number>
+  /** Whether this project has WIP limits AT ALL (`hasWipLimits` in domain.ts) — not whether
+   *  to show a control. A Scrum project has no such concept, so the field is ABSENT rather
+   *  than hidden or disabled, and this prop is named after the question rather than after
+   *  the rendering so nobody satisfies it with `hidden`. */
+  hasWipLimits: boolean
   onCreated: (status: ProjectStatus) => void
   onUpdated: (status: ProjectStatus) => void
   onDeleted: (id: string) => void
@@ -227,6 +233,7 @@ export function StatusSettings({
               status={status}
               statuses={statuses}
               count={counts.get(status.slug)}
+              hasWipLimits={hasWipLimits}
               onUpdated={onUpdated}
               onDeleted={onDeleted}
               onMoveUp={index > 0 ? () => void move(status, -1) : undefined}

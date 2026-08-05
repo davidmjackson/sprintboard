@@ -1,22 +1,43 @@
 import { supabase } from './supabase'
 import type { Ticket, TicketBlockUpdate, TicketInsert, TicketType, TicketUpdate } from './domain'
+import type { TablesInsert } from './database.types'
+
+/**
+ * THE ONE PLACE in the repo that bridges `TicketInsert` (where `status` is optional,
+ * because `resolve_initial_ticket_status()` fills it when the caller omits it — see
+ * `TicketInsert`'s docblock in `domain.ts`) and the generated `TablesInsert<'tickets'>`
+ * (where `status` is required, because SPRIN-80 dropped the column's `DEFAULT` and a
+ * generated type cannot see a trigger). `.insert()` is typed off the generated
+ * `Database`, so a `satisfies TicketInsert` on the argument does not help — the error is
+ * on the argument itself, not on some intermediate value.
+ *
+ * A cast is unavoidable here; the design goal is that there is exactly ONE of them,
+ * named and easy to find, rather than one scattered `as never` per call site — each of
+ * which would silently swallow a future, real type error the same way this one does.
+ * Every `tickets` insert in this file and in the integration suites routes through this
+ * function for that reason, even the ones that do send `status`.
+ */
+export function ticketInsertPayload(input: TicketInsert): TablesInsert<'tickets'> {
+  return input as TablesInsert<'tickets'>
+}
 
 /**
  * Create a ticket in a project.
  *
  * The `key` and `number` are assigned by the `assign_ticket_key` BEFORE INSERT
  * trigger, atomically and race-safely — so we never send them (the `TicketInsert`
- * type forbids it). `status` is still left to the DB default `'todo'`, and needs no
- * code change now that statuses are per-project rows: the default resolves against
- * this project's `project_statuses` row through the composite `tickets_status_fk`
- * rather than against a global check constraint. That is the whole point of keying
- * the fk on the slug — no ticket row, and no insert path, had to change. `tickets` has no
- * `owner_id`; the `tickets_owner` RLS policy scopes writes through the project, so a
- * cross-tenant insert is rejected by the database, not by this function. A failure is
- * not user-correctable (no per-field unique constraint reachable here), so the error
- * result is a single `'unknown'`. `parentEpicId` is optional and set when a ticket is
- * created under an epic; the composite fk `tickets_epic_fk` keeps the parent in the same
- * project, which holds because the caller passes the epic's own project id.
+ * type forbids it). `status` is omitted here too, so `resolve_initial_ticket_status()`
+ * fills it from the project's initial `project_statuses` row — needing no code change
+ * now that statuses are per-project rows: the trigger resolves against this project's
+ * rows through the composite `tickets_status_fk` rather than against a global check
+ * constraint. That is the whole point of keying the fk on the slug — no ticket row, and
+ * no insert path, had to change. `tickets` has no `owner_id`; the `tickets_owner` RLS
+ * policy scopes writes through the project, so a cross-tenant insert is rejected by the
+ * database, not by this function. A failure is not user-correctable (no per-field unique
+ * constraint reachable here), so the error result is a single `'unknown'`. `parentEpicId`
+ * is optional and set when a ticket is created under an epic; the composite fk
+ * `tickets_epic_fk` keeps the parent in the same project, which holds because the caller
+ * passes the epic's own project id.
  */
 export type CreateTicketResult = { ok: true; ticket: Ticket } | { ok: false; error: 'unknown' }
 
@@ -30,21 +51,24 @@ export async function createTicket(input: {
   acceptanceCriteria?: string
   parentEpicId?: string
 }): Promise<CreateTicketResult> {
-  // `satisfies TicketInsert` binds the write to the guard type (Omit key/number), so a
-  // future edit that adds `key` or `number` here fails to compile at the call site —
-  // making the "unrepresentable from the client" guarantee structural, not just a doc.
+  // `ticketInsertPayload`'s parameter type binds the write to the guard type (Omit
+  // key/number, optional status), so a future edit that adds `key` or `number` here
+  // fails to compile at the call site — making the "unrepresentable from the client"
+  // guarantee structural, not just a doc.
   const { data, error } = await supabase
     .from('tickets')
-    .insert({
-      project_id: input.projectId,
-      summary: input.summary,
-      type: input.type,
-      description: input.description ?? null,
-      story_points: input.storyPoints ?? null,
-      labels: input.labels ?? [],
-      acceptance_criteria: input.acceptanceCriteria ?? null,
-      parent_epic_id: input.parentEpicId ?? null,
-    } satisfies TicketInsert)
+    .insert(
+      ticketInsertPayload({
+        project_id: input.projectId,
+        summary: input.summary,
+        type: input.type,
+        description: input.description ?? null,
+        story_points: input.storyPoints ?? null,
+        labels: input.labels ?? [],
+        acceptance_criteria: input.acceptanceCriteria ?? null,
+        parent_epic_id: input.parentEpicId ?? null,
+      }),
+    )
     .select()
     .single()
 

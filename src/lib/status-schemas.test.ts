@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { STATUS_CATEGORIES } from './domain'
-import { AddStatusSchema, RenameStatusSchema } from './status-schemas'
+import { AddStatusSchema, RenameStatusSchema, WipLimitSchema } from './status-schemas'
 
 describe('AddStatusSchema', () => {
   it('accepts a name and a category', () => {
@@ -101,5 +101,73 @@ describe('RenameStatusSchema', () => {
   // accepts and the foreign key never notices.
   it('accepts a name with no derivable slug, because a rename never touches the slug', () => {
     expect(RenameStatusSchema.safeParse({ name: '!!!' }).success).toBe(true)
+  })
+})
+
+describe('WipLimitSchema', () => {
+  /**
+   * The client edge of validate-at-both-edges. The set this accepts is exactly the set the
+   * database accepts — `project_statuses_wip_limit_positive` (`> 0`) plus the column's own
+   * `int` type. Anything wider earns the user an error they cannot act on: a fractional
+   * value is a 22P02 from the type, an out-of-range one a 22003.
+   */
+  it.each([
+    ['', null],
+    ['   ', null],
+    ['1', 1],
+    ['3', 3],
+    ['007', 7],
+    ['2147483647', 2147483647],
+  ])('parses %o to %o', (input, expected) => {
+    const result = WipLimitSchema.safeParse(input)
+    expect(result.success).toBe(true)
+    expect(result.data).toBe(expected)
+  })
+
+  // Trimming happens BEFORE the digit check, so surrounding whitespace cannot smuggle a
+  // non-digit past the rule and cannot turn a valid number into a rejected one either.
+  it('trims surrounding whitespace before parsing the digits', () => {
+    const result = WipLimitSchema.safeParse('  5  ')
+    expect(result.success).toBe(true)
+    expect(result.data).toBe(5)
+  })
+
+  it('refuses 0 with a message that says what empty means', () => {
+    const result = WipLimitSchema.safeParse('0')
+    expect(result.success).toBe(false)
+    expect(result.error!.issues[0]!.message).toBe(
+      'A limit must be at least 1. Leave it empty for no limit.',
+    )
+  })
+
+  it.each(['-1', '1.5', 'abc', '1e3', '+5'])('refuses %o as not a whole number', (input) => {
+    const result = WipLimitSchema.safeParse(input)
+    expect(result.success).toBe(false)
+    expect(result.error!.issues[0]!.message).toBe(
+      'Use a whole number, or leave it empty for no limit.',
+    )
+  })
+
+  /**
+   * The boundary, both sides. int4's ceiling is the column's own limit, not a product
+   * decision — one past it is a 22003 the user cannot act on, so the schema refuses it
+   * here where it can explain itself. The literal is deliberately absent from the copy:
+   * 2147483647 is noise to a person.
+   */
+  it('refuses one past int4 max', () => {
+    const result = WipLimitSchema.safeParse('2147483648')
+    expect(result.success).toBe(false)
+    expect(result.error!.issues[0]!.message).toBe('That limit is too large.')
+  })
+
+  // The three messages must be genuinely distinct, not two labels sharing one string — a
+  // test that only checked "it failed" would pass even if all three collapsed into one.
+  it('gives 0, -1 and one-past-int4-max three DIFFERENT messages', () => {
+    const zero = WipLimitSchema.safeParse('0')
+    const negative = WipLimitSchema.safeParse('-1')
+    const tooLarge = WipLimitSchema.safeParse('2147483648')
+
+    const messages = [zero, negative, tooLarge].map((r) => r.error!.issues[0]!.message)
+    expect(new Set(messages).size).toBe(3)
   })
 })

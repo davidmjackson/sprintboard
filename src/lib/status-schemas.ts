@@ -63,3 +63,52 @@ export const RenameStatusSchema = z.object({ name })
 
 export type AddStatusValues = z.input<typeof AddStatusSchema>
 export type RenameStatusValues = z.input<typeof RenameStatusSchema>
+
+/**
+ * int4's ceiling. `project_statuses.wip_limit` is `int`, so a larger value is refused by the
+ * COLUMN TYPE with a 22003 the user can do nothing about. The bound is the database's, not a
+ * product opinion — which is why it is a constant with this comment rather than a number in
+ * a message. `2147483647` in user-facing copy is noise.
+ */
+const INT4_MAX = 2147483647
+
+/** A run of digits and nothing else. Refuses `-1`, `1.5`, `+5`, `1e3` and `abc` with one
+ *  message, because they are one mistake from the user's side: that is not a whole number. */
+const WHOLE_NUMBER = /^\d+$/
+
+/**
+ * A status's WIP limit, as typed into the settings field.
+ *
+ * **Empty means NO LIMIT and parses to `null`** — that is the story's AC3, and it is why this
+ * schema takes a string rather than a number: the DOM hands us `''`, and `Number('')` is `0`,
+ * which is the one value that must never be stored. Parsing the empty case explicitly is what
+ * keeps "no limit" from silently becoming "a limit of zero".
+ *
+ * Zero gets its OWN message rather than joining the not-a-whole-number set, because it is a
+ * different mistake: the user typed a number, and the thing they need to know is that empty —
+ * not `0` — is how "no limit" is said. `0` is not "unlimited", it is a column no work may
+ * ever enter, which nothing in the UI can express and no user means.
+ *
+ * The accepted set is exactly the database's: `project_statuses_wip_limit_positive` plus the
+ * `int` column type. Validating wider here would hand the user a 22P02 or a 22003 from
+ * PostgREST, which carries no remedy.
+ *
+ * Chaining `.refine()` after `.transform()` type-checks and behaves correctly on zod 4 despite
+ * `.transform()` returning a `ZodPipe` — no restructuring away from the plan's construction was
+ * needed.
+ */
+export const WipLimitSchema = z
+  .string()
+  .trim()
+  .refine(
+    (value) => value === '' || WHOLE_NUMBER.test(value),
+    'Use a whole number, or leave it empty for no limit.',
+  )
+  .transform((value) => (value === '' ? null : Number(value)))
+  .refine(
+    (value) => value === null || value >= 1,
+    'A limit must be at least 1. Leave it empty for no limit.',
+  )
+  .refine((value) => value === null || value <= INT4_MAX, 'That limit is too large.')
+
+export type WipLimitValue = z.output<typeof WipLimitSchema>

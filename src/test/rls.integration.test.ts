@@ -80,6 +80,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
    */
   let projectB: string
   let statusA: string
+  // `@/lib/tickets` imports `./supabase`, which calls `getEnv()` at MODULE scope — a
+  // static import here would throw at file-load time whenever the environment is
+  // missing, turning this file's loud, deliberate skip into a hard error. Imported
+  // lazily in beforeAll instead, same reasoning as `tickets.integration.test.ts`'s
+  // `updateTicket`.
+  let ticketInsertPayload: typeof import('@/lib/tickets').ticketInsertPayload
 
   /**
    * Shared by the SPRIN-77 and SPRIN-80 blocks below — both are project-status suites
@@ -103,6 +109,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     b = await signIn('B')
     userAId = await userId(a)
     userBId = await userId(b)
+    ;({ ticketInsertPayload } = await import('@/lib/tickets'))
 
     keyA = runKey()
 
@@ -124,7 +131,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
     const { data: ticket, error: tErr } = await a
       .from('tickets')
-      .insert({ project_id: projectA, summary: "A's ticket" })
+      .insert(ticketInsertPayload({ project_id: projectA, summary: "A's ticket" }))
       .select()
       .single()
     if (tErr) throw new Error(`Fixture: could not create A's ticket: ${tErr.message}`)
@@ -336,7 +343,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it('assign_ticket_key increments — the second ticket is KEY-2, not KEY-1', async () => {
       const { data, error } = await a
         .from('tickets')
-        .insert({ project_id: projectA, summary: 'Second' })
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'Second' }))
         .select()
         .single()
       expect(error).toBeNull()
@@ -474,7 +481,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it("B cannot INSERT a ticket into A's project", async () => {
       const { data, error } = await b
         .from('tickets')
-        .insert({ project_id: projectA, summary: 'planted by B' })
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'planted by B' }))
         .select()
 
       expect(data).toBeNull()
@@ -598,7 +605,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
       const { error: tErr } = await a
         .from('tickets')
-        .insert({ project_id: proj!.id, summary: 'rides the cascade' })
+        .insert(ticketInsertPayload({ project_id: proj!.id, summary: 'rides the cascade' }))
       expect(tErr).toBeNull()
 
       // The ticket references a status row that is about to be deleted by the same
@@ -788,6 +795,187 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .eq('project_id', wp1)
         .eq('is_initial', true)
       expect(initial.data).toEqual([{ slug: 'todo' }])
+    })
+
+    /**
+     * SPRIN-85 AC2 and AC3, and the POSITIVE CONTROL for the widened grant. Every refusal
+     * below is evidence only if this passes: if `wip_limit` had been left out of the
+     * rewritten grant, this is the test that says so, and nothing else would.
+     *
+     * Written as set-then-read-back-then-clear rather than three tests, because AC2 is
+     * literally "persists across a reload" — a second, separate SELECT is what a reload is.
+     */
+    it('the owner can set, re-read and clear a wip_limit', async () => {
+      const set = await a
+        .from('project_statuses')
+        .update({ wip_limit: 3 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(set.error).toBeNull()
+      expect(set.data).toHaveLength(1)
+
+      // AC2: a FRESH read, which is what "persists across a reload" means.
+      const reread = await a
+        .from('project_statuses')
+        .select('slug, wip_limit')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(reread.data).toEqual([{ slug: 'qa', wip_limit: 3 }])
+
+      // AC3: empty clears to null, and null is stored as null rather than 0.
+      const cleared = await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select('slug, wip_limit')
+      expect(cleared.error).toBeNull()
+      expect(cleared.data).toEqual([{ slug: 'qa', wip_limit: null }])
+    })
+
+    /**
+     * SPRIN-85 AC4, the DATABASE half — and it is TWO mechanisms with two SQLSTATEs, which
+     * is why they are asserted separately rather than as one "the database refuses it".
+     *
+     *   0 and -1 parse fine as integers and are refused by the CHECK      -> 23514
+     *   1.5 never reaches the check; the COLUMN TYPE refuses it            -> 22P02
+     *
+     * A test asserting one code for all three would be asserting something false, and would
+     * go green if the check constraint were dropped entirely (the type would still catch
+     * 1.5, and 0 would then be stored happily).
+     */
+    it.each([0, -1])('the database refuses a wip_limit of %i', async (value) => {
+      const { error } = await a
+        .from('project_statuses')
+        .update({ wip_limit: value })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(error!.code).toBe('23514') // OBSERVED: project_statuses_wip_limit_positive.
+    })
+
+    it('the database refuses a fractional wip_limit', async () => {
+      const { error } = await a
+        .from('project_statuses')
+        .update({ wip_limit: 1.5 } as never)
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(error!.code).toBe('22P02') // OBSERVED: invalid input syntax for type integer.
+    })
+
+    /**
+     * NOT AN AC — and in scope anyway. SPRIN-85's migration RESTATES the whole column list
+     * in one grant, so a typo silently DROPS a column. Three of the four have a live
+     * witness: `name` in the rename above, `position` through the reorder RPC (which is
+     * SECURITY INVOKER and so writes as the caller), and `wip_limit` in the test above.
+     *
+     * `category` had NONE — it is only ever written on INSERT in this suite — so dropping
+     * it from the rewritten grant would have shipped green. This closes the last
+     * unwitnessed column of the exact control this story rewrites.
+     */
+    it('the owner can recategorise a status', async () => {
+      const { data, error } = await a
+        .from('project_statuses')
+        .update({ category: 'done' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select('slug, category')
+      expect(error).toBeNull()
+      expect(data).toEqual([{ slug: 'qa', category: 'done' }])
+
+      // Put it back: the tests in this block run in order and share the `qa` row, and a
+      // later reorder test counts on the vocabulary it was given.
+      await a
+        .from('project_statuses')
+        .update({ category: 'in_progress' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+    })
+
+    /**
+     * Fix round 1, finding 1. The grant SPRIN-85 widened is to the ROLE `authenticated`, not
+     * to a project — B holds the identical column-UPDATE privilege on `qa` that A does. The
+     * only thing narrowing a write to the owner is `statuses_owner_update`'s RLS, and until
+     * now nothing in this file exercised `project_statuses` with a direct cross-tenant
+     * `.update()` — every existing stranger case above is INSERT, DELETE or the reorder RPC.
+     *
+     * RLS FILTERS an UPDATE rather than raising on it, so B's call returns `error: null,
+     * data: []` — the row count is the only signal, never `error`. Paired with A's own write
+     * to the SAME row succeeding straight after: without that pairing, a fixture that refuses
+     * everything would look identical to a working policy. Covers `wip_limit` (the column
+     * this story granted) and `name` (pre-existing), in one call each.
+     */
+    it("a stranger cannot UPDATE A's status row directly; the owner still can", async () => {
+      const asStranger = await b
+        .from('project_statuses')
+        .update({ wip_limit: 9, name: 'Hijacked' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asStranger.error).toBeNull()
+      expect(asStranger.data).toEqual([]) // OBSERVED: RLS filters, it does not raise.
+
+      const asOwner = await a
+        .from('project_statuses')
+        .update({ wip_limit: 7, name: 'In QA' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1)
+
+      // Re-read as A: neither B's wip_limit nor B's name landed, and A's own write did.
+      const reread = await a
+        .from('project_statuses')
+        .select('slug, name, wip_limit')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(reread.data).toEqual([{ slug: 'qa', name: 'In QA', wip_limit: 7 }])
+
+      // Restore: the wip_limit tests above left this row at null, and later tests in this
+      // block share it.
+      await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+    })
+
+    /**
+     * Fix round 1, finding 2(b). `anon` holds ZERO column-level UPDATE privileges on this
+     * table — measured against `pg_attribute.attacl` while writing the migration's post-state
+     * check (finding 2(a), in the migration file). This is the live guard for that: a
+     * PRIVILEGE refusal is 42501 with `data === null`, a different shape from RLS's silent
+     * empty-array filter, because the grant refuses the statement before any policy runs.
+     * Paired with the owner's own write to the same row for the same reason as above.
+     */
+    it('an anonymous caller cannot UPDATE project_statuses at all', async () => {
+      const { data, error } = await anonClient()
+        .from('project_statuses')
+        .update({ wip_limit: 9 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: permission denied for table project_statuses.
+
+      const asOwner = await a
+        .from('project_statuses')
+        .update({ wip_limit: 5 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1)
+
+      // Restore: later tests in this block share this row and expect wip_limit null.
+      await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
     })
 
     /**
@@ -1155,7 +1343,9 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
       const { data: bystander } = await a
         .from('tickets')
-        .insert({ project_id: dp, summary: 'Bystander on todo', type: 'story' })
+        .insert(
+          ticketInsertPayload({ project_id: dp, summary: 'Bystander on todo', type: 'story' }),
+        )
         .select('id, status')
         .single()
       expect(bystander!.status).toBe('todo') // not 'qa': the delete below must not touch it
@@ -1213,7 +1403,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it('REFUSES to delete a status holding tickets, and that ticket survives intact (AC2, AC3, AC5)', async () => {
       const { data: t } = await a
         .from('tickets')
-        .insert({ project_id: dp, summary: 'Sits on todo', type: 'story' })
+        .insert(ticketInsertPayload({ project_id: dp, summary: 'Sits on todo', type: 'story' }))
         .select()
         .single()
 
@@ -1317,7 +1507,7 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         // proving the BEFORE INSERT resolution and the AFTER DELETE promotion together.
         const { data: fresh } = await a
           .from('tickets')
-          .insert({ project_id: p, summary: 'After promotion', type: 'story' })
+          .insert(ticketInsertPayload({ project_id: p, summary: 'After promotion', type: 'story' }))
           .select('status')
           .single()
         expect(fresh!.status).toBe(expected.slug)
