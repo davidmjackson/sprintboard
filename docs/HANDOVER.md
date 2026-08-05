@@ -17,12 +17,69 @@ custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, in pro
 fields (71) → sprint cadence (74) → **teams, roles and permissions (75 — the security boundary,
 deliberately last)**.
 
-Epic 73 has six stories: 81, 82, 83, 84 and **87** done; **85 (WIP limit)** and **86 (over-limit
-board)** remain. 85 is next, and the cluster it threads a WIP prop through is now heavily pinned.
+Epic 73 has six stories: 81, 82, 83, 84, **85** and 87 done. **Only 86 (the board flags an
+over-limit column) remains**, and it is the last story of the epic. `wip_limit` exists, is
+writable, and is inert until 86 renders it — deliberately, and nothing reads it yet.
 
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 53 — SPRIN-85, a WIP limit per status (PR #86, `7224a5b`)
+
+`project_statuses.wip_limit int`, null meaning no limit, editable only on a Kanban project's
+Settings tab. 63 → 64 test files, 988 → 1035 tests.
+
+**The migration's correctness rests on one measured fact: a table-level REVOKE CASCADES to
+column grants** (PostgreSQL REVOKE reference, quoted in the file). So
+
+```sql
+revoke update on project_statuses from authenticated, anon;
+grant  update (wip_limit) on project_statuses to authenticated;   -- WRONG
+```
+
+would have left `authenticated` able to write `wip_limit` **and nothing else** — every rename,
+recategorise and reorder failing `42501`, with nothing in the diff looking like the cause. The
+grant restates all four columns, in one transaction. Verified live against `pg_class.relacl` and
+`pg_attribute.attacl` — **not** `information_schema`, whose grant views return zero rows under
+the read-only MCP role and read exactly like "this table has no privileges".
+
+**AC5 got no new test, deliberately.** Two live tests asserting `42501` on `slug` and
+`is_initial` already existed and predate the story, which makes them better evidence than tests
+written by someone who knew the answer. Duplicating them would put two controls on one refusal,
+after which the suite could no longer say which is holding.
+
+**An unplanned fix rode along, with David's agreement.** Regenerating `database.types.ts`
+revealed it had been **stale since SPRIN-80**, which dropped `tickets.status`'s column default —
+a NOT NULL column with no default generates as required-on-insert, so a truthful regeneration
+turned the build red at 26 sites. The generated type cannot model a trigger, and
+`resolve_initial_ticket_status()` fills `status` only when it is null, so the real contract is
+*optional*. `TicketInsert` gained `status?` and one `ticketInsertPayload()` bridge now carries
+the single cast. **No insert gained or lost a column** — proven by diffing `^[+-]\s*status:`
+to empty on both sides, because adding `status: 'todo'` to a fixture would have made the
+trigger's own tests vacuous.
+
+**A 30-agent adversarial pass planted 61 mutations.** Two lenses returned zero findings after
+nine mutations each. Six findings confirmed, one killed, all six fixed and each fix
+mutation-proven. The most valuable came from the **completeness critic** and all eight lenses
+missed it: **no live test proved a stranger could not directly UPDATE another tenant's status
+row.** The grant is to the *role* `authenticated`, so every signed-up user holds the same
+column-UPDATE privilege as the owner; only `statuses_owner_update` narrows it — and client `b`
+did SELECT, DELETE and the reorder RPC against that table but never a direct `.update()`. Now
+covered, asserting the **row count** (RLS filters rather than raises) and paired with an
+owner-side positive control on the same row.
+
+The migration's own post-state block had a matching blind spot: it read table-wide ACLs for
+`anon` but filtered *column* ACLs to `authenticated` alone, so `... to authenticated, anon`
+would have printed `ok` and committed. One verifier proved that by running the mutated DDL in
+**PGlite**, a real WASM Postgres, rather than reasoning. Live state was measured and correct.
+
+**Every finding across all reviews was in test coverage, never production code.** Three were
+traceable to imprecise review briefs: "anchored regex" that permitted a regex with no `$`; a
+mutation instruction that deleted the guard it was testing; and a warning aimed at
+`className="hidden"` when the survivor was `aria-hidden` (`queryByRole` excludes `aria-hidden`
+subtrees, so an absence test reports "absent" for a field still in the DOM and keyboard-
+reachable — and that is true in a real browser too, not a jsdom artefact).
 
 ### Session 52 — SPRIN-87, pin the status delete path (PR #84, `f2d4c38`)
 
@@ -158,9 +215,32 @@ Engineering items with no story yet. Each is a candidate for one.
   not be read as one.** Re-run it and confirm the rerun's `headSha` matches the PR head. Worth
   deciding whether the group should be keyed per-workflow-per-SHA, which would keep the
   database-serialising intent while removing the self-cancellation.
-- **Leaked Password Protection** is recommended but has **never been confirmed enabled** in the
-  Supabase dashboard. If it is on, the hardcoded signup password in `e2e/happy-path.spec.ts`
-  becomes the risk — randomise it.
+- **Leaked Password Protection is CONFIRMED DISABLED** (measured via `get_advisors`, 2026-08-05 —
+  it was previously recorded here as "never confirmed"). So the hardcoded signup password in
+  `e2e/happy-path.spec.ts` is not currently a risk; that risk was conditional on the feature
+  being *on*. Enabling it is still the recommendation, and doing so means randomising that
+  password in the same change.
+- **Supabase advisors are NOT at zero lints, and `CLAUDE.md` implies they are.** Measured
+  2026-08-05: 1 security WARN (the leaked-password one above) and 11 performance lints — three
+  unindexed foreign keys on `tickets`, and **eight `auth_rls_initplan` warnings** where a policy
+  calls bare `auth.uid()` instead of `(select auth.uid())`, re-evaluating it per row. All
+  pre-existing; none introduced by SPRIN-85. The `auth_rls_initplan` fix is mechanical but
+  touches five tables' policies, so it belongs with **SPRIN-75**, not bolted onto a feature
+  story. Note `statuses_owner_delete` already uses the `(select …)` form and is not flagged —
+  the fix has a working precedent in this very schema.
+- **`StatusWipLimitField` has no `aria-describedby`/`aria-invalid`** linking its error to its
+  input, so a screen-reader user who is not focused when the live region fires gets no
+  indication the field is invalid. Confirmed by probe. **The same gap exists on the pre-existing
+  disabled-Delete control** (already listed below), which is why it was not fixed inline: one
+  a11y story should close both rather than each riding along with an unrelated feature.
+- **The `is_initial` refusal test has no same-row positive control**, unlike its `slug` sibling
+  directly above it (`rls.integration.test.ts`). No update ever succeeds against that `todo` row
+  anywhere in the block, so a blanket row-level refusal would be indistinguishable from a working
+  column privilege. Pre-existing; SPRIN-85 closed the equivalent gap for `category` but not this.
+- **AC4's CHECK tests assert the SQLSTATE but not the constraint NAME**, which is lower precision
+  than this file's own convention elsewhere (the duplicate-name and slug-format tests both pin
+  the name, because `message` is the only channel PostgREST exposes for constraint identity).
+  Dropping the check still reddens them, so they are not vacuous — just less specific.
 
 ## What CI cannot pin
 
@@ -168,6 +248,12 @@ Anything PostgREST cannot read is invisible to the test suite, because the live 
 database through it and it cannot read `pg_catalog`. Supabase advisors are not in CI either.
 
 - `set search_path` and `revoke execute` on RPCs; policy and constraint **shape**; table **grants**.
+- **A COLUMN-level grant to `anon`.** SPRIN-85's migration block now checks for it, but that runs
+  only when a human re-applies the file — never in CI. What CI *can* see is behaviour: the live
+  test that an anonymous UPDATE on `project_statuses` earns `42501`. Note the two failure shapes
+  are different and a test must pick the right one: a **privilege** refusal is `42501` with
+  `data === null`, whereas an **RLS filter** is `error: null, data: []`. Asserting the wrong one
+  passes for the wrong reason.
 - **`security invoker` → `definer` on `reorder_project_statuses` is the highest-consequence
   one-token change in this codebase**, and exactly one live test pins it.
 - A migration's own post-state verification block **cannot** substitute: it reads back its own work
