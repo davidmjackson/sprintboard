@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 
 import type { ProjectShellContext } from './ProjectShell'
 import type { ProjectStatus } from '@/lib/domain'
+import { hasWipLimits } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
 import { LoadFailure } from './LoadFailure'
 import { StatusSettings } from './StatusSettings'
@@ -91,6 +92,7 @@ export function SettingsTab() {
       projectId={project.id}
       statuses={statuses}
       counts={counts}
+      hasWipLimits={hasWipLimits(project)}
       onCreated={onStatusCreated}
       onUpdated={onStatusUpdated}
       onDeleted={onStatusDeleted}

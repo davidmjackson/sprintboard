@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { GENERIC_CREATE_ERROR } from './CreateDialog'
 import { EditableText } from './EditableText'
+import { StatusWipLimitField } from './StatusWipLimit'
 
 /** The `error` tag `deleteProjectStatus` can resolve with, read off its own return type rather
  *  than re-declared here — `StatusWriteError` is a private alias in `project-statuses.ts`, and
@@ -64,6 +65,7 @@ export function StatusRow({
   status,
   statuses,
   count,
+  hasWipLimits,
   onUpdated,
   onDeleted,
   onMoveUp,
@@ -77,6 +79,11 @@ export function StatusRow({
   /** `undefined` when the caller's count map has no entry for this status — i.e. it does not
    *  know the count, NOT that the count is zero. See `StatusDeleteControl`'s own prop doc. */
   count: number | undefined
+  /** Whether this project has WIP limits AT ALL (`hasWipLimits` in domain.ts) — not whether
+   *  to show a control. A Scrum project has no such concept, so the field is ABSENT rather
+   *  than hidden or disabled, and this prop is named after the question rather than after
+   *  the rendering so nobody satisfies it with `hidden`. */
+  hasWipLimits: boolean
   onUpdated: (status: ProjectStatus) => void
   onDeleted: (id: string) => void
   onMoveUp?: () => void
@@ -129,6 +136,7 @@ export function StatusRow({
       <span className="bg-muted text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-xs font-medium">
         {STATUS_CATEGORY_LABELS[status.category]}
       </span>
+      {hasWipLimits ? <StatusWipLimitField status={status} onUpdated={onUpdated} /> : null}
       <StatusDeleteControl
         status={status}
         statuses={statuses}

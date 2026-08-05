@@ -90,6 +90,10 @@ function renderSettings(
   props: {
     statuses?: ProjectStatus[]
     counts?: Map<string, number>
+    // Defaults to `false`, matching a Scrum project (`hasWipLimits(project)` is false there) —
+    // the value every one of this file's 41 pre-existing tests already assumed implicitly.
+    // Defaulting to `true` instead would silently change what all of them mean.
+    hasWipLimits?: boolean
     onCreated?: (s: ProjectStatus) => void
     onUpdated?: (s: ProjectStatus) => void
     onReordered?: (s: ProjectStatus[]) => void
@@ -108,6 +112,7 @@ function renderSettings(
       projectId="p1"
       statuses={props.statuses ?? STATUSES}
       counts={props.counts ?? new Map()}
+      hasWipLimits={props.hasWipLimits ?? false}
       onCreated={handlers.onCreated}
       onUpdated={handlers.onUpdated}
       onReordered={handlers.onReordered}
@@ -1049,5 +1054,31 @@ describe('StatusSettings', () => {
     const empty = screen.getByText('This project has no statuses, so its board has no columns.')
     expect(empty).toBeVisible()
     expect(empty).not.toHaveAttribute('aria-hidden')
+  })
+
+  describe('the WIP limit field (SPRIN-85 AC1)', () => {
+    /**
+     * ABSENT, not hidden and not disabled. A Scrum project has no WIP limits at all, so
+     * `queryBy…` returning null is the assertion — a class check would pass on a control that
+     * is still in the accessibility tree and still reachable by keyboard.
+     */
+    it('is absent for a project without WIP limits', () => {
+      renderSettings({ hasWipLimits: false })
+
+      expect(screen.queryByRole('spinbutton', { name: /wip limit/i })).toBeNull()
+    })
+
+    /**
+     * The positive control for the assertion above. Without it, a renamed aria-label, a
+     * component that throws, or a `renderSettings` that stopped rendering rows at all would
+     * make the absence test pass while proving nothing.
+     */
+    it('is present, once per status, for a project with WIP limits', () => {
+      renderSettings({ hasWipLimits: true })
+
+      expect(screen.getAllByRole('spinbutton', { name: /wip limit/i })).toHaveLength(
+        STATUSES.length,
+      )
+    })
   })
 })
