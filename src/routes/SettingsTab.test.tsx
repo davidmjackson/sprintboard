@@ -219,6 +219,12 @@ describe('SettingsTab', () => {
 describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix round 1)', () => {
   beforeEach(() => {
     renderRealStatusSettings = true
+    // Fix round 1, finding 6: this describe used to have no `beforeEach` of its own and
+    // borrowed whatever mock state the sibling `describe`'s LAST test happened to leave
+    // behind — invisible coupling that `-t` filtering breaks (`TypeError: Cannot read
+    // properties of undefined (reading 'then')`, because nothing had configured a resolved
+    // value). Configuring it here is what makes these two tests independent of file order.
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
   })
 
   afterEach(() => {

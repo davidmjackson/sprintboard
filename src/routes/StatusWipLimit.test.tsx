@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { StatusWipLimitField } from './StatusWipLimit'
 import type { ProjectStatus } from '@/lib/domain'
 import { setStatusWipLimit } from '@/lib/project-statuses'
+import type { StatusWriteResult } from '@/lib/project-statuses'
 
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
@@ -163,5 +164,107 @@ describe('StatusWipLimitField', () => {
 
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(onUpdated).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Fix round 1, finding 3. `useState(() => toDraft(status.wip_limit))` only ever runs at
+   * mount, so a parent-driven change to `status` — another status's write, a rename, a
+   * refetch — used to leave this field showing a number the database no longer holds.
+   * `rerender` with a NEW `status` object is what stands in for that: `StatusSettings.tsx`
+   * keys each row on `status.id`, so React reuses this exact instance rather than remounting
+   * it, which `render` alone cannot exercise.
+   */
+  it('resyncs the shown limit when the status prop changes while the field is idle', () => {
+    const { rerender } = render(<StatusWipLimitField status={status()} onUpdated={onUpdated} />)
+    const input = screen.getByRole('spinbutton', { name: /wip limit for building/i })
+    expect(input).toHaveValue(4)
+
+    rerender(<StatusWipLimitField status={status({ wip_limit: 9 })} onUpdated={onUpdated} />)
+
+    expect(input).toHaveValue(9)
+  })
+
+  /**
+   * The other half of finding 3, and the one that stops the fix from being worse than the
+   * bug: a user mid-edit must not have their own typing overwritten by a resync that fires
+   * for an unrelated reason.
+   */
+  it('does NOT resync the draft while the field is focused', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<StatusWipLimitField status={status()} onUpdated={onUpdated} />)
+    const input = screen.getByRole('spinbutton', { name: /wip limit for building/i })
+
+    await user.click(input)
+    await user.clear(input)
+    await user.type(input, '2')
+
+    rerender(<StatusWipLimitField status={status({ wip_limit: 9 })} onUpdated={onUpdated} />)
+
+    expect(input).toHaveValue(2)
+  })
+
+  /**
+   * Fix round 1, finding 4. Two commits fired close together (Enter, then blur before the
+   * first settles) can resolve out of order; without a generation guard the OLDER response
+   * would win, silently reverting the parent's state to a value the user already changed.
+   * Held promises rather than `mockResolvedValue`, so the resolution order can be forced to
+   * be the opposite of the commit order — the exact shape that reproduces the bug.
+   */
+  it('applies only the latest commit’s result when responses resolve out of order', async () => {
+    const user = userEvent.setup()
+    let resolveFirst!: (r: StatusWriteResult<ProjectStatus>) => void
+    let resolveSecond!: (r: StatusWriteResult<ProjectStatus>) => void
+    mockSet
+      .mockImplementationOnce(
+        () =>
+          new Promise<StatusWriteResult<ProjectStatus>>((resolve) => {
+            resolveFirst = resolve
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<StatusWriteResult<ProjectStatus>>((resolve) => {
+            resolveSecond = resolve
+          }),
+      )
+    const input = field()
+
+    await user.clear(input)
+    await user.type(input, '5{Enter}')
+    await user.clear(input)
+    await user.type(input, '9')
+    await user.tab()
+
+    // The SECOND commit resolves FIRST.
+    resolveSecond({ ok: true, value: status({ wip_limit: 9 }) })
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(status({ wip_limit: 9 })))
+
+    // The FIRST commit's stale response arrives after — and must be ignored.
+    resolveFirst({ ok: true, value: status({ wip_limit: 5 }) })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(onUpdated).toHaveBeenCalledTimes(1)
+    expect(onUpdated).toHaveBeenLastCalledWith(status({ wip_limit: 9 }))
+  })
+
+  /**
+   * Fix round 1, finding 5. `revert()`'s `setError(null)` has no test that first puts the
+   * field into an error state, so deleting that line left all existing tests green. Type an
+   * invalid value, see the message, then back out with Escape — the message must go with it,
+   * or the user is left staring at a refusal describing a request they cancelled.
+   */
+  it('clears an error message on Escape', async () => {
+    const user = userEvent.setup()
+    const input = field()
+
+    await user.clear(input)
+    await user.type(input, '0')
+    await user.tab()
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+    await user.click(input)
+    await user.type(input, '{Escape}')
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

@@ -895,6 +895,90 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
+     * Fix round 1, finding 1. The grant SPRIN-85 widened is to the ROLE `authenticated`, not
+     * to a project — B holds the identical column-UPDATE privilege on `qa` that A does. The
+     * only thing narrowing a write to the owner is `statuses_owner_update`'s RLS, and until
+     * now nothing in this file exercised `project_statuses` with a direct cross-tenant
+     * `.update()` — every existing stranger case above is INSERT, DELETE or the reorder RPC.
+     *
+     * RLS FILTERS an UPDATE rather than raising on it, so B's call returns `error: null,
+     * data: []` — the row count is the only signal, never `error`. Paired with A's own write
+     * to the SAME row succeeding straight after: without that pairing, a fixture that refuses
+     * everything would look identical to a working policy. Covers `wip_limit` (the column
+     * this story granted) and `name` (pre-existing), in one call each.
+     */
+    it("a stranger cannot UPDATE A's status row directly; the owner still can", async () => {
+      const asStranger = await b
+        .from('project_statuses')
+        .update({ wip_limit: 9, name: 'Hijacked' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asStranger.error).toBeNull()
+      expect(asStranger.data).toEqual([]) // OBSERVED: RLS filters, it does not raise.
+
+      const asOwner = await a
+        .from('project_statuses')
+        .update({ wip_limit: 7, name: 'In QA' })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1)
+
+      // Re-read as A: neither B's wip_limit nor B's name landed, and A's own write did.
+      const reread = await a
+        .from('project_statuses')
+        .select('slug, name, wip_limit')
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+      expect(reread.data).toEqual([{ slug: 'qa', name: 'In QA', wip_limit: 7 }])
+
+      // Restore: the wip_limit tests above left this row at null, and later tests in this
+      // block share it.
+      await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+    })
+
+    /**
+     * Fix round 1, finding 2(b). `anon` holds ZERO column-level UPDATE privileges on this
+     * table — measured against `pg_attribute.attacl` while writing the migration's post-state
+     * check (finding 2(a), in the migration file). This is the live guard for that: a
+     * PRIVILEGE refusal is 42501 with `data === null`, a different shape from RLS's silent
+     * empty-array filter, because the grant refuses the statement before any policy runs.
+     * Paired with the owner's own write to the same row for the same reason as above.
+     */
+    it('an anonymous caller cannot UPDATE project_statuses at all', async () => {
+      const { data, error } = await anonClient()
+        .from('project_statuses')
+        .update({ wip_limit: 9 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(data).toBeNull()
+      expect(error!.code).toBe('42501') // OBSERVED: permission denied for table project_statuses.
+
+      const asOwner = await a
+        .from('project_statuses')
+        .update({ wip_limit: 5 })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+        .select()
+      expect(asOwner.error).toBeNull()
+      expect(asOwner.data).toHaveLength(1)
+
+      // Restore: later tests in this block share this row and expect wip_limit null.
+      await a
+        .from('project_statuses')
+        .update({ wip_limit: null })
+        .eq('project_id', wp1)
+        .eq('slug', 'qa')
+    })
+
+    /**
      * SPRIN-80 gave `project_statuses` a DELETE policy, so "nobody can delete a
      * status — not even the owner" is no longer true and this test used to assert
      * exactly that. Only the STRANGER half survives: an owner deleting their OWN

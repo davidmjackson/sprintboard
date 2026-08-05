@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 
 import type { ProjectStatus } from '@/lib/domain'
@@ -32,6 +32,21 @@ function toDraft(limit: number | null): string {
  * A BLUR IS NOT AN INTENT TO WRITE. Tabbing through the settings tab would otherwise fire a
  * PATCH per status. The parsed value is compared with the row's own before anything is
  * sent — the same discipline as `StatusRow`'s rename.
+ *
+ * TAKES A GENERATION GUARD, UNLIKE `AddStatusForm`. `AddStatusForm`'s docblock explains why
+ * it deliberately skips the one `CreateDialog` gives every dialog (SPRIN-51): that form is
+ * always mounted, with no open/close transition to race. This field has no such shelter — a
+ * settings row is long-lived and its commits are user-paced (Enter, then blur, then another
+ * edit), so two writes CAN genuinely be in flight at once, and PostgREST gives no ordering
+ * guarantee on which response lands first. Without the guard, an older response arriving
+ * after a newer one overwrites the newer value in the parent's state with a stale one.
+ *
+ * RESYNCS `draft` FROM THE PROP, BUT ONLY WHILE THE FIELD IS IDLE. `StatusSettings.tsx`
+ * renders each row keyed on `status.id`, so this component instance survives any OTHER
+ * write on the settings tab — a rename, a reorder, a refetch — and would otherwise keep
+ * showing a limit the database no longer holds. Gating on focus is what keeps that resync
+ * from fighting a user mid-edit: a keystroke does not touch `status`, only a prop change
+ * does, so "is this element focused right now" is the one check that tells the two apart.
  */
 export function StatusWipLimitField({
   status,
@@ -42,6 +57,13 @@ export function StatusWipLimitField({
 }) {
   const [draft, setDraft] = useState(() => toDraft(status.wip_limit))
   const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const commitGeneration = useRef(0)
+
+  useEffect(() => {
+    if (document.activeElement === inputRef.current) return
+    setDraft(toDraft(status.wip_limit))
+  }, [status.wip_limit])
 
   async function commit() {
     const parsed = WipLimitSchema.safeParse(draft)
@@ -55,7 +77,12 @@ export function StatusWipLimitField({
     setError(null)
     if (parsed.data === status.wip_limit) return
 
+    const generation = ++commitGeneration.current
     const result = await setStatusWipLimit(status.id, parsed.data)
+    // A newer commit started while this one was in flight — its result, whenever it lands,
+    // is the one that gets to speak. Applying this one now would be the out-of-order bug.
+    if (generation !== commitGeneration.current) return
+
     if (!result.ok) {
       setError(GENERIC_CREATE_ERROR)
       return
@@ -82,6 +109,7 @@ export function StatusWipLimitField({
   return (
     <div className="flex shrink-0 flex-col items-end gap-0.5">
       <Input
+        ref={inputRef}
         type="number"
         inputMode="numeric"
         min={1}

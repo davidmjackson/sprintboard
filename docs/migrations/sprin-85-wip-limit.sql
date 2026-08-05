@@ -156,6 +156,20 @@
 -- NO INDEX. Nothing filters or joins on `wip_limit`; it is read only as part of
 -- the status row the settings tab and board already select in full.
 --
+-- ADDED AFTER APPLICATION, DURING SPRIN-85'S REVIEW — CHECK (iv) BELOW, NOT RE-RUN.
+-- This file already ran; do not run it again (see RE-RUN below — it is not
+-- idempotent and would abort on the first `alter table`). A 30-agent adversarial
+-- pass found an asymmetry in the post-state block as originally shipped: checks
+-- (i)-(iii) read `pg_class.relacl` (table-wide only) and `pg_attribute.attacl`
+-- filtered to `grantee = 'authenticated'`, so a grant written
+-- `... to authenticated, anon;` — a plausible slip, since the REVOKE three lines
+-- above legitimately lists both roles — would have passed unnoticed. Check (iv)
+-- closes that gap. The live state was independently re-verified at review time:
+-- `anon` holds zero column-level UPDATE privileges on `project_statuses`, which
+-- is the correct, already-applied state. The block is read-only apart from its
+-- `raise`s, so it remains safe to run standalone against the live database to
+-- re-confirm that state at any time.
+--
 -- RUN: paste this ENTIRE file into the Supabase SQL editor and run it once.
 -- If any statement errors, NOTHING lands.
 --
@@ -212,7 +226,7 @@ grant  update (name, category, position, wip_limit)
 --         src/test/rls.integration.test.ts, which run against the real database
 --         on every PR.
 --
---    It asserts three separate things, because they fail independently:
+--    It asserts four separate things, because they fail independently:
 --      i)   no TABLE-wide UPDATE for either client role  (the revoke worked)
 --      ii)  authenticated holds column UPDATE on exactly the four intended
 --           columns — a SET comparison, so both a missing column and an extra
@@ -221,12 +235,19 @@ grant  update (name, category, position, wip_limit)
 --           given (ii), and kept anyway: it is the assertion whose failure
 --           message names the actual danger, and AC5 exists for these two
 --           columns by name.
+--      iv)  anon holds ZERO column-level UPDATE privileges — added during
+--           review (see the banner note above). (i) reads `pg_class.relacl`,
+--           which is table-wide only, and (ii)-(iii) filter `pg_attribute.attacl`
+--           to `grantee = 'authenticated'`, so neither would have noticed a
+--           grant accidentally written `... to authenticated, anon;`. This is
+--           the check that would.
 do $$
 declare
   tbl_offenders  text;
   granted_cols   text[];
   expected_cols  text[] := array['name', 'category', 'position', 'wip_limit'];
   forbidden_cols text[];
+  anon_cols      text[];
 begin
   -- (i) Table-wide UPDATE must be held by neither client role.
   select string_agg(p.grantee::regrole::text, ', ' order by p.grantee::regrole::text)
@@ -277,8 +298,26 @@ begin
       array_to_string(forbidden_cols, ', ');
   end if;
 
+  -- (iv) Column UPDATE for `anon` must be empty — reuses the same aclexplode
+  -- shape as (ii), grantee swapped.
+  select coalesce(array_agg(att.attname::text order by att.attname), array[]::text[])
+    into anon_cols
+  from pg_attribute att
+  cross join lateral aclexplode(att.attacl) as p
+  where att.attrelid = 'public.project_statuses'::regclass
+    and att.attnum > 0
+    and not att.attisdropped
+    and p.privilege_type = 'UPDATE'
+    and p.grantee::regrole::text = 'anon';
+
+  if array_length(anon_cols, 1) is not null then
+    raise exception
+      'SPRIN-85: anon holds column UPDATE on {%}, which must be empty',
+      array_to_string(anon_cols, ', ');
+  end if;
+
   raise notice
-    'SPRIN-85: ok — no table-wide UPDATE; authenticated may UPDATE (%)',
+    'SPRIN-85: ok — no table-wide UPDATE; authenticated may UPDATE (%); anon holds no column UPDATE',
     array_to_string(granted_cols, ', ');
 end $$;
 
