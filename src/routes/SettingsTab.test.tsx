@@ -16,6 +16,18 @@ vi.mock('@/lib/project-statuses', async (orig) => ({
   ticketCountsByStatus: vi.fn(),
 }))
 
+/**
+ * A mutable switch rather than `vi.resetModules()` + a dynamic re-import: resetting the
+ * module registry would reload React itself, so the freshly-imported `SettingsTab` and this
+ * file's own `render`/`screen` (bound to the ORIGINAL React instance) would belong to two
+ * different reconcilers. Every test defaults to the fake probe below; the wiring block near
+ * the bottom of the file flips this to `true` so `SettingsTab` renders the REAL
+ * `StatusSettings` — the only way to prove `SettingsTab` actually calls `hasWipLimits(project)`
+ * rather than hardcoding a literal, which is a seam no per-task test suite can see (SPRIN-85,
+ * fix round 1, Finding B).
+ */
+let renderRealStatusSettings = false
+
 // The list, the add form and the writes are exercised by `StatusSettings.test.tsx`. Here it is
 // a probe that reports the props the tab handed down, so this suite pins the SEAM — which
 // context fields reach the list — rather than re-testing the list.
@@ -24,33 +36,34 @@ vi.mock('@/lib/project-statuses', async (orig) => ({
 // this probe exists to pin what the TAB passes down, and `.has()` is the only rendering that
 // can tell "we fetched a real count" apart from "we have no data for this status at all" —
 // exactly the distinction the failed-fetch test below depends on.
-vi.mock('./StatusSettings', () => ({
-  StatusSettings: ({
-    projectId,
-    statuses,
-    counts,
-  }: {
-    projectId: string
-    statuses: ProjectStatus[]
-    counts: ReadonlyMap<string, number>
-  }) => (
-    <div>
-      <p>
-        settings for {projectId}: {statuses.map((s) => s.name).join(', ')}
-      </p>
-      <ul>
-        {statuses.map((s) => (
-          <li key={s.id}>
-            <span>{counts.has(s.slug) ? `${counts.get(s.slug)} tickets` : 'unknown count'}</span>
-            <button type="button" disabled={!counts.has(s.slug)}>
-              Delete {s.name}
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  ),
-}))
+vi.mock('./StatusSettings', async (orig) => {
+  const actual = await orig<typeof import('./StatusSettings')>()
+  return {
+    StatusSettings: (props: Parameters<typeof actual.StatusSettings>[0]) => {
+      if (renderRealStatusSettings) return <actual.StatusSettings {...props} />
+      const { projectId, statuses, counts } = props
+      return (
+        <div>
+          <p>
+            settings for {projectId}: {statuses.map((s) => s.name).join(', ')}
+          </p>
+          <ul>
+            {statuses.map((s) => (
+              <li key={s.id}>
+                <span>
+                  {counts.has(s.slug) ? `${counts.get(s.slug)} tickets` : 'unknown count'}
+                </span>
+                <button type="button" disabled={!counts.has(s.slug)}>
+                  Delete {s.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )
+    },
+  }
+})
 
 // Explicitly Scrum, as `BoardTab.test.tsx` and `BacklogTab.test.tsx` now are. `hasSprints({})`
 // is `undefined === 'scrum'` → false, so leaving the field off would silently turn this whole
@@ -59,12 +72,17 @@ vi.mock('./StatusSettings', () => ({
 const project = { id: 'p1', name: 'Sprintboard', key: 'SPB', project_type: 'scrum' } as Project
 
 const STATUSES = [
-  { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1 },
-  { id: 'st2', slug: 'shipped', name: 'Shipped', category: 'done', position: 2 },
+  { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1, wip_limit: null },
+  { id: 'st2', slug: 'shipped', name: 'Shipped', category: 'done', position: 2, wip_limit: null },
 ] as unknown as ProjectStatus[]
 
 function renderTab(
-  ctx: { statuses?: ProjectStatus[]; statusesPhase?: ReadPhase; onRetry?: () => void } = {},
+  ctx: {
+    project?: Project
+    statuses?: ProjectStatus[]
+    statusesPhase?: ReadPhase
+    onRetry?: () => void
+  } = {},
 ) {
   const context = {
     project,
@@ -181,5 +199,41 @@ describe('SettingsTab', () => {
 
     await u.click(screen.getByRole('button', { name: 'Retry' }))
     expect(ctx.onRetry).toHaveBeenCalled()
+  })
+})
+
+/**
+ * The SEAM between two SPRIN-85 tasks: `SettingsTab` computes `hasWipLimits(project)` and
+ * `StatusSettings`/`StatusRow` only forward whatever boolean they are handed. Every test
+ * above replaces `StatusSettings` with a probe, which cannot tell "the tab called
+ * `hasWipLimits`" apart from "the tab hardcoded a literal" — both render identically through
+ * a probe that never reads the prop's VALUE, only its presence. This block flips the module
+ * mock to the real `StatusSettings` (see the switch above) and drives the whole chain —
+ * `SettingsTab` → `StatusSettings` → `StatusRow` — for a Scrum and a Kanban project.
+ *
+ * A raw `document.querySelectorAll` pairs with the role query for the same reason
+ * `StatusSettings.test.tsx`'s own absence test does: a role query honours `aria-hidden`, so
+ * it would report "absent" for a field that is merely hidden from the accessibility tree
+ * while staying in the DOM.
+ */
+describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix round 1)', () => {
+  beforeEach(() => {
+    renderRealStatusSettings = true
+  })
+
+  afterEach(() => {
+    renderRealStatusSettings = false
+  })
+
+  it('renders no WIP limit field for a Scrum project', () => {
+    renderTab()
+
+    expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0)
+  })
+
+  it('renders a WIP limit field per status for a Kanban project', () => {
+    renderTab({ project: { ...project, project_type: 'kanban' } })
+
+    expect(screen.getAllByRole('spinbutton', { name: /wip limit/i })).toHaveLength(STATUSES.length)
   })
 })

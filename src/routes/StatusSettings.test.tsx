@@ -1066,6 +1066,15 @@ describe('StatusSettings', () => {
       renderSettings({ hasWipLimits: false })
 
       expect(screen.queryByRole('spinbutton', { name: /wip limit/i })).toBeNull()
+      // A role query honours `aria-hidden`, so it reports "absent" for a field that is
+      // merely hidden from the accessibility tree while staying in the DOM and still
+      // keyboard-focusable — the exact anti-pattern AC1's "absent, not merely hidden"
+      // forbids, and a real browser's accessibility tree behaves the same way (this is
+      // not a jsdom quirk). The raw DOM query honours neither `aria-hidden` nor CSS, so
+      // it is the one assertion that makes "absent" mean absent. `input[type="number"]`
+      // is unique to `StatusWipLimitField` in this tree — no other control in the row
+      // renders one.
+      expect(document.querySelectorAll('input[type="number"]')).toHaveLength(0)
     })
 
     /**
