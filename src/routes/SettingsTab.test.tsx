@@ -96,6 +96,13 @@ function renderTab(
     // a harness silently testing a state the real shell never produces.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-91, and the docblock above applies to these with more force than to `fields`.
+    // The cast is `as unknown as ProjectShellContext`, so omitting them COMPILES and hands
+    // `CustomFieldSettings` `undefined` for its two write callbacks — which throws only when a
+    // test actually adds or renames a field, i.e. exactly the tests this story adds. The type
+    // checker cannot help here; only stating them can.
+    onFieldCreated: vi.fn(),
+    onFieldUpdated: vi.fn(),
     onRetry: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
@@ -256,11 +263,12 @@ describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix 
  * SPRIN-90 AC1 and AC2, asserted through the TAB rather than against
  * `CustomFieldSettings` directly.
  *
- * There is NO `CustomFieldSettings.test.tsx` — the component's three phases are covered here,
- * through the tab, and that is deliberate rather than an omission. An earlier draft of this
- * docblock claimed such a file existed and divided the labour with it. It did not exist, and
- * that fiction is what made the shell → tab seam read as covered when it was not. Same class
- * as the SPRIN-86 defect: a docblock asserting a control that is not there.
+ * **`CustomFieldSettings.test.tsx` now exists** (SPRIN-91) and owns the component's own
+ * behaviour — the add form, the rename path, and the five type options. This docblock
+ * previously said it did NOT exist, and said so correctly: SPRIN-90 shipped a docblock
+ * claiming the file, the claim was false, and that fiction is what made the shell → tab seam
+ * read as covered when it was not. The claim is true now, and it is restated here only
+ * because a stale "no such file" is the same defect pointing the other way.
  *
  * What these cover is the tab → component seam: that `SettingsTab` actually reads
  * `fields`/`fieldsPhase` off the outlet context and forwards them. The seam ABOVE this one —
@@ -280,21 +288,35 @@ describe('SettingsTab custom fields', () => {
   it("lists the project's custom fields, with each type's label", () => {
     renderTab({ fields: FIELDS })
 
-    const list = screen.getByRole('heading', { name: 'Custom fields' }).closest('section')
-    expect(list).not.toBeNull()
+    const section = screen.getByRole('region', { name: 'Custom fields' })
 
-    // Scoped with `within`, not a bare getByText: an unscoped query says the text exists
-    // somewhere on the tab and nothing about whether it is in THIS section.
-    expect(within(list!).getByText('Customer ref')).toBeInTheDocument()
-    expect(within(list!).getByText('Text')).toBeInTheDocument()
-    expect(within(list!).getByText('Due')).toBeInTheDocument()
-    expect(within(list!).getByText('Date')).toBeInTheDocument()
+    // Scoped to the LIST, not merely to the section, and SPRIN-91 is why. The section now also
+    // holds the add form, whose type `<select>` renders an `<option>` for every one of the five
+    // labels — so `within(section).getByText('Text')` became ambiguous the moment that form
+    // landed, matching the option as readily as the row. Narrowing to the `<ul>` is what keeps
+    // this test about the LIST. There is exactly one list in this region; the options are
+    // `option` role inside a `combobox`, not list items.
+    const list = within(section).getByRole('list')
 
-    // The description-list structure, pinned rather than merely argued for in a docblock.
-    // Rewriting <dl>/<dt>/<dd> to <div>/<span>/<span> otherwise survives the whole suite, and
-    // it is the structure that pairs each field with its type for assistive technology.
-    expect(within(list!).getByText('Customer ref').tagName).toBe('DT')
-    expect(within(list!).getByText('Text').tagName).toBe('DD')
+    expect(within(list).getByText('Customer ref')).toBeInTheDocument()
+    expect(within(list).getByText('Text')).toBeInTheDocument()
+    expect(within(list).getByText('Due')).toBeInTheDocument()
+    expect(within(list).getByText('Date')).toBeInTheDocument()
+
+    // The row structure, pinned rather than merely argued for in a docblock.
+    //
+    // SPRIN-90 asserted `DT`/`DD` here, because the list was a `<dl>`. SPRIN-91 reversed that
+    // to `<ul>`/`<li>`: once the name is an `EditableText` button and the row owns its own
+    // `role="alert"`, a row is an item with controls rather than a term and its definition.
+    // The assertion is updated rather than dropped — without it, flattening the list back to
+    // bare `<div>`s survives the whole suite.
+    //
+    // The name now sits inside a BUTTON, so its own tagName is no longer the row's. Asserting
+    // the enclosing `<li>` is what stays true across that change, and `closest` is what makes
+    // it an assertion about structure rather than about which element happens to hold the text.
+    expect(within(list).getByText('Customer ref').closest('li')).not.toBeNull()
+    expect(within(list).getByText('Text').closest('li')).not.toBeNull()
+    expect(within(list).getAllByRole('listitem')).toHaveLength(FIELDS.length)
 
     // The empty state must NOT also be on screen — otherwise "lists the fields" would pass
     // for a component rendering both.

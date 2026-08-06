@@ -79,6 +79,8 @@ export function SettingsTab() {
     fields,
     fieldsPhase,
     onRetry,
+    onFieldCreated,
+    onFieldUpdated,
     onStatusCreated,
     onStatusUpdated,
     onStatusDeleted,
@@ -108,7 +110,14 @@ export function SettingsTab() {
           other direction, a healthy fields list is not hidden by a statuses failure any more
           than it has to be. The statuses gate above still short-circuits the whole tab when
           statuses fail; that is pre-existing behaviour and not this story's to change. */}
-      <CustomFieldSettings fields={fields} phase={fieldsPhase} onRetry={onRetry} />
+      <CustomFieldSettings
+        projectId={project.id}
+        fields={fields}
+        phase={fieldsPhase}
+        onRetry={onRetry}
+        onCreated={onFieldCreated}
+        onUpdated={onFieldUpdated}
+      />
     </div>
   )
 }

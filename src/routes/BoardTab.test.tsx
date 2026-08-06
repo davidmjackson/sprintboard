@@ -79,6 +79,8 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     // a different shell from the real one.
     fields: [],
     fieldsPhase: 'loaded',
+    onFieldCreated: vi.fn(),
+    onFieldUpdated: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),
