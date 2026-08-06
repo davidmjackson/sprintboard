@@ -1620,13 +1620,38 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * Type immutability is not a tidiness rule: story 3's ticket_field_values carries a
      * denormalised copy of `type` so its "the populated column matches the type" CHECK can be
      * written at all, and that copy is sound ONLY while the original cannot change.
+     *
+     * `name` is the ONLY writable column, so this test now walks all four of the others. Each
+     * refusal protects a different property — slug is the identity other tables key on, type
+     * is what story 3's denormalised copy depends on, and created_at/id are the sort key and
+     * the primary key. Listing them exhaustively is deliberate: a test naming only the two
+     * "interesting" columns leaves the grant free to widen anywhere else in silence.
      */
-    it('refuses UPDATE to slug and to type, while name still updates on the same row', async () => {
+    it('refuses UPDATE to every column but name, while name updates on the same row', async () => {
       const slug = await a.from('project_fields').update({ slug: 'moved' }).eq('id', fieldA)
       expect(slug.error?.code).toBe('42501')
 
       const type = await a.from('project_fields').update({ type: 'number' }).eq('id', fieldA)
       expect(type.error?.code).toBe('42501')
+
+      // SPRIN-91 widened this test, on a security review's finding. The INSERT side of the
+      // ordering rule is pinned below (an insert supplying `created_at` or `id` earns 42501);
+      // the UPDATE side was not, which left the lattice asymmetric. A later migration
+      // restating the grant block as `grant update (name, created_at)` — or simply dropping
+      // the restatement discipline — would silently end `(created_at, slug)` as a DATABASE
+      // ordering property while CI stayed green. `AssertProjectFieldUpdateColumns` pins only
+      // the client-side mirror, and a raw PostgREST call bypasses it entirely.
+      const created = await a
+        .from('project_fields')
+        .update({ created_at: '2000-01-01T00:00:00Z' })
+        .eq('id', fieldA)
+      expect(created.error?.code).toBe('42501')
+
+      const id = await a
+        .from('project_fields')
+        .update({ id: '00000000-0000-4000-8000-000000000002' })
+        .eq('id', fieldA)
+      expect(id.error?.code).toBe('42501')
 
       const name = await a
         .from('project_fields')
@@ -1740,6 +1765,11 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     it('an authenticated owner still holds no DELETE on their own fields', async () => {
       const del = await a.from('project_fields').delete().eq('id', fieldA)
       expect(del.error?.code).toBe('42501')
+      // The MESSAGE too, applying the same standard this story insists on for the INSERT
+      // proof. A owns this row, so RLS could not be the author of a 42501 here and the code
+      // alone is unambiguous today — but it stops being unambiguous the moment story 6 grants
+      // DELETE, and then this test must fail for the RIGHT reason or not at all.
+      expect(del.error?.message).toMatch(/permission denied/)
     })
 
     // ---- SPRIN-91: the INSERT grant, and the policy it finally makes provable ----
@@ -1781,14 +1811,21 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .from('project_fields')
         .insert({ project_id: projectB, slug: 'own_field', name: 'Own field', type: 'number' })
         .select('id')
+
+      // CLEANED UP BEFORE THE ASSERTIONS, not after — this file's own recorded lesson, and it
+      // is not pedantry: an `expect` that throws skips everything below it, so a cleanup placed
+      // after the assertions is exactly the cleanup that does not run on the day it matters.
+      // Removed through adminClient because B holds no DELETE.
+      //
+      // Leaving projectB with the one field its fixture created is what keeps the
+      // read-isolation test above (which asserts that count EXACTLY) independent of this one.
+      // It currently runs first, but a test that silently depends on file order is a trap for
+      // whoever reorders the file next.
+      const plantedId = ownProject.data?.[0]?.id
+      if (plantedId) await adminClient().from('project_fields').delete().eq('id', plantedId)
+
       expect(ownProject.error).toBeNull()
       expect(ownProject.data).toHaveLength(1)
-
-      // Removed through adminClient (B holds no DELETE) so this test leaves projectB with the
-      // one field its fixture created. The read-isolation test above asserts that count
-      // EXACTLY, and while it currently runs first, a test that silently depends on file order
-      // is a trap for whoever reorders the file next.
-      await adminClient().from('project_fields').delete().eq('id', ownProject.data![0]!.id)
     })
 
     /**
@@ -1845,23 +1882,32 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * proving nothing about names.
      */
     it('refuses an empty, whitespace-only or over-length name', async () => {
-      for (const name of ['', '   ', 'x'.repeat(41)]) {
-        const { error } = await a
-          .from('project_fields')
-          .insert({ project_id: projectA, slug: 'name_edge', name, type: 'text' })
-        expect(error?.code).toBe('23514')
-        expect(error?.message).toMatch(/project_fields_name_nonempty/)
-      }
-
-      // Positive control on the SAME slug the refusals used: it is still free, so those three
-      // were refused by the name check and not by a slug collision left behind by an earlier
-      // test in this file.
+      // POSITIVE CONTROL FIRST, matching the sibling test above rather than trailing the
+      // refusals. Ordering it last looked equivalent and is not: if the slug were already
+      // taken, the three refusals below would fail on a 23505 and the loop would throw before
+      // the control ever ran to explain why. A control that only runs when everything already
+      // passed is not a control.
+      //
+      // It also proves the slug is free, which is what lets the refusals reuse it: a check
+      // violation inserts no row, so `name_edge` stays available for all three.
       const ok = await a
         .from('project_fields')
         .insert({ project_id: projectA, slug: 'name_edge', name: 'Name edge', type: 'text' })
         .select('id')
       expect(ok.error).toBeNull()
       expect(ok.data).toHaveLength(1)
+
+      // A DIFFERENT slug for the refusals, now that `name_edge` is taken by the control.
+      for (const name of ['', '   ', 'x'.repeat(41)]) {
+        const { error } = await a
+          .from('project_fields')
+          .insert({ project_id: projectA, slug: 'name_edge_2', name, type: 'text' })
+        expect(error?.code).toBe('23514')
+        // The constraint NAME, not just the SQLSTATE: `project_fields_slug_format` is also a
+        // 23514 on this table, so a typo in the slug above would otherwise pass this test
+        // while proving nothing whatsoever about names.
+        expect(error?.message).toMatch(/project_fields_name_nonempty/)
+      }
     })
 
     /**

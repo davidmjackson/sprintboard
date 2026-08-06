@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
@@ -8,6 +8,17 @@ import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectField, ProjectStatus } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
+import { createProjectField, renameProjectField } from '@/lib/project-fields'
+
+// SPRIN-91. Mocked because the tests below drive the custom-field add and rename forms through
+// this tab, and the real writes reach PostgREST. `useTaggedRead` is not involved here, so an
+// unmocked write would not merely be slow — it would be a genuine outbound request from a unit
+// test, the exact defect SPRIN-90's review measured at ~90 per run in `ProjectShell.test.tsx`.
+vi.mock('@/lib/project-fields', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-fields')>()),
+  createProjectField: vi.fn(),
+  renameProjectField: vi.fn(),
+}))
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
 // stays real.
@@ -83,6 +94,8 @@ function renderTab(
     statusesPhase?: ReadPhase
     fields?: ProjectField[]
     fieldsPhase?: ReadPhase
+    onFieldCreated?: (field: ProjectField) => void
+    onFieldUpdated?: (field: ProjectField) => void
     onRetry?: () => void
   } = {},
 ) {
@@ -101,6 +114,10 @@ function renderTab(
     // `CustomFieldSettings` `undefined` for its two write callbacks — which throws only when a
     // test actually adds or renames a field, i.e. exactly the tests this story adds. The type
     // checker cannot help here; only stating them can.
+    // Stubs by default; a caller that wants to ASSERT the seam passes its own. Supplying a
+    // stub is NOT pinning — a review swapped these two props and reversed `projectId`, and the
+    // whole suite stayed green precisely because they were present-but-unasserted. The two
+    // write tests at the end of this file are what actually close that.
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
     onRetry: vi.fn(),
@@ -365,5 +382,82 @@ describe('SettingsTab custom fields', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(ctx.onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * THE TAB → COMPONENT SEAM FOR THE TWO WRITES. Added on a review finding, and the finding is
+   * worth stating because it is subtle: SPRIN-91 first "closed" this by adding
+   * `onFieldCreated: vi.fn(), onFieldUpdated: vi.fn()` to the harness above. That made the
+   * props PRESENT, which made the seam INVISIBLE — supplied and never asserted. Two mutations
+   * then survived the entire 1031-test suite:
+   *
+   *   `projectId={project.id}` → `projectId={'not-this-project'}`
+   *   `onCreated`/`onUpdated` swapped
+   *
+   * The seam control that proves the harness can see this class: the SAME two mutations on the
+   * `StatusSettings` props twelve lines higher killed two tests each. So the gap was coverage,
+   * not technique.
+   *
+   * `projectId` is the sharper half. A wrong id there writes a custom field into the wrong
+   * project, and `fields_owner_insert`'s WITH CHECK permits it whenever the user owns BOTH
+   * projects — RLS is not a backstop for this one.
+   */
+  it('adds a field through the tab, against THIS project, and forwards the created row', async () => {
+    const created = { id: 'f9', project_id: 'p1', slug: 'ship_by', name: 'Ship by', type: 'date' }
+    vi.mocked(createProjectField).mockResolvedValue({
+      ok: true,
+      value: created as unknown as ProjectField,
+    })
+    const onFieldCreated = vi.fn()
+    const onFieldUpdated = vi.fn()
+    renderTab({ fields: [], onFieldCreated, onFieldUpdated })
+
+    const addField = screen.getByRole('button', { name: 'Add field' })
+    const form = within(addField.closest('form')!)
+    await userEvent.type(form.getByRole('textbox', { name: 'Name' }), 'Ship by')
+    await userEvent.selectOptions(form.getByRole('combobox', { name: 'Type' }), 'date')
+    await userEvent.click(addField)
+
+    // The project id actually reaching the write, not merely that a write happened.
+    await waitFor(() => expect(vi.mocked(createProjectField)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createProjectField).mock.calls[0]![0]).toMatchObject({
+      projectId: project.id,
+      name: 'Ship by',
+      type: 'date',
+    })
+
+    // And the row goes to the CREATE callback, not the update one. Asserting both is what
+    // kills the swap: either alone passes when the two props are exchanged.
+    expect(onFieldCreated).toHaveBeenCalledWith(created)
+    expect(onFieldUpdated).not.toHaveBeenCalled()
+  })
+
+  it('renames a field through the tab and forwards the row to onFieldUpdated', async () => {
+    const FIELD = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'delivery_date',
+      name: 'Ship by',
+      type: 'date',
+    } as unknown as ProjectField
+    const renamed = { ...FIELD, name: 'Target ship date' }
+    vi.mocked(renameProjectField).mockResolvedValue({ ok: true, value: renamed })
+    const onFieldCreated = vi.fn()
+    const onFieldUpdated = vi.fn()
+    renderTab({ fields: [FIELD], onFieldCreated, onFieldUpdated })
+
+    // `EditableText` names its view-mode trigger `Edit ${ariaLabel}` and its input `${ariaLabel}`
+    // — two different names for the two modes, which is why both are stated literally here.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit name of Ship by' }))
+    const input = screen.getByRole('textbox', { name: 'name of Ship by' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Target ship date{Enter}')
+
+    await waitFor(() => expect(vi.mocked(renameProjectField)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(renameProjectField)).toHaveBeenCalledWith('f1', 'Target ship date')
+
+    // The mirror of the add test: the renamed row goes to UPDATE, and create stays untouched.
+    expect(onFieldUpdated).toHaveBeenCalledWith(renamed)
+    expect(onFieldCreated).not.toHaveBeenCalled()
   })
 })

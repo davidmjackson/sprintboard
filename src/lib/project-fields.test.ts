@@ -213,6 +213,28 @@ describe('createProjectField', () => {
   })
 
   /**
+   * THE READ-BACK GUARD, ON THE WRITE PATH — added on a review finding.
+   *
+   * `FIELD_COLUMNS`'s docblock claimed "`project-fields.test.ts` asserts this exact string
+   * reaches PostgREST, which is what makes a silent narrowing go red rather than ship." That
+   * was true of ONE of its three call sites. Narrowing this write's `.select()` to `'id'`
+   * survived the entire 1031-test suite, while the IDENTICAL narrowing on the read path killed
+   * the read's own test — so the harness could see the class and simply was not pointed here.
+   *
+   * It is not cosmetic on a write. The returned row is what `ProjectShell` APPENDS to its
+   * list: drop `created_at` and the new row carries an `undefined` sort key; drop `type` and
+   * `toProjectField` throws, which on this path surfaces as an unhandled rejection and a form
+   * that silently does nothing.
+   */
+  it('names every column it reads back after the insert', async () => {
+    mockWrite(CREATED)
+
+    await createProjectField({ projectId: 'p1', name: 'Ship by', type: 'date', existing: [] })
+
+    expect(selectInsert).toHaveBeenCalledWith('id, project_id, slug, name, type, created_at')
+  })
+
+  /**
    * AC2, the half that distinguishes this table from `project_statuses`. Two fields may share
    * a NAME — there is no name-uniqueness constraint, deliberately — so the second add must
    * reach the database and must carry a DIFFERENT slug. A client that refused the duplicate
@@ -401,6 +423,16 @@ describe('renameProjectField', () => {
       ok: true,
       value: RENAMED,
     })
+  })
+
+  // The rename half of the read-back guard — see `createProjectField`'s equivalent for why
+  // narrowing this survived the whole suite while the same narrowing on the read went red.
+  it('names every column it reads back after the rename', async () => {
+    mockWrite(RENAMED)
+
+    await renameProjectField('f1', 'Target ship date')
+
+    expect(selectUpdate).toHaveBeenCalledWith('id, project_id, slug, name, type, created_at')
   })
 
   // Same reasoning as createProjectField's trim: the schema binds the form, this function's
