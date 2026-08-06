@@ -20,9 +20,13 @@ the security boundary, deliberately last)**.
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
 
-**Epic SPRIN-71 is designed and story 1 has shipped.** The design is
+**Epic SPRIN-71 is designed and stories 1 and 2 have shipped.** The design is
 `docs/superpowers/specs/2026-08-05-sprin-71-custom-fields-design.md` — six stories, three
 migrations, all additive. Read it before planning any of them.
+
+**The design says story 2 needs no migration. It was wrong**, and the story overrode it: the
+INSERT grant story 1 revoked is a migration, and widening a privilege with no file recording it
+is what this project's rules exist to prevent. Expect the same of story 6 (DELETE).
 
 **THE JIRA KEYS ARE NOT IN STORY ORDER.** They were created in parallel and the board raced, so
 stories 3 and 4 carry the lowest numbers. Reading build order off the key numbers gives the wrong
@@ -31,15 +35,60 @@ answer:
 | Story | Key | State | Migration |
 |---|---|---|---|
 | 1 — the `project_fields` table and the field list | SPRIN-90 | **Done** | A, applied |
-| 2 — add and rename a custom field | **SPRIN-91 ← next** | To Do | — |
-| 3 — values on the ticket detail sidebar | SPRIN-88 | To Do | B |
+| 2 — add and rename a custom field | SPRIN-91 | **Done** | B (grants), applied |
+| 3 — values on the ticket detail sidebar | **SPRIN-88 ← next** | To Do | C |
 | 4 — values on the create-ticket dialog | SPRIN-89 | To Do | — |
-| 5 — single-select fields | SPRIN-92 | To Do | C |
-| 6 — delete a field, with its value count | SPRIN-93 | To Do | — |
+| 5 — single-select fields | SPRIN-92 | To Do | D |
+| 6 — delete a field, with its value count | SPRIN-93 | To Do | grants |
+
+**The migration letters have shifted by one.** The design calls `ticket_field_values` "migration
+B" and `project_field_options` "migration C"; SPRIN-91's grant file took the name
+`sprin-91-project-fields-insert.sql` and the B slot, so story 3's table is **C** and story 5's is
+**D**. Go by the filenames in `docs/migrations/`, not by the letters in the epic design.
 
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 56 — SPRIN-91, add and rename a custom field (PR #93, `106af27`)
+
+Settings gained an add form and inline rename, and the story paid the two debts SPRIN-90 recorded
+against it. **Migration B applied live**; `get_advisors` unchanged, zero lints on `project_fields`.
+66 → 68 test files, 1080 → 1148 tests.
+
+**INSERT is granted on FOUR COLUMNS, not the table** — `project_id, slug, name, type`.
+`created_at` is withheld because it is the SORT KEY: `(created_at, slug)` *is* the field order,
+with no `position` column standing behind it, so a writable `created_at` is a writable sort order.
+`id` is withheld because nothing in the app has reason to choose a primary key. Both are defaults,
+so it costs the client nothing. **Column-level INSERT works with no table-level INSERT** — the
+migration flagged that as its one unread-back claim, and CI has now executed it.
+
+**The AC5 debt, and why story 1 was right to defer it.** With INSERT revoked, a cross-tenant
+insert died on the missing GRANT before `fields_owner_insert` was consulted, and both controls
+raise 42501. The proof needs the grant. It now asserts the **message** (`row-level security
+policy`, explicitly NOT `permission denied`) plus a positive control on the same client. The
+security review traced the deletion case: with the policy dropped, the cross-tenant half stays
+green because Postgres emits the same message when no policy exists — **the positive control is
+what goes red.**
+
+**There is no `duplicate` write tag**, and this is the one place copying `StatusSettings`
+wholesale would be wrong. `project_fields` has no name-uniqueness constraint, deliberately,
+because AC2 requires two same-named fields to both succeed. A 23505 on the slug index is
+`'stale'`.
+
+**Three review rounds, and the yield moved later each time.** Round 1 (mutation, 76 planted / 63
+killed) found two Important seam gaps. Round 2 (security) found no exploitable surface, verified
+against the live catalog. **Round 3 — re-reviewing the FIX WAVE — produced the sharpest finding of
+the run:** the "exhaustive" UPDATE-refusal walk said "all four of the others" and walked four.
+There are **five**, and the omitted one was `project_id` — the tenancy column, where the grant is
+the only thing preventing a field being moved between two projects the same user owns. Now a
+table, so a sixth column is one row.
+
+**A review claim did not survive checking.** Round 3 reported a 10 ms-delayed write resolution
+turned two tests red. It does not reproduce — with the delay *and* the barrier deleted they still
+pass, because `userEvent`'s own awaits already yield to the macrotask queue. The barrier was kept
+(it is the correct thing to assert on) and the comment says so rather than claiming a fix it did
+not make.
 
 ### Session 55 — SPRIN-71 designed, and SPRIN-90 shipped (PRs #90 `cb65b8a`, #91 `b6a19ca`)
 
@@ -309,8 +358,25 @@ Engineering items with no story yet. Each is a candidate for one.
   whichever table is being touched. Belongs with SPRIN-75.
 - **`tickets` still carries full `arwdDxtm` for `anon`** — an anonymous caller holds UPDATE and
   DELETE on it, with only RLS in front. `project_statuses` and `projects` were narrowed;
-  `tickets` never was, and `project_fields` (SPRIN-90) is now the most restrictive table in the
+  `tickets` never was, and `project_fields` (SPRIN-90/91) is now the most restrictive table in the
   schema. The inconsistency is the finding, not any single table. Same sweep as above.
+- **The anon sweep is BIGGER than "just `tickets`" — measured 2026-08-06 in SPRIN-91's security
+  review.** `project_statuses` grants `anon` **INSERT** (`anon=arDxtm`) and `projects` grants
+  `anon` **INSERT and DELETE** (`anon=ardDxtm`). Both were "narrowed" by earlier migrations, and
+  both kept privileges nobody intended. RLS refuses all of it, but that is one control where
+  migration A's own argument asks for two. Scope the SPRIN-75 sweep from `pg_class.relacl` across
+  all six tables rather than from what previous handovers happened to notice.
+- **`renameProjectField` filters on `id` alone** and leans wholly on `fields_owner_update`'s USING
+  clause — a fresh instance of the SPRIN-64 class (an app-layer path resting on a policy's
+  breadth). Correct today. Under a membership model where read is broader than write, a
+  viewer-role rename would not be caught here and the owner-vs-stranger isolation cases would not
+  flag it. Explicitly on SPRIN-75's re-audit list.
+- **`toProjectField` throws out of `createProjectField`/`renameProjectField`**, which otherwise
+  return a tagged result — so an unrecognised field type is a rejected promise, not
+  `{ ok: false }`. **Measured unreachable**: `listProjectFields` throws first, so a field with an
+  unknown type never renders a rename control. But if it ever fired, RHF re-throws in its
+  `finally` and the add form shows **zero alerts and silently does nothing**, while the rename
+  path discards it through `void`. Worth a tagged-error path if a sixth type is ever added.
 - **`listProjectStatuses` still uses a bare `.select()`**, unlike `listProjectFields`, which names
   its columns and has a test asserting the exact string. The class is recorded below; SPRIN-90
   shows what closing it looks like, so the remaining work is mechanical.
