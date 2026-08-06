@@ -1621,37 +1621,51 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * denormalised copy of `type` so its "the populated column matches the type" CHECK can be
      * written at all, and that copy is sound ONLY while the original cannot change.
      *
-     * `name` is the ONLY writable column, so this test now walks all four of the others. Each
-     * refusal protects a different property — slug is the identity other tables key on, type
-     * is what story 3's denormalised copy depends on, and created_at/id are the sort key and
-     * the primary key. Listing them exhaustively is deliberate: a test naming only the two
-     * "interesting" columns leaves the grant free to widen anywhere else in silence.
+     * `name` is the ONLY writable column, so this test walks **all five** of the others —
+     * `project_id`, `slug`, `type`, `created_at`, `id`. Each refusal protects a different
+     * property, and the exhaustiveness is the point: a test naming only the two "interesting"
+     * columns leaves the grant free to widen anywhere else in silence.
+     *
+     * **`project_id` is the one it is easiest to leave out and the worst one to lose.** It is
+     * the tenancy column. `authenticated` holds INSERT on it but not UPDATE, so the GRANT is
+     * the only thing preventing a field being MOVED between projects —
+     * `fields_owner_update`'s WITH CHECK refuses a move to a project you do not own, but
+     * permits a move between two you DO. `AssertProjectFieldUpdateColumns` is exhaustive on
+     * the client, and a raw PostgREST call bypasses it entirely. SPRIN-75 widens "own" to
+     * "member of", which widens the blast radius with it.
+     *
+     * An earlier version of this docblock said "all four of the others" and walked four. There
+     * are five. That is how the tenancy column came to be the missing one.
      */
     it('refuses UPDATE to every column but name, while name updates on the same row', async () => {
-      const slug = await a.from('project_fields').update({ slug: 'moved' }).eq('id', fieldA)
-      expect(slug.error?.code).toBe('42501')
+      // SPRIN-91 widened this test on a security review's finding, then widened it again on a
+      // re-review: the INSERT side of the ordering rule was pinned below while the UPDATE side
+      // was not, and the first widening then walked four of the five columns.
+      //
+      // A TABLE rather than five hand-written blocks, so a sixth column is one row and cannot
+      // be "the one somebody forgot". Each entry carries a legal value for its column type —
+      // a malformed one would earn 22P02 before the privilege check and pass this test for the
+      // wrong reason.
+      const forbidden = [
+        { column: 'project_id', patch: { project_id: projectB } },
+        { column: 'slug', patch: { slug: 'moved' } },
+        { column: 'type', patch: { type: 'number' } },
+        { column: 'created_at', patch: { created_at: '2000-01-01T00:00:00Z' } },
+        { column: 'id', patch: { id: '00000000-0000-4000-8000-000000000002' } },
+      ]
 
-      const type = await a.from('project_fields').update({ type: 'number' }).eq('id', fieldA)
-      expect(type.error?.code).toBe('42501')
-
-      // SPRIN-91 widened this test, on a security review's finding. The INSERT side of the
-      // ordering rule is pinned below (an insert supplying `created_at` or `id` earns 42501);
-      // the UPDATE side was not, which left the lattice asymmetric. A later migration
-      // restating the grant block as `grant update (name, created_at)` — or simply dropping
-      // the restatement discipline — would silently end `(created_at, slug)` as a DATABASE
-      // ordering property while CI stayed green. `AssertProjectFieldUpdateColumns` pins only
-      // the client-side mirror, and a raw PostgREST call bypasses it entirely.
-      const created = await a
-        .from('project_fields')
-        .update({ created_at: '2000-01-01T00:00:00Z' })
-        .eq('id', fieldA)
-      expect(created.error?.code).toBe('42501')
-
-      const id = await a
-        .from('project_fields')
-        .update({ id: '00000000-0000-4000-8000-000000000002' })
-        .eq('id', fieldA)
-      expect(id.error?.code).toBe('42501')
+      for (const { column, patch } of forbidden) {
+        const refused = await a.from('project_fields').update(patch).eq('id', fieldA)
+        // The MESSAGE as well as the code, on every one of them. 42501 has two possible
+        // authors here — the column privilege and `fields_owner_update`'s USING clause — and
+        // `project_id` is precisely where they diverge: A owns this row, so RLS lets the
+        // update through and only the missing GRANT refuses it. Asserting the code alone would
+        // let a future RLS-shaped refusal masquerade as the privilege this test is about.
+        expect(refused.error?.code, `${column} should be refused`).toBe('42501')
+        expect(refused.error?.message, `${column} should be a privilege refusal`).toMatch(
+          /permission denied/,
+        )
+      }
 
       const name = await a
         .from('project_fields')
@@ -1883,13 +1897,18 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      */
     it('refuses an empty, whitespace-only or over-length name', async () => {
       // POSITIVE CONTROL FIRST, matching the sibling test above rather than trailing the
-      // refusals. Ordering it last looked equivalent and is not: if the slug were already
-      // taken, the three refusals below would fail on a 23505 and the loop would throw before
-      // the control ever ran to explain why. A control that only runs when everything already
-      // passed is not a control.
+      // refusals: a control that only runs once everything else has already passed cannot
+      // report the one condition it exists to report.
       //
-      // It also proves the slug is free, which is what lets the refusals reuse it: a check
-      // violation inserts no row, so `name_edge` stays available for all three.
+      // BE PRECISE ABOUT THE MECHANISM, because an earlier draft of this comment got it
+      // backwards and a fix resting on a false reason is one the next author will undo.
+      // Postgres evaluates CHECK constraints in `ExecConstraints()` BEFORE the tuple reaches
+      // index insertion, so an empty name on an already-taken slug still raises
+      // 23514/`project_fields_name_nonempty`, never 23505. The refusals below would therefore
+      // have passed on a colliding slug; it is the CONTROL that would have failed, correctly
+      // naming the collision. So the reorder does not rescue the refusals from a misleading
+      // 23505 — it puts the assertion that can DIAGNOSE a collision ahead of three that cannot.
+      // `name_edge_2` for the refusals is then defensive rather than necessary.
       const ok = await a
         .from('project_fields')
         .insert({ project_id: projectA, slug: 'name_edge', name: 'Name edge', type: 'text' })

@@ -142,6 +142,13 @@ function renderTab(
 describe('SettingsTab', () => {
   beforeEach(() => {
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+    // The two write mocks are MODULE-level and nothing in this project configures
+    // `clearMocks`/`restoreMocks`, so call counts accumulate across tests in file order.
+    // `toHaveBeenCalledTimes(1)` below is correct today only because nothing above the write
+    // tests triggers a write — a property that quietly stops holding the moment a second write
+    // test is inserted anywhere earlier in the file.
+    vi.mocked(createProjectField).mockReset()
+    vi.mocked(renameProjectField).mockReset()
   })
 
   it("hands the project's own status rows to the list", () => {
@@ -403,14 +410,26 @@ describe('SettingsTab custom fields', () => {
    * projects — RLS is not a backstop for this one.
    */
   it('adds a field through the tab, against THIS project, and forwards the created row', async () => {
-    const created = { id: 'f9', project_id: 'p1', slug: 'ship_by', name: 'Ship by', type: 'date' }
+    // A project id that is NOT the shared `'p1'` fixture. With `'p1'`, replacing
+    // `projectId={project.id}` with the LITERAL `'p1'` survives the whole suite — measured in
+    // re-review — because every fixture in this file and in `CustomFieldSettings.test.tsx`
+    // uses that same value. The confound doubles rather than cancels. A distinct id is what
+    // makes this test about the SEAM rather than about a coincidence.
+    const project = { id: 'p-distinct', name: 'Sprintboard', key: 'SPB' } as Project
+    const created = {
+      id: 'f9',
+      project_id: 'p-distinct',
+      slug: 'ship_by',
+      name: 'Ship by',
+      type: 'date',
+    }
     vi.mocked(createProjectField).mockResolvedValue({
       ok: true,
       value: created as unknown as ProjectField,
     })
     const onFieldCreated = vi.fn()
     const onFieldUpdated = vi.fn()
-    renderTab({ fields: [], onFieldCreated, onFieldUpdated })
+    renderTab({ project, fields: [], onFieldCreated, onFieldUpdated })
 
     const addField = screen.getByRole('button', { name: 'Add field' })
     const form = within(addField.closest('form')!)
@@ -418,17 +437,29 @@ describe('SettingsTab custom fields', () => {
     await userEvent.selectOptions(form.getByRole('combobox', { name: 'Type' }), 'date')
     await userEvent.click(addField)
 
+    // The barrier is the CALLBACK, not the write call. Waiting on `createProjectField` having
+    // been called waits for something that happens strictly BEFORE `onCreated` fires, which
+    // would leave the assertion that matters outside the barrier.
+    //
+    // HONEST ABOUT WHAT THIS IS: it is the correct barrier, not a demonstrated fix. Both
+    // forms pass today, and they still pass with the write resolution delayed by 10ms and
+    // this line deleted — measured, after a review reported the opposite. `userEvent.type`
+    // and `.click` are themselves awaited and yield to the macrotask queue, so a short delay
+    // has already elapsed by the time the assertions run. Assert on the thing you care about
+    // anyway; the alternative is a test whose correctness depends on how long userEvent
+    // happens to take.
+    await waitFor(() => expect(onFieldCreated).toHaveBeenCalledWith(created))
+
     // The project id actually reaching the write, not merely that a write happened.
-    await waitFor(() => expect(vi.mocked(createProjectField)).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(createProjectField)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(createProjectField).mock.calls[0]![0]).toMatchObject({
-      projectId: project.id,
+      projectId: 'p-distinct',
       name: 'Ship by',
       type: 'date',
     })
 
     // And the row goes to the CREATE callback, not the update one. Asserting both is what
     // kills the swap: either alone passes when the two props are exchanged.
-    expect(onFieldCreated).toHaveBeenCalledWith(created)
     expect(onFieldUpdated).not.toHaveBeenCalled()
   })
 
@@ -453,11 +484,13 @@ describe('SettingsTab custom fields', () => {
     await userEvent.clear(input)
     await userEvent.type(input, 'Target ship date{Enter}')
 
-    await waitFor(() => expect(vi.mocked(renameProjectField)).toHaveBeenCalledTimes(1))
+    // Barrier on the callback, for the reason spelled out in the add test above.
+    await waitFor(() => expect(onFieldUpdated).toHaveBeenCalledWith(renamed))
+
+    expect(vi.mocked(renameProjectField)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(renameProjectField)).toHaveBeenCalledWith('f1', 'Target ship date')
 
     // The mirror of the add test: the renamed row goes to UPDATE, and create stays untouched.
-    expect(onFieldUpdated).toHaveBeenCalledWith(renamed)
     expect(onFieldCreated).not.toHaveBeenCalled()
   })
 })
