@@ -62,9 +62,15 @@ vi.mock('@/lib/sprints', async (orig) => ({
 // the "unit" half hammers the shared database, which in CI is the REAL project. CLAUDE.md
 // attributes the moving 5s-timeout flake to exactly that kind of self-inflicted traffic, and
 // it also made `fieldsPhase` nondeterministic in ~60 tests that never meant to exercise it.
+// SPRIN-91 adds two WRITES to this module, and the spread above would leave them REAL. The
+// shell's own tests render the genuine `SettingsTab`, so the custom-field add form is mounted
+// in every one of them — an unmocked write is one submit away from the same live traffic this
+// mock was added to stop, and it would be just as invisible.
 vi.mock('@/lib/project-fields', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-fields')>()),
   listProjectFields: vi.fn(),
+  createProjectField: vi.fn(),
+  renameProjectField: vi.fn(),
 }))
 
 // What `seed_project_statuses()` writes for every new project, so the default mock describes
@@ -176,6 +182,34 @@ const onBoard = (t: Ticket): Ticket => ({ ...t, sprint_id: activeSprint.id })
  * probe can only see what the shell put on the context, so it fails until the load moves.
  */
 /**
+ * The two rows `FieldContextProbe`'s write buttons hand back to the shell (SPRIN-91).
+ *
+ * **Neither slug is the lowercased name, and that is deliberate.** `Ship by` derives
+ * `ship_by`, not `delivery_date`; the renamed row keeps `customer_ref` while its name becomes
+ * `Target ship date`. A fixture where the two agree cannot distinguish a reducer that patched
+ * the name from one that also rewrote the slug — the confound SPRIN-87 had to break three
+ * times. The existing `FIELD` fixture below is an instance of it (`Customer ref` ⇒
+ * `customer_ref`), which is precisely why the RENAMED row moves the name away from the slug.
+ */
+const PROBE_CREATED_FIELD = {
+  id: 'f2',
+  project_id: 'p1',
+  slug: 'delivery_date',
+  name: 'Ship by',
+  type: 'date',
+  created_at: '2026-08-06T10:00:00Z',
+} as unknown as ProjectField
+
+const PROBE_RENAMED_FIELD = {
+  id: 'f1',
+  project_id: 'p1',
+  slug: 'customer_ref',
+  name: 'Target ship date',
+  type: 'text',
+  created_at: '2026-08-05T10:00:00Z',
+} as unknown as ProjectField
+
+/**
  * SPRIN-90. Reads `fields`/`fieldsPhase` straight off the context, for the same reason the
  * two probes below it exist: driving the real Settings tab cannot distinguish what the SHELL
  * published from what the tab computed.
@@ -187,18 +221,42 @@ const onBoard = (t: Ticket): Ticket => ({ ...t, sprint_id: activeSprint.id })
  * that substitution observable at all.
  */
 function FieldContextProbe() {
-  const { fields, fieldsPhase, statusesPhase, onRetry } = useOutletContext<ProjectShellContext>()
+  const { fields, fieldsPhase, statusesPhase, onRetry, onFieldCreated, onFieldUpdated } =
+    useOutletContext<ProjectShellContext>()
   return (
     <div>
       <p>fields phase: {fieldsPhase}</p>
       <p>statuses phase: {statusesPhase}</p>
-      <ul>
+      {/* Named so the assertions below can scope to THIS list with `within`. An unscoped
+          `getAllByRole('listitem')` would also collect any list the shell chrome renders, so
+          an order assertion could pass or fail for reasons that have nothing to do with the
+          reducer under test. */}
+      <ul aria-label="probe fields">
         {fields.map((f) => (
-          <li key={f.id}>{f.name}</li>
+          // Name and slug in SEPARATE elements, not one interpolated string. AC3's whole claim
+          // is that a rename changes one and not the other, so a probe showing only the name
+          // cannot tell a correct rename from one that rewrote the slug too. Keeping them in
+          // separate nodes also keeps each one an EXACT `getByText` match — fusing them into
+          // `{f.name} ({f.slug})` would make the li's text content `Customer ref
+          // (customer_ref)` and silently break every existing exact-name assertion here.
+          <li key={f.id}>
+            <span>{f.name}</span>
+            <span>{f.slug}</span>
+          </li>
         ))}
       </ul>
       <button type="button" onClick={onRetry}>
         probe retry
+      </button>
+      {/* SPRIN-91. The two reducers are invoked from HERE rather than through the real
+          Settings tab for the reason the probe exists at all: the tab hands its own props
+          down, so a tab-level test passes just as well when the shell forwards nothing. These
+          buttons are the only thing that can see the shell→context seam for the writes. */}
+      <button type="button" onClick={() => onFieldCreated(PROBE_CREATED_FIELD)}>
+        probe create field
+      </button>
+      <button type="button" onClick={() => onFieldUpdated(PROBE_RENAMED_FIELD)}>
+        probe rename field
       </button>
     </div>
   )
@@ -802,6 +860,58 @@ describe('ProjectShell', () => {
       // The positive control that makes the assertion above mean something: the OTHER read
       // succeeded, so `failed` is this read's own outcome and not a shell-wide collapse.
       expect(screen.getByText('statuses phase: loaded')).toBeVisible()
+    })
+
+    /**
+     * SPRIN-91's two reducers, pinned at the SAME seam and for the same reason.
+     *
+     * SPRIN-90's review found this boundary entirely unpinned — four type-valid, lint-clean,
+     * typecheck-clean mutations of the read wiring all survived. The writes arrive through the
+     * identical seam, so they inherit the identical exposure: `onFieldCreated` wired to
+     * `statusRead.patch`, or to nothing at all, compiles and type-checks, and
+     * `CustomFieldSettings.test.tsx` cannot see it because that test supplies the callbacks
+     * itself.
+     */
+    it('appends a created field to the published list', async () => {
+      const user = userEvent.setup()
+      mockListFields.mockResolvedValue([FIELD])
+      renderShell('/projects/p1/field-probe')
+      expect(await screen.findByText('Customer ref')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe create field' }))
+
+      // The new row is published…
+      expect(await screen.findByText('Ship by')).toBeVisible()
+      // …and the existing one is still there. Without this, a reducer that REPLACED the list
+      // with `[field]` instead of appending would pass — and that is the likelier slip, since
+      // it is what `patch(() => [field])` does.
+      expect(screen.getByText('Customer ref')).toBeVisible()
+
+      // Appended, not prepended: `listProjectFields` orders by `(created_at, slug)` and the
+      // new row is the newest, so the end of the list is where the database itself would put
+      // it. Asserted on the rendered ORDER rather than on membership, because both a prepend
+      // and an append satisfy the two assertions above.
+      const list = within(screen.getByRole('list', { name: 'probe fields' }))
+      const names = list.getAllByRole('listitem').map((li) => li.textContent)
+      expect(names).toEqual(['Customer refcustomer_ref', 'Ship bydelivery_date'])
+    })
+
+    it('replaces a renamed field by id, leaving its slug untouched', async () => {
+      const user = userEvent.setup()
+      mockListFields.mockResolvedValue([FIELD])
+      renderShell('/projects/p1/field-probe')
+      expect(await screen.findByText('Customer ref')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe rename field' }))
+
+      expect(await screen.findByText('Target ship date')).toBeVisible()
+      // The OLD name is gone — a reducer that appended instead of replacing by id would leave
+      // both on screen, and the assertion above alone would not notice.
+      expect(screen.queryByText('Customer ref')).not.toBeInTheDocument()
+      const list = within(screen.getByRole('list', { name: 'probe fields' }))
+      expect(list.getAllByRole('listitem')).toHaveLength(1)
+      // AC3 at this seam: the slug survived the rename. This is why the probe renders it.
+      expect(screen.getByText('customer_ref')).toBeVisible()
     })
 
     it('re-runs the fields read on Retry, so one nonce still drives all four', async () => {
@@ -1435,8 +1545,15 @@ describe('ProjectShell', () => {
 
       renderShell('/projects/p1/settings')
 
-      await u.type(await screen.findByRole('textbox', { name: 'Name' }), 'Blocked')
-      await u.click(screen.getByRole('button', { name: 'Add status' }))
+      // Scoped to the status form, because SPRIN-91 put a SECOND "Name" textbox on this tab —
+      // the custom-field add form, which deliberately uses the same label (each form sits in
+      // its own titled section, and bending a UI label to disambiguate a test query is
+      // backwards). The submit button is the reliable handle on the right form: an unscoped
+      // `findByRole('textbox', { name: 'Name' })` now matches both and throws.
+      const addStatus = await screen.findByRole('button', { name: 'Add status' })
+      const statusForm = within(addStatus.closest('form')!)
+      await u.type(statusForm.getByRole('textbox', { name: 'Name' }), 'Blocked')
+      await u.click(addStatus)
       await waitFor(() => expect(vi.mocked(createProjectStatus)).toHaveBeenCalledTimes(1))
 
       await u.click(screen.getByRole('link', { name: 'Board' }))

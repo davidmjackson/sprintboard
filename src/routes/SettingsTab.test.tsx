@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
@@ -8,6 +8,17 @@ import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectField, ProjectStatus } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
+import { createProjectField, renameProjectField } from '@/lib/project-fields'
+
+// SPRIN-91. Mocked because the tests below drive the custom-field add and rename forms through
+// this tab, and the real writes reach PostgREST. `useTaggedRead` is not involved here, so an
+// unmocked write would not merely be slow — it would be a genuine outbound request from a unit
+// test, the exact defect SPRIN-90's review measured at ~90 per run in `ProjectShell.test.tsx`.
+vi.mock('@/lib/project-fields', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-fields')>()),
+  createProjectField: vi.fn(),
+  renameProjectField: vi.fn(),
+}))
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
 // stays real.
@@ -83,6 +94,8 @@ function renderTab(
     statusesPhase?: ReadPhase
     fields?: ProjectField[]
     fieldsPhase?: ReadPhase
+    onFieldCreated?: (field: ProjectField) => void
+    onFieldUpdated?: (field: ProjectField) => void
     onRetry?: () => void
   } = {},
 ) {
@@ -96,6 +109,17 @@ function renderTab(
     // a harness silently testing a state the real shell never produces.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-91, and the docblock above applies to these with more force than to `fields`.
+    // The cast is `as unknown as ProjectShellContext`, so omitting them COMPILES and hands
+    // `CustomFieldSettings` `undefined` for its two write callbacks — which throws only when a
+    // test actually adds or renames a field, i.e. exactly the tests this story adds. The type
+    // checker cannot help here; only stating them can.
+    // Stubs by default; a caller that wants to ASSERT the seam passes its own. Supplying a
+    // stub is NOT pinning — a review swapped these two props and reversed `projectId`, and the
+    // whole suite stayed green precisely because they were present-but-unasserted. The two
+    // write tests at the end of this file are what actually close that.
+    onFieldCreated: vi.fn(),
+    onFieldUpdated: vi.fn(),
     onRetry: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
@@ -118,6 +142,13 @@ function renderTab(
 describe('SettingsTab', () => {
   beforeEach(() => {
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+    // The two write mocks are MODULE-level and nothing in this project configures
+    // `clearMocks`/`restoreMocks`, so call counts accumulate across tests in file order.
+    // `toHaveBeenCalledTimes(1)` below is correct today only because nothing above the write
+    // tests triggers a write — a property that quietly stops holding the moment a second write
+    // test is inserted anywhere earlier in the file.
+    vi.mocked(createProjectField).mockReset()
+    vi.mocked(renameProjectField).mockReset()
   })
 
   it("hands the project's own status rows to the list", () => {
@@ -256,11 +287,12 @@ describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix 
  * SPRIN-90 AC1 and AC2, asserted through the TAB rather than against
  * `CustomFieldSettings` directly.
  *
- * There is NO `CustomFieldSettings.test.tsx` — the component's three phases are covered here,
- * through the tab, and that is deliberate rather than an omission. An earlier draft of this
- * docblock claimed such a file existed and divided the labour with it. It did not exist, and
- * that fiction is what made the shell → tab seam read as covered when it was not. Same class
- * as the SPRIN-86 defect: a docblock asserting a control that is not there.
+ * **`CustomFieldSettings.test.tsx` now exists** (SPRIN-91) and owns the component's own
+ * behaviour — the add form, the rename path, and the five type options. This docblock
+ * previously said it did NOT exist, and said so correctly: SPRIN-90 shipped a docblock
+ * claiming the file, the claim was false, and that fiction is what made the shell → tab seam
+ * read as covered when it was not. The claim is true now, and it is restated here only
+ * because a stale "no such file" is the same defect pointing the other way.
  *
  * What these cover is the tab → component seam: that `SettingsTab` actually reads
  * `fields`/`fieldsPhase` off the outlet context and forwards them. The seam ABOVE this one —
@@ -280,21 +312,35 @@ describe('SettingsTab custom fields', () => {
   it("lists the project's custom fields, with each type's label", () => {
     renderTab({ fields: FIELDS })
 
-    const list = screen.getByRole('heading', { name: 'Custom fields' }).closest('section')
-    expect(list).not.toBeNull()
+    const section = screen.getByRole('region', { name: 'Custom fields' })
 
-    // Scoped with `within`, not a bare getByText: an unscoped query says the text exists
-    // somewhere on the tab and nothing about whether it is in THIS section.
-    expect(within(list!).getByText('Customer ref')).toBeInTheDocument()
-    expect(within(list!).getByText('Text')).toBeInTheDocument()
-    expect(within(list!).getByText('Due')).toBeInTheDocument()
-    expect(within(list!).getByText('Date')).toBeInTheDocument()
+    // Scoped to the LIST, not merely to the section, and SPRIN-91 is why. The section now also
+    // holds the add form, whose type `<select>` renders an `<option>` for every one of the five
+    // labels — so `within(section).getByText('Text')` became ambiguous the moment that form
+    // landed, matching the option as readily as the row. Narrowing to the `<ul>` is what keeps
+    // this test about the LIST. There is exactly one list in this region; the options are
+    // `option` role inside a `combobox`, not list items.
+    const list = within(section).getByRole('list')
 
-    // The description-list structure, pinned rather than merely argued for in a docblock.
-    // Rewriting <dl>/<dt>/<dd> to <div>/<span>/<span> otherwise survives the whole suite, and
-    // it is the structure that pairs each field with its type for assistive technology.
-    expect(within(list!).getByText('Customer ref').tagName).toBe('DT')
-    expect(within(list!).getByText('Text').tagName).toBe('DD')
+    expect(within(list).getByText('Customer ref')).toBeInTheDocument()
+    expect(within(list).getByText('Text')).toBeInTheDocument()
+    expect(within(list).getByText('Due')).toBeInTheDocument()
+    expect(within(list).getByText('Date')).toBeInTheDocument()
+
+    // The row structure, pinned rather than merely argued for in a docblock.
+    //
+    // SPRIN-90 asserted `DT`/`DD` here, because the list was a `<dl>`. SPRIN-91 reversed that
+    // to `<ul>`/`<li>`: once the name is an `EditableText` button and the row owns its own
+    // `role="alert"`, a row is an item with controls rather than a term and its definition.
+    // The assertion is updated rather than dropped — without it, flattening the list back to
+    // bare `<div>`s survives the whole suite.
+    //
+    // The name now sits inside a BUTTON, so its own tagName is no longer the row's. Asserting
+    // the enclosing `<li>` is what stays true across that change, and `closest` is what makes
+    // it an assertion about structure rather than about which element happens to hold the text.
+    expect(within(list).getByText('Customer ref').closest('li')).not.toBeNull()
+    expect(within(list).getByText('Text').closest('li')).not.toBeNull()
+    expect(within(list).getAllByRole('listitem')).toHaveLength(FIELDS.length)
 
     // The empty state must NOT also be on screen — otherwise "lists the fields" would pass
     // for a component rendering both.
@@ -343,5 +389,108 @@ describe('SettingsTab custom fields', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(ctx.onRetry).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * THE TAB → COMPONENT SEAM FOR THE TWO WRITES. Added on a review finding, and the finding is
+   * worth stating because it is subtle: SPRIN-91 first "closed" this by adding
+   * `onFieldCreated: vi.fn(), onFieldUpdated: vi.fn()` to the harness above. That made the
+   * props PRESENT, which made the seam INVISIBLE — supplied and never asserted. Two mutations
+   * then survived the entire 1031-test suite:
+   *
+   *   `projectId={project.id}` → `projectId={'not-this-project'}`
+   *   `onCreated`/`onUpdated` swapped
+   *
+   * The seam control that proves the harness can see this class: the SAME two mutations on the
+   * `StatusSettings` props twelve lines higher killed two tests each. So the gap was coverage,
+   * not technique.
+   *
+   * `projectId` is the sharper half. A wrong id there writes a custom field into the wrong
+   * project, and `fields_owner_insert`'s WITH CHECK permits it whenever the user owns BOTH
+   * projects — RLS is not a backstop for this one.
+   */
+  it('adds a field through the tab, against THIS project, and forwards the created row', async () => {
+    // A project id that is NOT the shared `'p1'` fixture. With `'p1'`, replacing
+    // `projectId={project.id}` with the LITERAL `'p1'` survives the whole suite — measured in
+    // re-review — because every fixture in this file and in `CustomFieldSettings.test.tsx`
+    // uses that same value. The confound doubles rather than cancels. A distinct id is what
+    // makes this test about the SEAM rather than about a coincidence.
+    const project = { id: 'p-distinct', name: 'Sprintboard', key: 'SPB' } as Project
+    const created = {
+      id: 'f9',
+      project_id: 'p-distinct',
+      slug: 'ship_by',
+      name: 'Ship by',
+      type: 'date',
+    }
+    vi.mocked(createProjectField).mockResolvedValue({
+      ok: true,
+      value: created as unknown as ProjectField,
+    })
+    const onFieldCreated = vi.fn()
+    const onFieldUpdated = vi.fn()
+    renderTab({ project, fields: [], onFieldCreated, onFieldUpdated })
+
+    const addField = screen.getByRole('button', { name: 'Add field' })
+    const form = within(addField.closest('form')!)
+    await userEvent.type(form.getByRole('textbox', { name: 'Name' }), 'Ship by')
+    await userEvent.selectOptions(form.getByRole('combobox', { name: 'Type' }), 'date')
+    await userEvent.click(addField)
+
+    // The barrier is the CALLBACK, not the write call. Waiting on `createProjectField` having
+    // been called waits for something that happens strictly BEFORE `onCreated` fires, which
+    // would leave the assertion that matters outside the barrier.
+    //
+    // HONEST ABOUT WHAT THIS IS: it is the correct barrier, not a demonstrated fix. Both
+    // forms pass today, and they still pass with the write resolution delayed by 10ms and
+    // this line deleted — measured, after a review reported the opposite. `userEvent.type`
+    // and `.click` are themselves awaited and yield to the macrotask queue, so a short delay
+    // has already elapsed by the time the assertions run. Assert on the thing you care about
+    // anyway; the alternative is a test whose correctness depends on how long userEvent
+    // happens to take.
+    await waitFor(() => expect(onFieldCreated).toHaveBeenCalledWith(created))
+
+    // The project id actually reaching the write, not merely that a write happened.
+    expect(vi.mocked(createProjectField)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(createProjectField).mock.calls[0]![0]).toMatchObject({
+      projectId: 'p-distinct',
+      name: 'Ship by',
+      type: 'date',
+    })
+
+    // And the row goes to the CREATE callback, not the update one. Asserting both is what
+    // kills the swap: either alone passes when the two props are exchanged.
+    expect(onFieldUpdated).not.toHaveBeenCalled()
+  })
+
+  it('renames a field through the tab and forwards the row to onFieldUpdated', async () => {
+    const FIELD = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'delivery_date',
+      name: 'Ship by',
+      type: 'date',
+    } as unknown as ProjectField
+    const renamed = { ...FIELD, name: 'Target ship date' }
+    vi.mocked(renameProjectField).mockResolvedValue({ ok: true, value: renamed })
+    const onFieldCreated = vi.fn()
+    const onFieldUpdated = vi.fn()
+    renderTab({ fields: [FIELD], onFieldCreated, onFieldUpdated })
+
+    // `EditableText` names its view-mode trigger `Edit ${ariaLabel}` and its input `${ariaLabel}`
+    // — two different names for the two modes, which is why both are stated literally here.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit name of Ship by' }))
+    const input = screen.getByRole('textbox', { name: 'name of Ship by' })
+    await userEvent.clear(input)
+    await userEvent.type(input, 'Target ship date{Enter}')
+
+    // Barrier on the callback, for the reason spelled out in the add test above.
+    await waitFor(() => expect(onFieldUpdated).toHaveBeenCalledWith(renamed))
+
+    expect(vi.mocked(renameProjectField)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(renameProjectField)).toHaveBeenCalledWith('f1', 'Target ship date')
+
+    // The mirror of the add test: the renamed row goes to UPDATE, and create stays untouched.
+    expect(onFieldCreated).not.toHaveBeenCalled()
   })
 })

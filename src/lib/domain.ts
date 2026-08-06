@@ -312,6 +312,11 @@ export type AssertProjectStatusUpdateColumns = Expect<
   Exact<keyof ProjectStatusUpdate, 'name' | 'category' | 'position' | 'wip_limit'>
 >
 
+/** Same reasoning for `project_fields`, where the grant is narrower still: `name` and nothing
+ *  else. A single-key `Pick` looks too small to be worth pinning, which is exactly why it is —
+ *  adding `slug` or `type` back is a one-word edit, and `Assignable<>` would not notice it. */
+export type AssertProjectFieldUpdateColumns = Expect<Exact<keyof ProjectFieldUpdate, 'name'>>
+
 /* ------------------------------------------------------------------ *
  * Row types, with the text columns narrowed to the domain unions.
  * ------------------------------------------------------------------ */
@@ -343,10 +348,14 @@ export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
  * returns, not a check — `listProjectFields` is where it is enforced, and it rejects a row
  * whose type is unrecognised rather than casting past it.
  *
- * There is deliberately no UPDATE counterpart yet. The migration grants UPDATE on `name`
- * alone, so story 2 — which is what actually renames a field — owns the `ProjectFieldUpdate`
- * type and the `Exact<>` key-set assertion that mirrors the grant. Adding it here, with no
- * writer, would be an unpinned claim about a privilege nothing exercises.
+ * The UPDATE counterpart is `ProjectFieldUpdate` below, added by story 2 (SPRIN-91) — the
+ * story that actually renames a field. Story 1 deliberately left it unwritten: the type
+ * mirrors a column-level GRANT, and adding it with no writer would have been an unpinned
+ * claim about a privilege nothing exercised. There is still no INSERT counterpart, for the
+ * same reason `ProjectStatus` has none: an insert legitimately carries `project_id`, `slug`
+ * and `type`, so `TablesInsert<'project_fields'>` is already the right shape and an alias
+ * would only restate it. What keeps `created_at` and `id` off an insert is the GRANT, which
+ * omits them, plus `createProjectField` sending an exact four-key literal — not a type.
  */
 export type ProjectField = Omit<Tables<'project_fields'>, 'type'> & {
   type: CustomFieldType
@@ -467,6 +476,36 @@ export type ProjectStatusUpdate = Pick<
   TablesUpdate<'project_statuses'>,
   'name' | 'category' | 'position' | 'wip_limit'
 >
+
+/**
+ * The ONLY column a client may UPDATE on `project_fields` — and, like `ProjectStatusUpdate`
+ * above, this mirrors a **column-level GRANT** rather than a policy or a trigger.
+ *
+ * `docs/migrations/sprin-91-project-fields-insert.sql` restates `grant update (name)` and
+ * nothing else, so Postgres refuses a patch touching any other column with a 42501 before any
+ * policy is consulted. Two of those absences are load-bearing rather than tidy:
+ *
+ *   * `slug` is the machine identity story 5's value rows key on. A movable slug would undo
+ *     "renaming a field rewrites no value rows" — the same division `tickets_status_fk` makes
+ *     for statuses, and the reason a rename is a cheap operation at all.
+ *   * `type` immutability is what makes story 3's denormalised `field_type` copy sound. A
+ *     field whose type changed under stored values would leave that copy describing data it
+ *     no longer matches.
+ *
+ * The generated `TablesUpdate<'project_fields'>` cannot express that: it sees a table with
+ * updatable columns and offers all of them, so `.update({ slug })` COMPILES and fails only at
+ * runtime, against the live database, on a path a mocked-client unit test never reaches.
+ * `Pick` makes the wrong write untypeable instead — the same move `TicketBlockUpdate` and
+ * `SprintStatusUpdate` make for their invariants. `AssertProjectFieldUpdateColumns` pins the
+ * key set, so widening this alias is itself a compile error rather than a quiet loosening of
+ * the grant's client-side mirror.
+ *
+ * This alias and the migration must move together. A table-level REVOKE **cascades** to
+ * column grants, which is why every migration touching this table restates the complete grant
+ * set; this is the client-side mirror of exactly that list, and story 6 (which grants DELETE)
+ * is the next place both can drift apart in one edit.
+ */
+export type ProjectFieldUpdate = Pick<TablesUpdate<'project_fields'>, 'name'>
 
 /* ------------------------------------------------------------------ */
 

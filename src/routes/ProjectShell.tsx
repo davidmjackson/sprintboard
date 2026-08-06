@@ -64,6 +64,18 @@ export type ProjectShellContext = {
    *  story 3's detail sidebar and story 2's settings form need the same rows. */
   fields: ProjectField[]
   fieldsPhase: ReadPhase
+  /** A custom field was added from the Settings tab (SPRIN-91). Appended, and appending is
+   *  the CORRECT order rather than a convenient one: `listProjectFields` sorts by
+   *  `(created_at, slug)` and a row created just now carries the newest `created_at`, so the
+   *  end of the list is where the database itself would put it. A client-side re-sort here
+   *  would be a second derivation of the ordering rule, which is exactly what `doneSlugs`
+   *  exists to avoid elsewhere in this file. */
+  onFieldCreated: (field: ProjectField) => void
+  /** A custom field was renamed (SPRIN-91). Replaces one row by id; nothing moves, because a
+   *  rename never touches `slug` and `slug` is half the sort key. Story 3's value rows key on
+   *  `field_id`, so they are unaffected too — which is the whole point of the name/slug
+   *  division this epic rests on. */
+  onFieldUpdated: (field: ProjectField) => void
   /** A status was added from the Settings tab (SPRIN-77). Appended, because the write gives
    *  it `max(position)+1` — so appending IS the board's column order, not a guess at it. */
   onStatusCreated: (status: ProjectStatus) => void
@@ -250,6 +262,18 @@ export function ProjectShell() {
   // twice (once in SQL, once there) rather than shared, and how that duplication is tested.
   const onStatusDeleted = (id: string) => statusRead.patch(project.id, (ss) => removeStatus(ss, id))
 
+  // The two custom-field reducers (SPRIN-91), local mutations for the same reason as every
+  // other one here. Both cost ZERO cyclomatic points and that was measured, not assumed:
+  // `ProjectShell` sits at exactly 10 of 10, but ESLint's `complexity` rule counts PER
+  // FUNCTION, and these are `const` arrow declarations — this file already holds seven nested
+  // arrows at complexity 2 or more while `ProjectShell` itself still reads 10. A conditional
+  // written INLINE here would be a different matter and would redden the gate.
+  const onFieldCreated = (field: ProjectField) =>
+    fieldRead.patch(project.id, (fs) => [...fs, field])
+
+  const onFieldUpdated = (updated: ProjectField) =>
+    fieldRead.patch(project.id, (fs) => fs.map((f) => (f.id === updated.id ? updated : f)))
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   return (
@@ -292,6 +316,8 @@ export function ProjectShell() {
                 statusesPhase,
                 fields,
                 fieldsPhase,
+                onFieldCreated,
+                onFieldUpdated,
                 onStatusCreated,
                 onStatusUpdated,
                 onStatusesReordered,
