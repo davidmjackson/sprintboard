@@ -45,7 +45,8 @@ branch reddens the gate for whoever comes next.
 **So the fixed-field mapping is extracted first**, into a pure `ticketInput(parsed)` local to
 `CreateTicketDialog.tsx`. It carries five of the eight points (`description?.trim() || undefined`
 is two, `acceptanceCriteria?.trim() || undefined` is two, the `storyPoints` ternary is one),
-taking `onSubmit` to 3 before the new work and to **5 after** it.
+taking `onSubmit` to 3 before the new work and to **6 after** it — two new branches plus the `??`
+that §3 spends to decouple the parse from `defaultValues`.
 
 That extraction is pure motion, and it is protected by a test that already exists and is not being
 edited: `CreateTicketDialog.test.tsx`'s "creates a ticket with parsed fields" asserts
@@ -55,8 +56,17 @@ the evidence.
 
 ## 3. Where the draft values live: **react-hook-form**, as a record
 
-`CreateTicketSchema` gains `custom: z.record(z.string(), z.string())`, with `defaultValues.custom
-= {}`. Each control registers as `custom.<field.id>`.
+`CreateTicketSchema` gains `custom: z.record(z.string(), z.string()).optional()`, with
+`defaultValues.custom = {}`. Each control registers as `custom.<field.id>`.
+
+**Two arguments, and `.optional()`, both measured rather than recalled.** This project is on
+**zod 4**, where `z.record` takes a key schema and a value schema. And `onSubmit` calls
+`CreateTicketSchema.parse(values)`, which **throws** — verified by running it — when `custom` is
+absent. A required `custom` would therefore make the whole submit path depend on
+`defaultValues.custom = {}` continuing to exist, and the failure mode of deleting that line is a
+rejected promise and a dialog that silently does nothing. `.optional()` plus `parsed.custom ?? {}`
+removes the coupling for one cyclomatic point, which the §2 budget can afford. The default is still
+supplied, because the inputs need it to stay controlled — but nothing now *depends* on it.
 
 **Keyed by `id`, not `slug`.** `field_id` is what the value row's foreign key stores; the slug is
 a second identifier that would have to be mapped back. Field ids are uuids, which contain no `.`,
