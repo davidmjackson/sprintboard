@@ -59,6 +59,20 @@ describe('CreateTicketCustomFields', () => {
     expect(screen.getByLabelText('Go live')).toBeInTheDocument()
   })
 
+  it('renders the controls in the same DOM order as the fields array', () => {
+    // `listProjectFields` sorts by `(created_at, slug)` and the shell passes that list straight
+    // through — the database decides the order, and this component is supposed to preserve it.
+    // A raw DOM query in document order, not `getByLabelText` per field: every per-field
+    // assertion elsewhere in this file is order-agnostic by design, so none of them would
+    // notice `fields.map` being replaced with a reversed copy. Each `FormLabel` is a single
+    // text node, so reading `textContent` here is not the composed-accessible-name hazard
+    // CLAUDE.md warns about — it is one label's own text, exactly.
+    const { container } = render(<Harness fields={[DATE, TEXT, NUMBER]} fieldsPhase="loaded" />)
+
+    const labels = Array.from(container.querySelectorAll('label')).map((el) => el.textContent)
+    expect(labels).toEqual(['Go live', 'Customer ref', 'Priority level'])
+  })
+
   it('renders each type as its own control', () => {
     render(<Harness fields={[PARAGRAPH, NUMBER, DATE, SELECT]} fieldsPhase="loaded" />)
 
