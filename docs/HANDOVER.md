@@ -36,7 +36,7 @@ answer:
 |---|---|---|---|
 | 1 — the `project_fields` table and the field list | SPRIN-90 | **Done** | A, applied |
 | 2 — add and rename a custom field | SPRIN-91 | **Done** | B (grants), applied |
-| 3 — values on the ticket detail sidebar | **SPRIN-88 ← next** | To Do | C |
+| 3 — values on the ticket detail sidebar | **SPRIN-88 ← IN FLIGHT** | In Progress | C, **applied** |
 | 4 — values on the create-ticket dialog | SPRIN-89 | To Do | — |
 | 5 — single-select fields | SPRIN-92 | To Do | D |
 | 6 — delete a field, with its value count | SPRIN-93 | To Do | grants |
@@ -49,6 +49,52 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 57 — SPRIN-88 started, migration applied, no PR yet (branch `sprin-88-ticket-field-values`)
+
+**Ended early because David's terminal needed a restart — not a blocker, and nothing is lost.
+The one fact to carry: the database is AHEAD of `main`.** `ticket_field_values` is **live**,
+applied 2026-08-07, while the branch carrying its spec and migration is pushed but **unmerged**.
+Verified from the catalogue rather than the editor's success message: RLS on, force off, four
+`tfv_owner_*` policies all using `(select auth.uid())`, table grants `authenticated=rdDxtm` and
+`anon=rDxtm` (neither carrying `a` or `w` at table level), and exactly eight column rows at
+`authenticated=aw`. **Do not re-apply it.** If the branch is ever abandoned the table must be
+dropped by hand — nothing else will do it.
+
+**No application code exists yet.** Spec and migration only, two commits. `database.types.ts` has
+**not** been regenerated, so nothing can compile against the new table until it is — that is the
+first task on resuming, before any implementation.
+
+**The migration departs from the epic design's §3.4 deliberately.** PostgREST compiles
+`.upsert(row)` to `INSERT … ON CONFLICT DO UPDATE SET c = excluded.c` for *every* column in the
+payload, and Postgres requires UPDATE privilege on every column in a SET list. The payload must
+carry `ticket_id, project_id, field_id, field_type` because the INSERT needs them — so the narrow
+column grant the epic design implied would let the **first** write to a field succeed and every
+later one fail with `42501`. UPDATE is therefore granted on all eight columns and the control
+moved to the constraints: `tfv_type_fk` refuses any `field_type` that is not the definition's
+own, the composite fks carry `project_id` so a row cannot be re-pointed at another project's
+ticket or field, and `tfv_owner_update`'s `WITH CHECK` re-tests ownership on the post-image.
+**Three live tests are owed for that argument and are not yet written** — a mismatched
+`field_type` earning `23503`, a cross-project `field_id` earning `23503`, and a wrong-column-for-
+the-type earning `23514`, each asserting the constraint *name* because three constraints here can
+all produce `23503`.
+
+**One open decision, asked and not answered: the fk indexes.** Applying the migration added four
+INFO lints — `unindexed_foreign_keys` on all three tfv foreign keys plus `unused_index` on the
+index it shipped, which covers none of them. The index rule was derived wrongly (from
+`pg_constraint` without ever reading `pg_indexes`), corrected in a follow-up commit, and is now
+right in both the spec and the migration: **an fk's columns must be a prefix of some index's
+columns**, and `tickets_epic_fk` being flagged despite `tickets_epic_idx (parent_epic_id)`
+existing settles it. The finding underneath is that **there is no zero-lint answer** — a new
+table has either unindexed foreign keys or unused indexes; `project_fields` reached zero only
+because its slug index happens to both cover its fk and be used. Three options with trade-offs
+are in the spec's §8; the lean was option 1 (cover all three). Nothing about correctness or
+tenancy depends on it and it is a follow-up `create index` either way.
+
+Validation that did work and is worth repeating: the CHECK constraint was exercised as a `SELECT`
+over a twelve-row truth table before the SQL left the session (all five type arms, `else false`,
+and both the two-columns and no-columns edges), and every statement type was parse-checked by
+running it under the read-only MCP and reading the SQLSTATE — **25006, never 42601**.
 
 ### Session 56 — SPRIN-91, add and rename a custom field (PR #93, `106af27`)
 
