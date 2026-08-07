@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   VALUE_COLUMN,
+  applyValueWrite,
   clearTicketFieldValue,
+  fieldValueText,
   listTicketFieldValues,
   parseFieldNumber,
   parseFieldValue,
   setTicketFieldValue,
 } from './ticket-field-values'
-import { CUSTOM_FIELD_TYPES, type CustomFieldType } from './domain'
+import { CUSTOM_FIELD_TYPES, type CustomFieldType, type TicketFieldValue } from './domain'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
@@ -72,6 +74,21 @@ const ROWS = [
     value_option: null,
   },
 ]
+
+/** One stored value row, defaulting to all-null so each test names only the column it means. */
+function value(overrides: Partial<TicketFieldValue> = {}): TicketFieldValue {
+  return {
+    ticket_id: 't1',
+    project_id: 'p1',
+    field_id: 'f-9a3',
+    field_type: 'text',
+    value_text: null,
+    value_number: null,
+    value_date: null,
+    value_option: null,
+    ...overrides,
+  } as TicketFieldValue
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -364,6 +381,115 @@ describe('parseFieldValue', () => {
 
   it('refuses a non-numeric number with a message the row can render', () => {
     expect(parseFieldValue('number', 'abc')).toEqual({ ok: false, message: 'Numbers only' })
+  })
+})
+
+/**
+ * `fieldValueText` and `applyValueWrite` had NO direct tests until a review found it — both
+ * rested entirely on one component test that starts from an empty value list, so the REPLACE
+ * path and every column but `value_text` were unexercised. Four mutations survived in that
+ * state; each has a test below now.
+ */
+describe('fieldValueText', () => {
+  it("reads the column the ROW's own field_type names, for every type", () => {
+    // The mutation that survived: `return value.value_text` regardless of type. A fixture set
+    // where only `text` carried a value could not tell that apart from correct behaviour.
+    expect(fieldValueText(value({ field_type: 'text', value_text: 'ACME-1' }))).toBe('ACME-1')
+    expect(fieldValueText(value({ field_type: 'paragraph', value_text: 'Two\nlines' }))).toBe(
+      'Two\nlines',
+    )
+    expect(fieldValueText(value({ field_type: 'number', value_number: -2.5 }))).toBe('-2.5')
+    expect(fieldValueText(value({ field_type: 'date', value_date: '2026-08-07' }))).toBe(
+      '2026-08-07',
+    )
+    expect(fieldValueText(value({ field_type: 'select', value_option: 'red' }))).toBe('red')
+  })
+
+  it('renders a stored ZERO as "0", not as empty', () => {
+    // The defect the function's own docblock names — "a `value || ''` here would erase it" —
+    // and which no fixture exercised, so the prose was doing a test's job. `0` is a legitimate
+    // value for a number field and is indistinguishable from "no value" once erased.
+    expect(fieldValueText(value({ field_type: 'number', value_number: 0 }))).toBe('0')
+  })
+
+  it('renders an empty stored string as empty without claiming absence', () => {
+    expect(fieldValueText(value({ field_type: 'text', value_text: '' }))).toBe('')
+  })
+
+  it('renders no value at all as empty', () => {
+    expect(fieldValueText(undefined)).toBe('')
+  })
+
+  it('renders a null column as empty rather than as "null"', () => {
+    expect(fieldValueText(value({ field_type: 'text', value_text: null }))).toBe('')
+  })
+})
+
+describe('applyValueWrite', () => {
+  const keys = { ticketId: 't1', projectId: 'p1', fieldId: 'f-9a3' }
+  const existing = value({ field_id: 'f-9a3', field_type: 'text', value_text: 'OLD' })
+  const untouched = value({ field_id: 'f-2c7', field_type: 'number', value_number: 4.5 })
+
+  it('REPLACES an existing value rather than leaving the old one', () => {
+    // The survivor that mattered most: a reducer that inserts but silently refuses to replace
+    // kept the whole suite green, because the only test of this path began from an empty list.
+    // Editing a field that already has a value is the common case, and it would have shown the
+    // stale value until reload.
+    const next = applyValueWrite([existing, untouched], keys, { fieldType: 'text', value: 'NEW' })
+    expect(next).toHaveLength(2)
+    expect(fieldValueText(next.find((v) => v.field_id === 'f-9a3'))).toBe('NEW')
+  })
+
+  it('leaves every OTHER field alone', () => {
+    const next = applyValueWrite([existing, untouched], keys, { fieldType: 'text', value: 'NEW' })
+    expect(next.find((v) => v.field_id === 'f-2c7')).toEqual(untouched)
+  })
+
+  it("stamps the write's OWN field_type on the patched row", () => {
+    // Survivor: `field_type: 'text'` hardcoded. User-visible, because `fieldValueText` reads
+    // the column that field_type names — so after saving a number, the control would blank.
+    const next = applyValueWrite([], keys, { fieldType: 'number', value: -2.5 })
+    expect(next[0]!.field_type).toBe('number')
+    expect(next[0]!.value_number).toBe(-2.5)
+    expect(fieldValueText(next[0])).toBe('-2.5')
+  })
+
+  it('carries the ticket and project it was given', () => {
+    // Survivor: both were replaceable with literals and nothing noticed, because the render
+    // path reads only `field_id` and the value column. Harmless today; wrong the moment
+    // anything else reads the patched row.
+    const next = applyValueWrite([], keys, { fieldType: 'text', value: 'x' })
+    expect(next[0]).toMatchObject({ ticket_id: 't1', project_id: 'p1', field_id: 'f-9a3' })
+  })
+
+  it('populates ONLY the column the type calls for', () => {
+    const next = applyValueWrite([], keys, { fieldType: 'date', value: '2026-08-07' })
+    expect(next[0]).toMatchObject({
+      value_text: null,
+      value_number: null,
+      value_date: '2026-08-07',
+      value_option: null,
+    })
+  })
+
+  it('REMOVES the row on a clear, leaving the others', () => {
+    const next = applyValueWrite([existing, untouched], keys, null)
+    expect(next.map((v) => v.field_id)).toEqual(['f-2c7'])
+  })
+
+  it('is idempotent — applying the same write twice yields the same list', () => {
+    // The docblock claims this ("derives from the RULE rather than from the previous state"),
+    // and nothing applied a write twice. It is what makes a retry after an unclear failure safe.
+    const write = { fieldType: 'text', value: 'NEW' } as const
+    const once = applyValueWrite([existing], keys, write)
+    expect(applyValueWrite(once, keys, write)).toEqual(once)
+    const cleared = applyValueWrite([existing], keys, null)
+    expect(applyValueWrite(cleared, keys, null)).toEqual(cleared)
+  })
+
+  it('preserves a stored zero through the round trip', () => {
+    const next = applyValueWrite([], keys, { fieldType: 'number', value: 0 })
+    expect(fieldValueText(next[0])).toBe('0')
   })
 })
 

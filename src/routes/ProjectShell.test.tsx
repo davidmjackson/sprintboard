@@ -15,6 +15,11 @@ import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tic
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
 import { listProjectFields } from '@/lib/project-fields'
 import {
+  clearTicketFieldValue,
+  listTicketFieldValues,
+  setTicketFieldValue,
+} from '@/lib/ticket-field-values'
+import {
   createProjectStatus,
   deleteProjectStatus,
   listProjectStatuses,
@@ -72,6 +77,17 @@ vi.mock('@/lib/project-fields', async (orig) => ({
   createProjectField: vi.fn(),
   renameProjectField: vi.fn(),
 }))
+// SPRIN-88's per-TICKET read, and the same argument one layer down. It only fires when the
+// project has custom fields, so today it is reachable from exactly one test below — but the
+// moment a fixture here grows a field, an unmocked `listTicketFieldValues` would issue a live
+// request per ticket opened, invisibly, because the section catches the rejection and renders
+// its failure state. Mocked now rather than after the next story adds the second such test.
+vi.mock('@/lib/ticket-field-values', async (orig) => ({
+  ...(await orig<typeof import('@/lib/ticket-field-values')>()),
+  listTicketFieldValues: vi.fn(),
+  setTicketFieldValue: vi.fn(),
+  clearTicketFieldValue: vi.fn(),
+}))
 
 // What `seed_project_statuses()` writes for every new project, so the default mock describes
 // a project the database could actually produce. It resolved `[]` when Task 4 first wired this
@@ -89,7 +105,12 @@ const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
 const mockListStatuses = vi.mocked(listProjectStatuses)
 const mockListFields = vi.mocked(listProjectFields)
+const mockListValues = vi.mocked(listTicketFieldValues)
+const mockSetValue = vi.mocked(setTicketFieldValue)
 beforeEach(() => {
+  mockListValues.mockReset().mockResolvedValue([])
+  mockSetValue.mockReset().mockResolvedValue({ ok: true })
+  vi.mocked(clearTicketFieldValue).mockReset().mockResolvedValue({ ok: true })
   mockListFields.mockReset().mockResolvedValue([])
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
@@ -1066,6 +1087,81 @@ describe('ProjectShell', () => {
     await u.selectOptions(picker, 'parked')
     await waitFor(() =>
       expect(vi.mocked(updateTicket)).toHaveBeenCalledWith('tA', { status: 'parked' }),
+    )
+  })
+
+  /**
+   * THE SAME SEAM A THIRD TIME, for SPRIN-88's custom fields — and this one was MISSED until
+   * two independent reviewers found it by mutation.
+   *
+   * The chain is four components deep: `ProjectShell` reads the definitions,
+   * `TicketDetailDialog` forwards them, `TicketDetailSidebar` forwards them again, and
+   * `TicketCustomFields` renders them. Every one of those has its own tests, and every one of
+   * those tests passes the props BY HAND — so per-component mocking is blind to the seam by
+   * construction, exactly as the two paragraphs above record for sprints and statuses.
+   *
+   * Measured, not assumed. Before this test existed, all three of these left 1094 unit tests
+   * green:
+   *   - `fields={[]}` at the shell's `<TicketDetailDialog>` call site
+   *   - `fields={[]}` at the dialog's `<TicketDetailSidebar>` call site
+   *   - the entire `<TicketCustomFields …/>` element deleted from the sidebar
+   * The third was caught only by `@typescript-eslint/no-unused-vars`, and the first dodged even
+   * that. So the only thing standing between "shipped" and "the section never renders for any
+   * user" was an unused-variable rule. There is no e2e coverage of custom fields either.
+   *
+   * The props are optional and UNDEFAULTED at both intermediate hops (deliberately — each
+   * destructuring default costs a cyclomatic point and the dialog is at 10 of 10), which is
+   * what makes forgetting one silent rather than a type error.
+   */
+  it("renders the project's custom fields in the detail dialog, with values (real wiring)", async () => {
+    const u = userEvent.setup()
+    // The slug is NOT the lowercased name — `Customer ref` would derive `customer_ref`. A
+    // fixture where they agree cannot tell a component rendering `field.name` from one
+    // rendering `field.slug`, and AC1 is precisely about the name.
+    const field = {
+      id: 'f-9a3',
+      project_id: 'p1',
+      slug: 'cust_ref',
+      name: 'Customer ref',
+      type: 'text',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+    mockListFields.mockResolvedValue([field])
+    mockListValues.mockResolvedValue([
+      {
+        ticket_id: 'tA',
+        project_id: 'p1',
+        field_id: 'f-9a3',
+        field_type: 'text',
+        value_text: 'ACME-1',
+        value_number: null,
+        value_date: null,
+        value_option: null,
+      },
+    ] as never)
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Rendered at all only because BOTH `fields` and `fieldsPhase` arrived: with `fields={[]}`
+    // the section renders nothing, and with `fieldsPhase` missing it would default to 'loaded'
+    // over an empty list — the same nothing.
+    const control = await screen.findByRole('button', { name: 'Edit Customer ref' })
+    // And the ticket's OWN value, which can only have come from the per-ticket read the
+    // section issues for the ticket the shell selected.
+    expect(control).toHaveTextContent('ACME-1')
+    expect(mockListValues).toHaveBeenCalledWith('tA')
+
+    // The seam is live rather than merely painted: editing commits through the real write
+    // layer with the ticket's id and project, both taken from the row the shell handed down.
+    await u.click(control)
+    await u.type(screen.getByRole('textbox', { name: 'Customer ref' }), '-2')
+    await u.keyboard('{Enter}')
+    await waitFor(() =>
+      expect(mockSetValue).toHaveBeenCalledWith(
+        expect.objectContaining({ ticketId: 'tA', projectId: 'p1', fieldId: 'f-9a3' }),
+      ),
     )
   })
 

@@ -23,9 +23,10 @@ function toDraft(limit: number | null): string {
  *
  * **Deliberately NOT built on `EditableText`,** for three reasons any one of which decides
  * it: that component commits a raw string with nowhere to parse-and-refuse before writing;
- * its numeric mode hardcodes `min={0}`, which contradicts the rule this adds; and its view
- * mode is a button, whereas a settings field should show its value and be directly
- * editable. There is also a recorded hazard in reusing it — its own `draft !== value` guard
+ * ~~its numeric mode hardcodes `min={0}`~~ (**no longer true — SPRIN-88 moved that bound to an
+ * explicit `min` prop, because custom `number` fields legitimately take negatives; the other
+ * two reasons still stand on their own**); and its view mode is a button, whereas a settings
+ * field should show its value and be directly editable. There is also a recorded hazard in reusing it — its own `draft !== value` guard
  * is unpinned and unpinnable from `StatusSettings.test.tsx`, because the row's trim guard
  * shadows it. The no-op guard below is written explicitly and tested directly instead.
  *

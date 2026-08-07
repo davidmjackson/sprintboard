@@ -152,6 +152,18 @@ describe('AC1 — each custom field renders a control labelled with its name', (
     expect(screen.getByLabelText('Go live')).toHaveValue('2026-08-07')
   })
 
+  it("renders a select field's STORED value, not just an empty disabled control", async () => {
+    // `value_option` is the one `VALUE_COLUMN` entry whose read path had no end-to-end
+    // coverage: `select` appeared only in tests that supplied no value, so a control hardcoded
+    // to `value=""` with a single placeholder option passed both of them.
+    mockList.mockResolvedValue([
+      value({ field_id: 'f-1d8', field_type: 'select', value_option: 'red' }),
+    ])
+    renderFields({ fields: [SELECT] })
+
+    expect(await screen.findByRole('combobox', { name: 'Colour' })).toHaveValue('red')
+  })
+
   it('renders select DISABLED, because story 5 owns its options', async () => {
     // Rendering nothing for `select` would be a field a user created and could not find:
     // SPRIN-91's add form offers all five types today. Disabled is the honest state — there is
@@ -206,6 +218,45 @@ describe('AC2 — setting a value persists it', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Edit Priority level' }))
     expect(screen.getByRole('spinbutton', { name: 'Priority level' })).not.toHaveAttribute('min')
+  })
+
+  it('keeps showing a NUMBER after a successful save, not a blank', async () => {
+    // The optimistic row is built by `applyValueWrite`, which stamps `field_type` — and
+    // `fieldValueText` reads the column that names. A row stamped `'text'` after a number save
+    // routes to `value_text` (null) and the control silently blanks. Every other rendered-value
+    // assertion in this file reads rows that came from `mockList`, never from a patch, so none
+    // of them could see it.
+    const user = userEvent.setup()
+    renderFields({ fields: [NUMBER] })
+
+    await user.click(await screen.findByRole('button', { name: 'Edit Priority level' }))
+    await user.type(screen.getByRole('spinbutton', { name: 'Priority level' }), '-2.5')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Edit Priority level' })).toHaveTextContent('-2.5'),
+    )
+  })
+
+  it('REPLACES an existing value on screen rather than showing the stale one', async () => {
+    // Starts from a NON-empty list, unlike its sibling below. Editing a field that already has
+    // a value is the common case and was the untested half of `applyValueWrite`.
+    const user = userEvent.setup()
+    mockList.mockResolvedValue([value({ field_id: 'f-9a3', value_text: 'OLD' })])
+    renderFields({ fields: [TEXT] })
+
+    const control = await screen.findByRole('button', { name: 'Edit Customer ref' })
+    expect(control).toHaveTextContent('OLD')
+
+    await user.click(control)
+    await user.clear(screen.getByRole('textbox', { name: 'Customer ref' }))
+    await user.type(screen.getByRole('textbox', { name: 'Customer ref' }), 'NEW')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Edit Customer ref' })).toHaveTextContent('NEW'),
+    )
+    expect(screen.getByRole('button', { name: 'Edit Customer ref' })).not.toHaveTextContent('OLD')
   })
 
   it('shows the new value without refetching', async () => {
@@ -279,6 +330,22 @@ describe('AC6 — a project with no custom fields renders nothing', () => {
   it('does not even read values for a project with no fields', () => {
     renderFields({ fields: [] })
     expect(mockList).not.toHaveBeenCalled()
+  })
+
+  it("defaults fieldsPhase to 'loaded', so an UNWIRED dialog renders nothing at all", () => {
+    // The DEFAULT, pinned — `renderFields` always passes `fieldsPhase` explicitly, so nothing
+    // else in this file exercises the value the component picks when a caller says nothing.
+    // That default is deliberately the opposite of `sprintsPhase`'s and the component's own
+    // docblock spends a paragraph arguing for it; `TicketDetailDialog.test.tsx` has the
+    // equivalent test for `statusesPhase`, so the pattern was established and this was missed.
+    //
+    // Mutating the default to 'loading' left 1094 tests green, and the consequence is exactly
+    // what the docblock warns of: a dialog rendered without field wiring shows a "Loading…"
+    // line that never resolves, because no read is ever issued for an empty field list.
+    const { container } = render(<TicketCustomFields ticket={TICKET} />)
+
+    expect(container).toBeEmptyDOMElement()
+    expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
   })
 })
 

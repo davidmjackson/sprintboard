@@ -2080,27 +2080,33 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         expect(refused.error?.code).toBe('23514')
         expect(refused.error?.message).toMatch(/tfv_one_value_matching_type/)
 
-        const accepted = await a
-          .from('ticket_field_values')
-          .insert({
-            ticket_id: ticketA,
-            project_id: projectA,
-            field_id: fieldOf[c.type]!,
-            field_type: c.type,
-            ...c.right,
-          })
-          .select('field_id')
-        expect(accepted.error).toBeNull()
-        expect(accepted.data).toHaveLength(1)
-
-        // Leaves the table as it found it: the PK is (ticket_id, field_id) and later tests
-        // insert against the same pair, so a surviving row would turn their inserts into 23505
-        // and report a constraint failure that has nothing to do with what they assert.
-        await a
-          .from('ticket_field_values')
-          .delete()
-          .eq('ticket_id', ticketA)
-          .eq('field_id', fieldOf[c.type]!)
+        try {
+          const accepted = await a
+            .from('ticket_field_values')
+            .insert({
+              ticket_id: ticketA,
+              project_id: projectA,
+              field_id: fieldOf[c.type]!,
+              field_type: c.type,
+              ...c.right,
+            })
+            .select('field_id')
+          expect(accepted.error).toBeNull()
+          expect(accepted.data).toHaveLength(1)
+        } finally {
+          // Leaves the table as it found it: the PK is (ticket_id, field_id) and later tests
+          // insert against the same pair, so a surviving row would turn their inserts into
+          // 23505 and report a constraint failure with nothing to do with what they assert.
+          //
+          // In a `finally` because a FAILED assertion above is exactly when the row survives —
+          // one real failure would cascade into a run of misleading unrelated ones, which is
+          // how a single defect gets reported as five.
+          await a
+            .from('ticket_field_values')
+            .delete()
+            .eq('ticket_id', ticketA)
+            .eq('field_id', fieldOf[c.type]!)
+        }
       })
     }
 
@@ -2177,13 +2183,30 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * that only the ticket would then be foreign. CI disagreed and returned **42501, not
      * 23503**: `tfv_owner_insert` tests ownership through `project_id` alone, so a row claiming
      * another tenant's project is refused by the policy and the foreign key is never reached.
-     * A cross-TENANT row therefore cannot isolate any foreign key on this table at all.
      *
-     * That reframes what the composite fk actually buys, and it is worth stating precisely
-     * because the story's tenancy argument rests on it. Against another TENANT, RLS is the
-     * defence and it fires first. `tfv_ticket_fk` defends the case RLS cannot see: the SAME
-     * owner, two of their OWN projects, a value row pointing at a ticket from the wrong one.
-     * That is the row this test builds, and it is a mistake the app could genuinely make.
+     * **The precise rule, because the first correction over-generalised it and a reviewer
+     * caught that too.** It is NOT "a cross-tenant row cannot isolate a foreign key" — the AC5
+     * test twenty lines above is a live counterexample, inserting tenant B's `field_id` under
+     * A's own `project_id` and earning 23503 on `tfv_field_fk`. What is true is narrower and
+     * more useful:
+     *
+     *   **RLS on this table reads exactly ONE of the four identity columns — `project_id`.**
+     *   `ticket_id`, `field_id` and `field_type` are invisible to every policy and are governed
+     *   by the foreign keys alone.
+     *
+     * So a row naming another tenant's PROJECT is refused by the policy first; a row naming
+     * your OWN project but a victim's ticket or field passes RLS completely and is stopped only
+     * by a composite fk. The composite fks are therefore cross-tenant controls too — for the
+     * three columns RLS never looks at.
+     *
+     * This matters for SPRIN-75 rather than for today. The over-general version is exactly the
+     * reasoning that would license narrowing these to `references tickets(id)` while rewriting
+     * policies to a membership check — which would leave the three unwatched columns with no
+     * cross-tenant control at all.
+     *
+     * This test picks the SAME-owner case deliberately: two of A's own projects, where every
+     * project involved passes the ownership test, so the fk is unambiguously the only thing
+     * that can refuse it.
      */
     it("refuses a ticket from another of the owner's own projects", async () => {
       const elsewhere = await throwawayProject('SPRIN-88 foreign ticket')
@@ -2215,6 +2238,91 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         // In a `finally` so a failed assertion above cannot strand a sixth.
         await a.from('projects').delete().eq('id', elsewhere)
       }
+    })
+
+    /**
+     * THE UPSERT PATH — and it is the single most important test in this block, because it is
+     * the only one that exercises what the eight-column UPDATE grant exists for.
+     *
+     * Three independent reviewers found the same hole: every other write here is a plain
+     * `.insert()`, which needs only INSERT privilege and never builds a SET list. So
+     * `grant update (…eight columns…)` could be narrowed to the four value columns and EVERY
+     * test in this block would stay green — while the app 42501s on the second write to any
+     * field, which is the exact failure the grant was widened to prevent and the subject of
+     * the migration's longest comment. A claim defended only by prose is not defended.
+     *
+     * The payload below is deliberately the FIVE-COLUMN payload `setTicketFieldValue` actually
+     * sends, and `onConflict` is its literal conflict target, so this covers three things at
+     * once: the grant, the `ON CONFLICT DO UPDATE` compilation, and the fact that
+     * `(ticket_id, field_id)` really is the constraint PostgREST can infer (a wrong target
+     * raises 42P10 at runtime, which no mocked test could see).
+     */
+    it('accepts a SECOND write to the same field, updating it in place', async () => {
+      const row = {
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldOf.paragraph!,
+        field_type: 'paragraph' as const,
+      }
+      try {
+        const first = await a
+          .from('ticket_field_values')
+          .upsert(
+            { ...row, value_text: 'first' },
+            { onConflict: 'ticket_id,field_id', ignoreDuplicates: false },
+          )
+        expect(first.error).toBeNull()
+
+        // The one that would 42501 under a narrow column grant: this compiles to
+        // `INSERT … ON CONFLICT (ticket_id, field_id) DO UPDATE SET ticket_id = excluded.ticket_id,
+        // project_id = …, field_id = …, field_type = …, value_text = …` — five columns in the
+        // SET list, four of which are identity columns a value-columns-only grant would omit.
+        const second = await a
+          .from('ticket_field_values')
+          .upsert(
+            { ...row, value_text: 'second' },
+            { onConflict: 'ticket_id,field_id', ignoreDuplicates: false },
+          )
+        expect(second.error).toBeNull()
+
+        // It UPDATED rather than inserting a duplicate or silently doing nothing. Row count
+        // and value together: `ignoreDuplicates: true` would leave exactly one row holding
+        // 'first', which a count-only assertion could not tell from success.
+        const after = await adminClient()
+          .from('ticket_field_values')
+          .select('value_text')
+          .eq('ticket_id', ticketA)
+          .eq('field_id', fieldOf.paragraph!)
+        expect(after.data).toHaveLength(1)
+        expect(after.data![0]!.value_text).toBe('second')
+      } finally {
+        await a
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketA)
+          .eq('field_id', fieldOf.paragraph!)
+      }
+    })
+
+    it("refuses an unrecognised field_type, reaching the check's else-false arm", async () => {
+      // The migration comments claim "the live suite covers all five arms plus this one, so
+      // `else false` is proven reachable-and-refusing rather than assumed." It did not — every
+      // field_type literal in this file was one of the five known types. That was the
+      // comment-as-control failure the same file warns against, so here is the test.
+      //
+      // 23514 rather than 23503: CHECK constraints are evaluated during the row insert, while
+      // foreign keys are AFTER-triggers, so the check refuses this before `tfv_type_fk` is
+      // consulted even though the field_type matches no definition either.
+      const { error } = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldOf.text!,
+        field_type: 'colour',
+        value_text: 'x',
+      })
+
+      expect(error?.code).toBe('23514')
+      expect(error?.message).toMatch(/tfv_one_value_matching_type/)
     })
 
     // ---- RLS: a new table with new policies, on a two-tenant fixture ----
@@ -2276,6 +2384,57 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         // exactly the privilege A used to seed this row. That is the discrimination a bare
         // "expect 42501" would skip: the two controls share a SQLSTATE.
         expect(error?.code).toBe('42501')
+        // And asserted on the MESSAGE too, which is the only channel that names the author.
+        // Postgres says "new row violates row-level security policy" for a WITH CHECK and
+        // "permission denied for table" for a missing grant. The sibling anon test asserts the
+        // other one, so the pair cannot both pass under a single mistaken widening.
+        expect(error?.message).toMatch(/row-level security/i)
+      })
+
+      it('B cannot UPDATE or DELETE through a widened privilege either', async () => {
+        // Both are FILTERED by the USING clause rather than refused, so these assert row
+        // COUNTS. Kept distinct from the update/delete tests below, which check A's row
+        // survives; this one is about B's own view of what it changed.
+        const updated = await b
+          .from('ticket_field_values')
+          .update({ value_text: 'pwned' })
+          .eq('field_id', planted)
+          .select()
+        expect(updated.error).toBeNull()
+        expect(updated.data).toEqual([])
+
+        const deleted = await b
+          .from('ticket_field_values')
+          .delete()
+          .eq('field_id', planted)
+          .select()
+        expect(deleted.error).toBeNull()
+        expect(deleted.data).toEqual([])
+      })
+
+      it('the owner cannot move a value row into a project they do not own', async () => {
+        // `tfv_owner_update`'s WITH CHECK, which §3 names as one of the four controls and which
+        // had NO test at all — every other constraint test here is an INSERT. The UPDATE path
+        // is the one that needed proving precisely because the UPDATE *grant* is deliberately
+        // wide: all eight columns are writable, so nothing but this clause stops A rewriting
+        // `project_id` to a stranger's project.
+        //
+        // USING passes (the pre-image row is A's); the post-image names B's project, which A
+        // does not own, so WITH CHECK refuses it.
+        const { error } = await a
+          .from('ticket_field_values')
+          .update({ project_id: projectB })
+          .eq('ticket_id', ticketA)
+          .eq('field_id', planted)
+
+        expect(error?.code).toBe('42501')
+        expect(error?.message).toMatch(/row-level security/i)
+
+        const after = await adminClient()
+          .from('ticket_field_values')
+          .select('project_id')
+          .eq('field_id', planted)
+        expect(after.data![0]!.project_id).toBe(projectA)
       })
 
       it("B's UPDATE matches no row, and A's value is untouched", async () => {
@@ -2329,6 +2488,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         // The write is refused by the missing GRANT before any policy is consulted: the
         // migration gives `anon` no INSERT. A different author of the same SQLSTATE from the
         // case above, which is why both are asserted rather than one standing in for both.
+        //
+        // **The MESSAGE is what proves which author it is, and asserting only the code left a
+        // real hole**: this payload names `projectA` while `auth.uid()` is NULL for anon, so
+        // the POLICY would also yield 42501 — meaning `grant insert (…) to anon` would have
+        // left the whole suite green. "permission denied for table" is the grant;
+        // "new row violates row-level security policy" is the policy.
         const write = await anon.from('ticket_field_values').insert({
           ticket_id: ticketA,
           project_id: projectA,
@@ -2337,6 +2502,21 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
           value_text: 'pwned',
         })
         expect(write.error?.code).toBe('42501')
+        expect(write.error?.message).toMatch(/permission denied/i)
+
+        // UPDATE and DELETE were untested, so widening anon to full CRUD would have gone
+        // unnoticed — RLS still filters them to nothing, so every count assertion would hold.
+        // Only the grant's absence produces this message.
+        const update = await anon
+          .from('ticket_field_values')
+          .update({ value_text: 'pwned' })
+          .eq('field_id', planted)
+        expect(update.error?.code).toBe('42501')
+        expect(update.error?.message).toMatch(/permission denied/i)
+
+        const del = await anon.from('ticket_field_values').delete().eq('field_id', planted)
+        expect(del.error?.code).toBe('42501')
+        expect(del.error?.message).toMatch(/permission denied/i)
       })
     })
 

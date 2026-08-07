@@ -75,8 +75,16 @@ create table ticket_field_values (
   --
   -- The `else false` is deliberate: a type this check does not know about stores NOTHING,
   -- rather than storing anything. A sixth field type must therefore edit this constraint,
-  -- which is the intended failure and not an obstacle. The live suite covers all five arms
-  -- plus this one, so `else false` is proven reachable-and-refusing rather than assumed.
+  -- which is the intended failure and not an obstacle.
+  --
+  -- The live suite covers all five arms plus this one, so `else false` is proven
+  -- reachable-and-refusing rather than assumed. **That sentence was written before the test
+  -- existed** — a review found every field_type literal in the suite was one of the five known
+  -- types, making this the comment-as-control failure this repo has a rule against. The test is
+  -- now real ("refuses an unrecognised field_type, reaching the check's else-false arm"), and it
+  -- asserts 23514 rather than 23503 because CHECK constraints run during the row insert while
+  -- foreign keys are AFTER-triggers — so this arm refuses the row before tfv_type_fk is
+  -- consulted, even though the type matches no definition either.
   --
   -- "No value" is the ABSENCE of a row, not a row full of nulls. Clearing a field deletes its
   -- row, which is why this check can insist a value is present at all.
@@ -186,10 +194,22 @@ create policy tfv_owner_insert on ticket_field_values
                       where p.id = ticket_field_values.project_id
                         and p.owner_id = (select auth.uid())));
 
--- BOTH halves, and the WITH CHECK half is load-bearing here in a way it is not on
--- project_fields. USING filters which rows may be updated; WITH CHECK re-tests the POST-image.
--- Because the grant below permits UPDATE on project_id (see the grant block for why), WITH
--- CHECK is what stops a row being re-pointed at another owner's project by the update itself.
+-- BOTH halves stated. USING filters which rows may be updated; WITH CHECK re-tests the
+-- POST-image, and because the grant below permits UPDATE on project_id (see the grant block for
+-- why), it is what stops a row being re-pointed at another owner's project by the update itself.
+--
+-- CORRECTED AT REVIEW: this comment used to claim the WITH CHECK was "load-bearing here in a way
+-- it is not on project_fields". That was wrong twice. Postgres documents that when a policy
+-- defines no WITH CHECK, the USING expression is used for the post-image as well — so OMITTING
+-- it here would behave identically, and the clause is not falsifiable by deleting it. And
+-- fields_owner_update has the identical shape anyway (confirmed in pg_policies), so there was no
+-- contrast to draw. Stating it explicitly is still worth doing: it says what is intended rather
+-- than relying on a default, and it survives someone later narrowing the USING clause. But do
+-- not go looking for a mutation that proves it — there isn't one.
+--
+-- What DOES pin the post-image behaviour is the live test "the owner cannot move a value row
+-- into a project they do not own" in rls.integration.test.ts, added at the same review after it
+-- turned out §3 named this clause as a control and nothing exercised the UPDATE path at all.
 create policy tfv_owner_update on ticket_field_values
   for update
   using      (exists (select 1 from projects p
