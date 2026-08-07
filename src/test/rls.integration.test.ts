@@ -2168,21 +2168,53 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(error?.message).toMatch(/tfv_field_fk/)
     })
 
-    it("refuses a ticket that does not belong to the row's project", async () => {
-      // The mirror of AC5, isolating `tfv_ticket_fk` the same way: the field and the project
-      // agree (both B's), so `tfv_field_fk` passes and only the TICKET is foreign. Together the
-      // two cases are the whole of the composite-fk tenancy argument — one holds the field to
-      // the project, the other holds the ticket to it.
-      const { error } = await a.from('ticket_field_values').insert({
-        ticket_id: ticketA,
-        project_id: projectB,
-        field_id: fieldInB,
-        field_type: 'text',
-        value_text: 'cross-tenant',
-      })
+    /**
+     * The mirror of AC5, isolating `tfv_ticket_fk` — and the ONE case that has to stay inside
+     * a single tenant, which is the finding this test was rewritten for.
+     *
+     * **RLS's `WITH CHECK` is evaluated BEFORE foreign keys are validated.** The first draft
+     * pointed this row at project B (`project_id: projectB`, `ticket_id: ticketA`) reasoning
+     * that only the ticket would then be foreign. CI disagreed and returned **42501, not
+     * 23503**: `tfv_owner_insert` tests ownership through `project_id` alone, so a row claiming
+     * another tenant's project is refused by the policy and the foreign key is never reached.
+     * A cross-TENANT row therefore cannot isolate any foreign key on this table at all.
+     *
+     * That reframes what the composite fk actually buys, and it is worth stating precisely
+     * because the story's tenancy argument rests on it. Against another TENANT, RLS is the
+     * defence and it fires first. `tfv_ticket_fk` defends the case RLS cannot see: the SAME
+     * owner, two of their OWN projects, a value row pointing at a ticket from the wrong one.
+     * That is the row this test builds, and it is a mistake the app could genuinely make.
+     */
+    it("refuses a ticket from another of the owner's own projects", async () => {
+      const elsewhere = await throwawayProject('SPRIN-88 foreign ticket')
+      try {
+        const other = await a
+          .from('tickets')
+          .insert(ticketInsertPayload({ project_id: elsewhere, summary: 'Somewhere else' }))
+          .select('id')
+          .single()
+        expect(other.error).toBeNull()
 
-      expect(error?.code).toBe('23503')
-      expect(error?.message).toMatch(/tfv_ticket_fk/)
+        // `project_id` stays A's own, so `tfv_owner_insert` is SATISFIED and cannot be what
+        // refuses this — the point the 42501 above taught. The field is A's field in projectA,
+        // so `tfv_field_fk` is satisfied too. The ticket is the only thing that does not belong.
+        const { error } = await a.from('ticket_field_values').insert({
+          ticket_id: other.data!.id,
+          project_id: projectA,
+          field_id: fieldOf.text!,
+          field_type: 'text',
+          value_text: 'wrong project',
+        })
+
+        expect(error?.code).toBe('23503')
+        expect(error?.message).toMatch(/tfv_ticket_fk/)
+      } finally {
+        // Cleaned up here rather than left to teardown, which only deletes projectA and
+        // projectB — five throwaway projects from earlier blocks already leak into the shared
+        // database, and this suite's own history (five orphaned pairs) is why that matters.
+        // In a `finally` so a failed assertion above cannot strand a sixth.
+        await a.from('projects').delete().eq('id', elsewhere)
+      }
     })
 
     // ---- RLS: a new table with new policies, on a two-tenant fixture ----
