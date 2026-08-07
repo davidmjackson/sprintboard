@@ -5,6 +5,7 @@ import {
   PROJECT_TYPE_LABELS,
   ticketListLabels,
   type Project,
+  type ProjectField,
   type Ticket,
 } from '@/lib/domain'
 // Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
@@ -26,6 +27,11 @@ function tabClass({ isActive }: { isActive: boolean }): string {
 type ProjectShellHeaderProps = {
   project: Project
   ticketsPhase: ReadPhase
+  /** Forwarded to the create dialog (SPRIN-89), with NO default here — the defaults live in
+   *  `CreateTicketCustomFields`, because a destructuring default costs a cyclomatic point and
+   *  neither this component's consumer nor the dialog has one to spend. */
+  fields: ProjectField[]
+  fieldsPhase: ReadPhase
   /** Called with the created ticket so the shell can append it to its own list. */
   onTicketCreated: (ticket: Ticket) => void
 }
@@ -40,6 +46,8 @@ type ProjectShellHeaderProps = {
 export function ProjectShellHeader({
   project,
   ticketsPhase,
+  fields,
+  fieldsPhase,
   onTicketCreated,
 }: ProjectShellHeaderProps) {
   // The nav link and the tab's own empty state must word this the same way, so the wording is
@@ -79,7 +87,12 @@ export function ProjectShellHeader({
             The Board and Backlog carry the error and the Retry for this failed read, so the
             create affordance comes back on its own the moment the read recovers. */}
         {ticketsPhase === 'loaded' ? (
-          <CreateTicketDialog projectId={project.id} onCreated={onTicketCreated} />
+          <CreateTicketDialog
+            projectId={project.id}
+            fields={fields}
+            fieldsPhase={fieldsPhase}
+            onCreated={onTicketCreated}
+          />
         ) : null}
       </div>
       <nav className="flex gap-4">

@@ -1,35 +1,55 @@
-import { useForm } from 'react-hook-form'
+import { useForm, type UseFormSetError } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
+import type { z } from 'zod'
 
 import { createTicket } from '@/lib/tickets'
 import { parseLabels } from '@/lib/labels'
-import { TICKET_TYPES, TICKET_TYPE_LABELS, type Ticket, type TicketType } from '@/lib/domain'
+import {
+  insertTicketFieldValues,
+  parseFieldValues,
+  ticketFieldValueRows,
+} from '@/lib/ticket-field-values'
+import { CreateTicketSchema, type CreateTicketValues } from '@/lib/ticket-schemas'
+import { TICKET_TYPES, TICKET_TYPE_LABELS, type ProjectField, type Ticket } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { selectClass } from './form-primitives'
 import { CreateDialog, GENERIC_CREATE_ERROR, type SubmitActions } from './CreateDialog'
+import { CreateTicketCustomFields } from './CreateTicketCustomFields'
 
-const CreateTicketSchema = z.object({
-  summary: z
-    .string()
-    .trim()
-    .min(1, 'Summary is required')
-    .max(200, 'Keep the summary to 200 characters or fewer'),
-  type: z.enum([...TICKET_TYPES] as [TicketType, ...TicketType[]]),
-  description: z.string().trim().max(2000).optional(),
-  // Kept a string on the form (so the input stays controlled); parsed to a number at
-  // submit. Empty means "no estimate". Digits only, ≤ 3, so it stays a sane int.
-  storyPoints: z
-    .string()
-    .trim()
-    .regex(/^\d{0,3}$/, 'Whole numbers only')
-    .optional(),
-  labels: z.string().optional(),
-  acceptanceCriteria: z.string().trim().max(2000).optional(),
-})
-type CreateTicketValues = z.input<typeof CreateTicketSchema>
+/** The form's fixed fields as `createTicket`'s input. Extracted from `onSubmit` so the custom
+ *  field branches fit inside T2 — it carried five of that function's eight cyclomatic points. */
+function ticketInput(parsed: z.output<typeof CreateTicketSchema>, projectId: string) {
+  return {
+    projectId,
+    summary: parsed.summary,
+    type: parsed.type,
+    description: parsed.description?.trim() || undefined,
+    storyPoints: parsed.storyPoints ? Number(parsed.storyPoints) : undefined,
+    labels: parseLabels(parsed.labels),
+    acceptanceCriteria: parsed.acceptanceCriteria?.trim() || undefined,
+  }
+}
+
+/** AC4. Names the ticket so the user can find it, and every field that did not save so they
+ *  know exactly what to re-enter. A silent success is the one outcome ruled out. */
+function unsavedFieldsMessage(ticketKey: string, fields: ProjectField[]): string {
+  return `Created ${ticketKey}, but couldn’t save: ${fields
+    .map((f) => f.name)
+    .join(', ')}. Set them on the ticket.`
+}
+
+/** Puts each bad custom value's message on its own field. Extracted from `onSubmit` — the
+ *  `for` loop was its own cyclomatic point, and this is the one clean extraction available
+ *  without contorting the submit sequence's own parse→create→write ordering. */
+function applyFieldErrors(
+  errors: Array<{ fieldId: string; message: string }>,
+  setError: UseFormSetError<CreateTicketValues>,
+) {
+  for (const e of errors) setError(`custom.${e.fieldId}`, { message: e.message })
+}
 
 /**
  * Create-ticket dialog. The key and number are assigned by the database trigger and
@@ -39,9 +59,13 @@ type CreateTicketValues = z.input<typeof CreateTicketSchema>
 export function CreateTicketDialog({
   projectId,
   onCreated,
+  fields,
+  fieldsPhase,
 }: {
   projectId: string
   onCreated?: (ticket: Ticket) => void
+  fields?: ProjectField[]
+  fieldsPhase?: ReadPhase
 }) {
   const form = useForm<CreateTicketValues>({
     resolver: zodResolver(CreateTicketSchema),
@@ -52,30 +76,64 @@ export function CreateTicketDialog({
       storyPoints: '',
       labels: '',
       acceptanceCriteria: '',
+      // No `custom: {}` here. `custom` is `.optional()` in `CreateTicketSchema`, so its absence
+      // never trips `.parse()`, and `CreateTicketCustomFields`'s own `rhf.value ?? ''` covers
+      // the absent key for every control's controlled `value`.
+      //
+      // Its absence means every custom control's `rhf.value` is `undefined` FROM BIRTH, so no
+      // render in this dialog ever observes a controlled→uncontrolled flip — which is why no
+      // test reachable through this dialog can pin that `?? ''`. The control for it lives where
+      // the transition is reachable: `CreateTicketCustomFields.test.tsx`'s "keeps the control
+      // controlled across a form.reset()", which renders the fields under a `useForm` whose
+      // defaults DO include `custom: {}`. Do not restore this line expecting a test to say so.
     },
   })
 
   async function onSubmit(
     values: CreateTicketValues,
-    { close, setError }: SubmitActions<CreateTicketValues>,
+    { close, setError, latch }: SubmitActions<CreateTicketValues>,
   ) {
     const parsed = CreateTicketSchema.parse(values)
-    const result = await createTicket({
-      projectId,
-      summary: parsed.summary,
-      type: parsed.type,
-      description: parsed.description?.trim() || undefined,
-      storyPoints: parsed.storyPoints ? Number(parsed.storyPoints) : undefined,
-      labels: parseLabels(parsed.labels),
-      acceptanceCriteria: parsed.acceptanceCriteria?.trim() || undefined,
-    })
 
+    // FIRST, before anything is written: a bad value must not cost the user a ticket.
+    const drafts = parseFieldValues(fields ?? [], parsed.custom ?? {})
+    if (!drafts.ok) {
+      applyFieldErrors(drafts.errors, setError)
+      return
+    }
+
+    const result = await createTicket(ticketInput(parsed, projectId))
     if (!result.ok) {
       setError('root', { message: GENERIC_CREATE_ERROR })
       return
     }
 
+    // The ticket is real. It reaches the board whatever the values write does — withholding
+    // it would be the invisible-create defect ProjectShellHeader's own gate exists to prevent.
     onCreated?.(result.ticket)
+
+    const written = await insertTicketFieldValues(
+      ticketFieldValueRows(result.ticket, drafts.writes),
+    )
+    if (!written.ok) {
+      // The dialog stays OPEN and its submit LATCHES. Retrying is right everywhere else
+      // here, because everywhere else an error means nothing was written — this is the one
+      // state where pressing Create again makes a second ticket.
+      //
+      // `latch()` is generation-guarded exactly like the `setError` above it, so an abandoned
+      // submit that fails this way cannot disable a dialog the user has since reopened. The two
+      // must stay together: latching a dialog whose explanation was correctly swallowed leaves
+      // a dead form with no message.
+      setError('root', {
+        message: unsavedFieldsMessage(
+          result.ticket.key,
+          drafts.writes.map((w) => w.field),
+        ),
+      })
+      latch()
+      return
+    }
+
     close()
   }
 
@@ -177,6 +235,8 @@ export function CreateTicketDialog({
           </FormItem>
         )}
       />
+
+      <CreateTicketCustomFields control={form.control} fields={fields} fieldsPhase={fieldsPhase} />
     </CreateDialog>
   )
 }
