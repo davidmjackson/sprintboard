@@ -97,29 +97,55 @@ create table ticket_field_values (
   )
 );
 
--- ONE INDEX — AND THIS INDEX IS WRONG. Corrected in a follow-up; read this before copying
--- the pattern into story 5.
+-- ONE INDEX, KEPT DELIBERATELY, AND FOUR INFO LINTS ACCEPTED WITH IT. Read this before
+-- copying the pattern into story 5 — and before "fixing" the lints.
 --
--- The reasoning below was measured, and was still wrong, because it was measured from the
--- wrong catalog. It read: the advisor flags three unindexed foreign keys, all on `tickets`,
--- and does NOT flag tickets_status_fk (project_id, status) — whose only covering index looked
--- like tickets_project_number_unique (project_id, number) — so the linter must match on the
--- LEADING COLUMN rather than the full set.
+-- Two separate things went wrong here and only one of them was the SQL.
 --
--- That conclusion came from querying pg_constraint alone. pg_indexes was never read, and it
--- holds tickets_project_status_idx ON tickets (project_id, status) — an EXACT cover. The fk
--- was never evidence of a leading-column rule; it was evidence of an index nobody had looked
--- for.
+-- FIRST, the rule was derived from the wrong catalog. The original reasoning read: the advisor
+-- flags three unindexed foreign keys, all on `tickets`, and does NOT flag tickets_status_fk
+-- (project_id, status) — whose only covering index looked like tickets_project_number_unique
+-- (project_id, number) — so the linter must match on the LEADING COLUMN rather than the full
+-- set. That came from querying pg_constraint alone. pg_indexes was never read, and it holds
+-- tickets_project_status_idx ON tickets (project_id, status), an EXACT cover. The unflagged fk
+-- was never evidence of a leading-column rule; it was evidence of an index nobody looked for.
 --
--- THE REAL RULE, re-derived and checked on five cases: the foreign key's column list must be
--- a PREFIX of some index's column list. tickets_epic_fk (parent_epic_id, project_id) is
--- flagged despite tickets_epic_idx (parent_epic_id) existing, which is the same shape as this
--- index and settles it.
+-- THE REAL RULE, re-derived and checked on five cases: the foreign key's column list must be a
+-- PREFIX of some index's column list. tickets_epic_fk (parent_epic_id, project_id) is flagged
+-- despite tickets_epic_idx (parent_epic_id) existing — the same shape as this index, which
+-- settles it. So this index satisfies the advisor for NONE of the three fks, and applying the
+-- migration added four INFOs: three unindexed_foreign_keys plus an unused_index for this one.
 --
--- So this index covers NONE of the three foreign keys here, and applying the migration added
--- four INFO lints: three unindexed_foreign_keys plus an unused_index for this one. See the
--- design spec §8 for the three options and which was chosen. Note there is no zero-lint answer
--- available: a brand-new table has either unindexed foreign keys or unused indexes.
+-- SECOND — and this is the part that matters — a flagged fk here is NOT a missing index.
+-- Measured against pg_indexes 2026-08-07, every lookup a cascade actually performs is already
+-- served:
+--
+--   tfv_ticket_fk (ticket_id, project_id)  delete a ticket -> find rows by ticket_id
+--                                          served by ticket_field_values_pkey (ticket_id, field_id)
+--   tfv_field_fk  (field_id, project_id)   delete a field  -> find rows by field_id
+--                                          served by this index
+--   tfv_type_fk   (field_id, field_type)   retarget a type -> find rows by field_id
+--                                          served by this index
+--
+-- The reason the advisor disagrees is that project_id in those composite fks is a TENANCY
+-- column, not a selectivity one. It is carried so a row cannot be re-pointed at another
+-- project's ticket or field (see the grants note below — it is half of why the UPDATE grant is
+-- not the control). Given ticket_id or field_id, project_id is already determined, so adding it
+-- to an index narrows nothing. The advisor does not model that.
+--
+-- DECISION (David, session 58): keep this index, add nothing, accept the four INFOs. Covering
+-- all three fks was the earlier lean and was rejected on measurement — it buys no lookup any
+-- query performs, leaves three indexes that will never be scanned, and does not even win on
+-- count (3 INFOs against this option's 4, trading unindexed_foreign_keys for unused_index).
+-- Widening this one to (field_id, project_id) would silence exactly one lint and speed up
+-- nothing.
+--
+-- Do NOT read "keep get_advisors at zero lints" as overriding this. That rule is read in this
+-- repo as "add no lints you cannot account for", and the baseline has not been zero since
+-- before SPRIN-79. These four are accounted for, above, with the measurement behind them.
+--
+-- The unused_index INFO self-clears at story 6 (SPRIN-93), which counts values by field_id and
+-- is the first query to scan this index. It is not dead weight; it is early.
 create index ticket_field_values_field_id_idx on ticket_field_values (field_id);
 
 alter table ticket_field_values enable row level security;

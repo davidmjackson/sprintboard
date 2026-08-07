@@ -234,19 +234,41 @@ used by `listProjectFields`. `ticket_field_values` gets no such luck — its onl
 `where ticket_id = $1`, which the PK already serves, so any index added here is for fk coverage
 alone and is unused until story 6.
 
-Three options, **open for David** at the point this spec was written:
+Three options were put to David. **He chose to keep the index as shipped and accept the four
+INFOs** — and the reasoning that settled it was not in the original three, because it only
+appeared once `pg_indexes` was read a second time and each fk was mapped to the lookup a cascade
+actually performs:
 
-1. **Cover all three** — `(ticket_id, project_id)`, `(field_id, project_id)`,
-   `(field_id, field_type)`. Returns `unindexed_foreign_keys` to its 3-on-`tickets` baseline and
-   trades it for three `unused_index` INFOs, which self-clear on first scan. Defensible on
-   merit rather than as linter appeasement: this is the epic's highest-cardinality table,
-   growing as tickets × fields, and all three fks cascade.
-2. **One index, accept two INFOs** — widen `(field_id)` to `(field_id, project_id)`, a strict
-   improvement at zero cost that kills one lint and still serves story 6's count-by-`field_id`.
-   Record the other two as accepted with the measured reason. No dead indexes; permanently 2
-   INFOs above baseline.
-3. **No secondary index at all** — drop it; story 6 adds one alongside the query that first uses
-   it. Three INFOs above baseline.
+| fk | lookup on cascade | already served by |
+|---|---|---|
+| `tfv_ticket_fk (ticket_id, project_id)` | delete a ticket → rows by `ticket_id` | `ticket_field_values_pkey (ticket_id, field_id)` — prefix |
+| `tfv_field_fk (field_id, project_id)` | delete a field → rows by `field_id` | `ticket_field_values_field_id_idx` |
+| `tfv_type_fk (field_id, field_type)` | retarget a type → rows by `field_id` | the same index |
+
+**Every lookup is already covered, so none of the three INFOs is a missing index.** `project_id`
+in those composite fks is a **tenancy** column, not a selectivity one — it is carried so a row
+cannot be re-pointed at another project's ticket or field, which is half of §3's argument for why
+the UPDATE grant is not the control. Given `ticket_id` or `field_id`, `project_id` is already
+determined, so adding it to an index narrows nothing. The advisor's prefix rule does not model
+that, and the gap between "unsatisfied prefix rule" and "slow query" is the whole finding.
+
+That demoted what had been the lean:
+
+1. ~~**Cover all three**~~ — `(ticket_id, project_id)`, `(field_id, project_id)`,
+   `(field_id, field_type)`. **Rejected on measurement.** It buys no lookup any query performs,
+   leaves three indexes that will never be scanned, and does not even win on count: 3 INFOs
+   against option 3's 4, trading `unindexed_foreign_keys` for `unused_index`. It was attractive
+   only while the lints looked like real coverage gaps.
+2. ~~**Widen to `(field_id, project_id)`**~~ — silences exactly one lint, speeds up nothing.
+   Cheap, but appeasement.
+3. **CHOSEN — keep `(field_id)`, add nothing, record why.** Four INFOs above baseline, zero dead
+   objects. The `unused_index` one self-clears at story 6 (SPRIN-93), whose count-by-`field_id`
+   is the first query to scan it — early, not dead. The full reasoning is in the migration file
+   itself so it travels with the SQL.
+
+**"Keep `get_advisors` at zero lints" does not override this.** It is read in this repo as "add no
+lints you cannot account for", and the baseline has not been zero since before SPRIN-79. These
+four are accounted for.
 
 **Baseline for comparison, measured 2026-08-07 before this migration:** 3 unindexed-fk INFOs
 (all on `tickets`) + 8 `auth_rls_initplan` WARNs on the older tables, and 1 unrelated
