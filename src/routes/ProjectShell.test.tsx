@@ -1262,6 +1262,38 @@ describe('ProjectShell', () => {
     expect(await screen.findByLabelText('Customer ref')).toBeInTheDocument()
   })
 
+  /**
+   * The SIBLING prop at the same seam, for the same reason `fieldsPhase` gets its own test
+   * beside the detail-dialog's `fields` test above (not just the AC-9x one for `fields`
+   * itself): unwired, `fieldsPhase` defaults to `'loaded'` in both `CreateTicketDialog` and
+   * `CreateTicketCustomFields`, and with the FIELDS read failing that default reads "loaded,
+   * zero fields" — the exact ambiguity `ProjectShellContext`'s own docblock warns `fields`
+   * cannot resolve alone. A failed definitions read must render the dialog's own notice, not
+   * silently nothing, and only `fieldsPhase` carries that information.
+   *
+   * `fields` stays `[]` here on purpose (never resolved, from the default `beforeEach` mock is
+   * overridden below to reject instead) — this test is `fieldsPhase`'s alone, mirroring how
+   * the earlier test above is scoped to `fields` alone.
+   */
+  it("shows the create dialog's own failed-read notice when the shell's fields read fails (real wiring)", async () => {
+    const u = userEvent.setup()
+    // Only the FIELDS read fails. The tickets read must still resolve — `mockList`'s default
+    // `beforeEach` value of `[]` already does that — or the create trigger never renders at
+    // all and the test would prove nothing about this seam.
+    mockListFields.mockRejectedValue(new Error('offline'))
+
+    renderShell('/projects/p1')
+
+    await u.click(await screen.findByRole('button', { name: 'New ticket' }))
+
+    const dialog = await screen.findByRole('dialog')
+    // Anchored, not a bare substring: `toHaveTextContent` with a plain string only tests
+    // "contains", which an additive reword of this copy would still pass.
+    expect(within(dialog).getByRole('status')).toHaveTextContent(
+      /^Custom fields couldn’t be loaded\. You can set them on the ticket after it’s created\.$/,
+    )
+  })
+
   // THE SAME SEAM AGAIN, for SPRIN-82 AC3 — and this pair is the only place in the repo that
   // can see it. The rule spans four components: `ProjectShell` asks the predicate,
   // `TicketDetailDialog` forwards the answer, `TicketDetailSidebar` forwards it again, and
