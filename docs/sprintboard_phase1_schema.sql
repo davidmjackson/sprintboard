@@ -247,6 +247,82 @@ create table project_fields (
 -- total and stable across reads. A position column with no reorder surface would be
 -- created_at with extra machinery; reordering is its own story if ever wanted.
 
+-- ---------------------------------------------------------------------------
+-- ticket_field_values (SPRIN-88, epic SPRIN-71 story 3)
+--
+-- One ticket's value for one custom field. ADDITIVE: `tickets` is not reshaped, so system
+-- fields stay real columns and only custom ones live here — what Jira itself does.
+--
+-- Full rationale (the grant argument, the RLS policies, the index decision) lives in
+-- docs/migrations/sprin-88-ticket-field-values.sql. Recorded here because CLAUDE.md points at
+-- THIS file as "the database schema", and the composite-fk shapes below are what the epic's
+-- whole tenancy argument rests on — a reader who only finds the forward references above
+-- would have to reconstruct them.
+-- ---------------------------------------------------------------------------
+create table ticket_field_values (
+  ticket_id    uuid not null,
+  project_id   uuid not null,
+  field_id     uuid not null,
+
+  -- A DENORMALISED COPY of project_fields.type, held so the CHECK below can be written at all
+  -- (a CHECK body may not contain a subquery). Sound only because project_fields.type is
+  -- immutable by grant — see the note on that column above.
+  field_type   text not null,
+
+  -- One column per primitive rather than a jsonb blob or a text column cast on read: both
+  -- alternatives give up the database's own type checking, and "2026-13-45" stores fine in text.
+  value_text   text,
+  value_number numeric,
+  value_date   date,
+  value_option text,
+
+  primary key (ticket_id, field_id),
+
+  -- CROSS-TENANT INTEGRITY. Both carry project_id, so "a ticket in project A holding project
+  -- B's field" is unrepresentable. NOTE (established by review): RLS on this table reads ONLY
+  -- project_id, so ticket_id/field_id/field_type are governed by these fks ALONE — including
+  -- against another tenant. Do not narrow them to single columns during the SPRIN-75 membership
+  -- rewrite; that would leave three identity columns with no cross-tenant control.
+  constraint tfv_ticket_fk foreign key (ticket_id, project_id)
+    references tickets (id, project_id) on delete cascade,
+  constraint tfv_field_fk foreign key (field_id, project_id)
+    references project_fields (id, project_id) on delete cascade,
+
+  -- Keeps the denormalised copy equal to the definition's. ON DELETE CASCADE matches
+  -- tfv_field_fk deliberately: two fks to one table with different delete actions resolve in
+  -- RI trigger name order, i.e. luck.
+  constraint tfv_type_fk foreign key (field_id, field_type)
+    references project_fields (id, type)
+    on update no action on delete cascade,
+
+  -- Exactly one value column populated, and it is the one the type calls for. `else false`
+  -- means a sixth field type stores NOTHING until this constraint is edited — the intended
+  -- failure. "No value" is the ABSENCE of the row, never a row of nulls, which is why clearing
+  -- a field deletes it.
+  constraint tfv_one_value_matching_type check (
+    case field_type
+      when 'text'      then value_text   is not null and value_number is null
+                            and value_date is null and value_option is null
+      when 'paragraph' then value_text   is not null and value_number is null
+                            and value_date is null and value_option is null
+      when 'number'    then value_number is not null and value_text is null
+                            and value_date is null and value_option is null
+      when 'date'      then value_date   is not null and value_text is null
+                            and value_number is null and value_option is null
+      when 'select'    then value_option is not null and value_text is null
+                            and value_number is null and value_date is null
+      else false
+    end
+  )
+);
+
+-- Serves the field-delete cascade and story 6's count-by-field_id. The ticket-delete cascade
+-- is already served by the PK's leading column. Three unindexed-fk INFOs are ACCEPTED here:
+-- every lookup a cascade performs is covered, and what goes unsatisfied is the advisor's
+-- prefix rule rather than any query — project_id in those composite fks is a tenancy column,
+-- not a selectivity one.
+create index ticket_field_values_field_id_idx on ticket_field_values (field_id);
+
 -- At most one initial status per project. Same idiom as sprints_one_active_per_project,
 -- and the same limitation: it prevents two, not zero.
 create unique index project_statuses_one_initial_per_project
@@ -661,6 +737,7 @@ alter table projects          enable row level security;
 alter table project_counters  enable row level security;
 alter table project_statuses  enable row level security;
 alter table project_fields    enable row level security;
+alter table ticket_field_values enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
@@ -857,6 +934,48 @@ create policy fields_owner_delete on project_fields
   for delete
   using (exists (select 1 from projects p
                  where p.id = project_fields.project_id
+                   and p.owner_id = (select auth.uid())));
+
+-- ticket_field_values (SPRIN-88). Owner-scoped through `projects`, like every table above,
+-- and all four written `(select auth.uid())` so this table adds ZERO auth_rls_initplan
+-- warnings to the eight the older tables carry.
+--
+-- **These policies read `project_id` AND NOTHING ELSE**, which is the fact worth carrying
+-- forward. `ticket_id`, `field_id` and `field_type` are invisible to RLS and are governed by
+-- the composite foreign keys alone — including against another tenant. Establishing that cost
+-- a CI failure and a security review. When SPRIN-75 rewrites these to a membership check, do
+-- NOT narrow those fks to single columns on the theory that "RLS handles tenancy": it handles
+-- exactly one of the four identity columns.
+create policy tfv_owner_read on ticket_field_values
+  for select
+  using (exists (select 1 from projects p
+                 where p.id = ticket_field_values.project_id
+                   and p.owner_id = (select auth.uid())));
+
+create policy tfv_owner_insert on ticket_field_values
+  for insert
+  with check (exists (select 1 from projects p
+                      where p.id = ticket_field_values.project_id
+                        and p.owner_id = (select auth.uid())));
+
+-- The WITH CHECK is what stops an owner re-pointing a row at a project they do not own, given
+-- that the grant deliberately permits UPDATE on project_id. Note Postgres would fall back to
+-- the USING expression if it were omitted, so deleting it is not observable by mutation — the
+-- live test "the owner cannot move a value row into a project they do not own" is what pins
+-- the behaviour.
+create policy tfv_owner_update on ticket_field_values
+  for update
+  using      (exists (select 1 from projects p
+                      where p.id = ticket_field_values.project_id
+                        and p.owner_id = (select auth.uid())))
+  with check (exists (select 1 from projects p
+                      where p.id = ticket_field_values.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy tfv_owner_delete on ticket_field_values
+  for delete
+  using (exists (select 1 from projects p
+                 where p.id = ticket_field_values.project_id
                    and p.owner_id = (select auth.uid())));
 
 -- THE TABLE WAS BORN WITH FULL CRUD FOR BOTH APP ROLES. Measured from pg_default_acl (not

@@ -27,6 +27,20 @@
  * `Returns`, because that RPC returns `setof project_statuses` and so widens
  * whenever the table does.
  *
+ * SPRIN-88 added the `ticket_field_values` table. A NEW TABLE is the one schema
+ * change that cannot be forgotten the way a widened column can: `.from('x')` is
+ * keyed on the `Tables` keys, so calling it for a table this file has never seen
+ * is a compile error — the same forcing property `reorder_project_statuses` has,
+ * and for the same reason.
+ *
+ * What is NOT expressed here is that table's central invariant. Its four
+ * `value_*` columns all arrive independently nullable, so the type system will
+ * happily accept a row with two values or none; `tfv_one_value_matching_type`
+ * rejects both, and `tfv_type_fk` rejects a `field_type` that is not the
+ * definition's own. Those are database-side controls with no client-side shadow,
+ * which is why the live tests asserting their constraint NAMES are the only
+ * evidence they hold.
+ *
  * The narrowed domain unions live in `domain.ts`, which is hand-owned precisely so
  * that regenerating this file cannot clobber them.
  */
@@ -226,6 +240,61 @@ export type Database = {
             isOneToOne: false
             referencedRelation: 'projects'
             referencedColumns: ['id']
+          },
+        ]
+      }
+      ticket_field_values: {
+        Row: {
+          field_id: string
+          field_type: string
+          project_id: string
+          ticket_id: string
+          value_date: string | null
+          value_number: number | null
+          value_option: string | null
+          value_text: string | null
+        }
+        Insert: {
+          field_id: string
+          field_type: string
+          project_id: string
+          ticket_id: string
+          value_date?: string | null
+          value_number?: number | null
+          value_option?: string | null
+          value_text?: string | null
+        }
+        Update: {
+          field_id?: string
+          field_type?: string
+          project_id?: string
+          ticket_id?: string
+          value_date?: string | null
+          value_number?: number | null
+          value_option?: string | null
+          value_text?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'tfv_field_fk'
+            columns: ['field_id', 'project_id']
+            isOneToOne: false
+            referencedRelation: 'project_fields'
+            referencedColumns: ['id', 'project_id']
+          },
+          {
+            foreignKeyName: 'tfv_ticket_fk'
+            columns: ['ticket_id', 'project_id']
+            isOneToOne: false
+            referencedRelation: 'tickets'
+            referencedColumns: ['id', 'project_id']
+          },
+          {
+            foreignKeyName: 'tfv_type_fk'
+            columns: ['field_id', 'field_type']
+            isOneToOne: false
+            referencedRelation: 'project_fields'
+            referencedColumns: ['id', 'type']
           },
         ]
       }

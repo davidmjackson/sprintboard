@@ -3,6 +3,7 @@ import { parseLabels } from '@/lib/labels'
 import {
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
+  type ProjectField,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -14,6 +15,7 @@ import { statusOptions } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
 import { EditableText, FieldLabel } from './EditableText'
 import { selectClass } from './form-primitives'
+import { TicketCustomFields } from './TicketCustomFields'
 import { TicketReferenceSelect } from './TicketReferenceSelect'
 import { TicketSprintField } from './TicketSprintField'
 
@@ -30,6 +32,9 @@ export function TicketDetailSidebar({
   setError,
   onEditingChange,
   hasSprints,
+  fields,
+  fieldsPhase,
+  onRetryFields,
 }: {
   ticket: Ticket
   currentUser: { id: string; email: string }
@@ -47,6 +52,19 @@ export function TicketDetailSidebar({
    *  default — deliberately NOT defaulted here, where the cyclomatic budget has one point
    *  left and SPRIN-71's custom fields will want it. */
   hasSprints?: boolean
+  /** The project's custom field definitions and the phase of that read (SPRIN-88), forwarded
+   *  straight through to `TicketCustomFields`.
+   *
+   *  **NO DEFAULTS HERE, and that is load-bearing rather than style** — the point the
+   *  `hasSprints` note above anticipated. A destructuring default costs a cyclomatic point,
+   *  this component sits at 9 of 10, and the dialog that forwards these sits at 10 of 10 with
+   *  none at all. Both defaults live in `TicketCustomFields`, which is a new file with its own
+   *  budget. Adding `= []` at either stop is what would redden the gate. */
+  fields?: ProjectField[]
+  fieldsPhase?: ReadPhase
+  /** The SHELL's retry. The definitions read belongs to the shell, so a failure of it cannot
+   *  be fixed by anything this dialog owns. */
+  onRetryFields?: () => void
 }) {
   const assigneeValue = ticket.assignee_id === currentUser.id ? currentUser.id : ''
   const initial = assigneeValue ? (currentUser.email[0]?.toUpperCase() ?? null) : null
@@ -179,6 +197,10 @@ export function TicketDetailSidebar({
           value={ticket.story_points?.toString() ?? ''}
           ariaLabel="story points"
           numeric
+          // The ESTIMATION rule, stated where it belongs. It was `EditableText`'s hardcoded
+          // default until SPRIN-88 gave custom `number` fields — which legitimately take
+          // negatives — the same component.
+          min={0}
           placeholder="—"
           onCommit={(v) => {
             const parsed = parseStoryPoints(v)
@@ -202,6 +224,21 @@ export function TicketDetailSidebar({
           onEditingChange={onEditingChange}
         />
       </label>
+
+      {/* The project's custom fields (SPRIN-88), each with this ticket's value. Rendered
+          UNCONDITIONALLY — no `fields.length &&` guard, no phase check — because a conditional
+          here costs the one cyclomatic point this component has left, and SPRIN-92 (single-select
+          fields) still has to fit. `TicketCustomFields` answers "should anything show at all?"
+          itself, and renders nothing when the project has no custom fields, which is AC6.
+
+          Last in the panel on purpose: the built-in fields are the ones every project has, and a
+          project with no custom fields must read exactly as it did before this story. */}
+      <TicketCustomFields
+        ticket={ticket}
+        fields={fields}
+        fieldsPhase={fieldsPhase}
+        onRetryFields={onRetryFields}
+      />
 
       <p className="text-muted-foreground border-border/70 border-t pt-3 text-[11px]">
         Updated {new Date(ticket.updated_at).toLocaleString()}

@@ -24,6 +24,7 @@ export function EditableText({
   ariaLabel,
   multiline,
   numeric,
+  min,
   placeholder,
   heading,
   onCommit,
@@ -33,6 +34,16 @@ export function EditableText({
   ariaLabel: string
   multiline?: boolean
   numeric?: boolean
+  /** Lower bound for `numeric` mode, passed straight to the input.
+   *
+   *  **This used to be hardcoded to `0` whenever `numeric` was set**, which quietly made the
+   *  STORY-POINTS rule (whole, non-negative) a property of every numeric caller. SPRIN-88 added
+   *  the second one — a custom `number` field, which is a plain `numeric` column and must take
+   *  `-2.5` as readily as `3` — so the bound moved to the call site that actually owns it.
+   *  `StatusWipLimit` records the same hardcoding as one of three reasons it declined to build
+   *  on this component at all. Story points passes `min={0}`; custom number fields pass
+   *  nothing, and a test pins each. */
+  min?: number
   placeholder?: string
   heading?: boolean
   onCommit: (next: string) => void
@@ -121,7 +132,7 @@ export function EditableText({
   ) : (
     <Input
       type={numeric ? 'number' : 'text'}
-      min={numeric ? 0 : undefined}
+      min={min}
       placeholder={placeholder}
       className={cn(heading && 'h-auto py-1 text-xl font-semibold md:text-xl')}
       {...commonProps}

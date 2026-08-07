@@ -36,7 +36,7 @@ answer:
 |---|---|---|---|
 | 1 — the `project_fields` table and the field list | SPRIN-90 | **Done** | A, applied |
 | 2 — add and rename a custom field | SPRIN-91 | **Done** | B (grants), applied |
-| 3 — values on the ticket detail sidebar | **SPRIN-88 ← next** | To Do | C |
+| 3 — values on the ticket detail sidebar | **SPRIN-88 ← IN FLIGHT** | In Progress | C, **applied** |
 | 4 — values on the create-ticket dialog | SPRIN-89 | To Do | — |
 | 5 — single-select fields | SPRIN-92 | To Do | D |
 | 6 — delete a field, with its value count | SPRIN-93 | To Do | grants |
@@ -49,6 +49,96 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 58 — SPRIN-88 built, reviewed by four agents, PR #95 green and UNMERGED
+
+**State to carry: PR #95 is open on `ae38a8a`, `verify` green (1251 tests, 70 files, 0 skipped),
+Jira In Review, NOT merged — David had not given the merge instruction when the session ended.**
+The migration is unchanged from session 57 and still applied live, so there is nothing to run.
+
+The fk-index question session 57 left open was **decided by David: keep the `(field_id)` index,
+add nothing, accept 4 INFOs.** The reasoning that settled it is not the one in the spec's original
+option list: mapping each fk to the lookup a cascade actually performs shows all three are already
+served (the PK covers `ticket_id`, the shipped index covers the other two), because `project_id`
+in those composite fks is a **tenancy** column, not a selectivity one. What goes unsatisfied is
+the advisor's prefix rule, not any query. Recorded in the migration file so it travels with the SQL.
+
+**The review was worth its cost and this is the part to read.** Three reviewers in isolated
+worktrees, then a fourth re-reviewing the fix wave. Eleven mutations were reported as surviving;
+**ten were real** (the re-review restored the pre-fix test file, re-planted the eleventh, and
+watched it kill three existing tests — the original reviewer had run a narrow subset). All now
+die. The three that mattered:
+
+- **The whole feature could be unplugged from the app in three places with 1094 tests green** —
+  only one hop was caught, and only by `no-unused-vars`. `ProjectShell.test.tsx` now carries the
+  "real wiring" test its `sprints`/`statuses` siblings already had. Two reviewers found this
+  independently.
+- **No `.upsert()` existed in any test**, so the eight-column UPDATE grant — the entire subject of
+  the story's §3 — was unverified. Every live write was a plain `.insert()`, which needs only
+  INSERT privilege and never builds a SET list. Now one two-write case per value column.
+- **`applyValueWrite`/`fieldValueText` had no direct tests**, resting on one component test that
+  began from an empty list. Five survivors there, including `fieldValueText` erasing a stored zero
+  — the exact defect its own docblock names, with no fixture holding a zero.
+
+**Three of my own claims were wrong and are corrected in place.** The important one:
+[[rls-with-check-precedes-fk-validation]] — RLS here reads `project_id` **and nothing else**, so
+`ticket_id`, `field_id` and `field_type` are fk-governed *including across tenants*. My first
+correction over-generalised one CI failure into "a cross-tenant row cannot isolate a foreign key",
+which a reviewer refuted with a passing test twenty lines away in my own file. **That matters for
+SPRIN-75**: the wrong version is exactly what licenses narrowing those composite fks to single
+columns during the membership rewrite. Also wrong: the migration's "WITH CHECK is load-bearing"
+note (Postgres falls back to USING, so deleting it is not observable), and my use of
+`npx tsc --noEmit -p tsconfig.json`, which checks **zero files** and exits 0 — the branch was
+type-clean via `npm run build` and CI, not via that check. Use `npm run typecheck`.
+
+`ticket_field_values` is now in `docs/sprintboard_phase1_schema.sql`, which it was missing from;
+`domain.test.ts`'s schema parser caught it the moment it was added without its policies.
+
+### Session 57 — SPRIN-88 started, migration applied, no PR yet (branch `sprin-88-ticket-field-values`)
+
+**Ended early because David's terminal needed a restart — not a blocker, and nothing is lost.
+The one fact to carry: the database is AHEAD of `main`.** `ticket_field_values` is **live**,
+applied 2026-08-07, while the branch carrying its spec and migration is pushed but **unmerged**.
+Verified from the catalogue rather than the editor's success message: RLS on, force off, four
+`tfv_owner_*` policies all using `(select auth.uid())`, table grants `authenticated=rdDxtm` and
+`anon=rDxtm` (neither carrying `a` or `w` at table level), and exactly eight column rows at
+`authenticated=aw`. **Do not re-apply it.** If the branch is ever abandoned the table must be
+dropped by hand — nothing else will do it.
+
+**No application code exists yet.** Spec and migration only, two commits. `database.types.ts` has
+**not** been regenerated, so nothing can compile against the new table until it is — that is the
+first task on resuming, before any implementation.
+
+**The migration departs from the epic design's §3.4 deliberately.** PostgREST compiles
+`.upsert(row)` to `INSERT … ON CONFLICT DO UPDATE SET c = excluded.c` for *every* column in the
+payload, and Postgres requires UPDATE privilege on every column in a SET list. The payload must
+carry `ticket_id, project_id, field_id, field_type` because the INSERT needs them — so the narrow
+column grant the epic design implied would let the **first** write to a field succeed and every
+later one fail with `42501`. UPDATE is therefore granted on all eight columns and the control
+moved to the constraints: `tfv_type_fk` refuses any `field_type` that is not the definition's
+own, the composite fks carry `project_id` so a row cannot be re-pointed at another project's
+ticket or field, and `tfv_owner_update`'s `WITH CHECK` re-tests ownership on the post-image.
+**Three live tests are owed for that argument and are not yet written** — a mismatched
+`field_type` earning `23503`, a cross-project `field_id` earning `23503`, and a wrong-column-for-
+the-type earning `23514`, each asserting the constraint *name* because three constraints here can
+all produce `23503`.
+
+**One open decision, asked and not answered: the fk indexes.** Applying the migration added four
+INFO lints — `unindexed_foreign_keys` on all three tfv foreign keys plus `unused_index` on the
+index it shipped, which covers none of them. The index rule was derived wrongly (from
+`pg_constraint` without ever reading `pg_indexes`), corrected in a follow-up commit, and is now
+right in both the spec and the migration: **an fk's columns must be a prefix of some index's
+columns**, and `tickets_epic_fk` being flagged despite `tickets_epic_idx (parent_epic_id)`
+existing settles it. The finding underneath is that **there is no zero-lint answer** — a new
+table has either unindexed foreign keys or unused indexes; `project_fields` reached zero only
+because its slug index happens to both cover its fk and be used. Three options with trade-offs
+are in the spec's §8; the lean was option 1 (cover all three). Nothing about correctness or
+tenancy depends on it and it is a follow-up `create index` either way.
+
+Validation that did work and is worth repeating: the CHECK constraint was exercised as a `SELECT`
+over a twelve-row truth table before the SQL left the session (all five type arms, `else false`,
+and both the two-columns and no-columns edges), and every statement type was parse-checked by
+running it under the read-only MCP and reading the SQLSTATE — **25006, never 42601**.
 
 ### Session 56 — SPRIN-91, add and rename a custom field (PR #93, `106af27`)
 
@@ -467,6 +557,26 @@ Engineering items with no story yet. Each is a candidate for one.
   than this file's own convention elsewhere (the duplicate-name and slug-format tests both pin
   the name, because `message` is the only channel PostgREST exposes for constraint identity).
   Dropping the check still reddens them, so they are not vacuous — just less specific.
+
+## Owed to SPRIN-75, found by the SPRIN-88 security review (session 58)
+
+Both are LOW and neither is reachable today. Recorded here because they become reachable under a
+membership model, and because the reasoning is easier to reconstruct now than later.
+
+- **`TRUNCATE` survives the revoke on `ticket_field_values`.** Live `relacl` is `anon=rDxtm`,
+  `authenticated=rdDxtm` — the `D` is TRUNCATE, held by BOTH roles, and TRUNCATE bypasses RLS
+  entirely. Not reachable through PostgREST (no verb, no RPC), so there is no live exploit, and
+  the migration deliberately defers privilege sweeps to SPRIN-75. But `revoke truncate on
+  ticket_field_values from authenticated, anon;` is one line and would have kept the new table out
+  of that sweep. Worth checking whether the older tables share it.
+- **A cross-tenant existence oracle via PK-vs-fk error discrimination.** Insert ordering is RLS
+  WITH CHECK → CHECK → unique index → fk AFTER-triggers. So B, naming their OWN `project_id` with
+  A's `ticket_id` and `field_id`, gets `23505` if A has a row for that pair and `23503` if not —
+  learning whether tenant A has set a particular field on a particular ticket. Needs two of A's
+  uuids, which are never disclosed cross-tenant today. **It becomes reachable for a REMOVED MEMBER
+  who retains uuids from a project they no longer belong to**, which is a case SPRIN-75's isolation
+  suite is already required to cover. The fix, if wanted, is a partial unique index scoped by
+  project; it may not be worth it.
 
 ## What CI cannot pin
 

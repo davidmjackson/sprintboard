@@ -346,6 +346,13 @@ export function ProjectShell() {
           // shell is at 10 of 10 cyclomatic, so the question has to be asked here (where the
           // project is) and answered further down (where there is headroom to act on it).
           hasSprints={hasSprints(project)}
+          // SPRIN-88. Passed as VALUES, not as another branch — same constraint as
+          // `hasSprints` above: this component is at 10 of 10 cyclomatic. `onRetry` is the
+          // shell's own, and is the right retry for these specifically because the definitions
+          // are one of the four project reads it reloads.
+          fields={fields}
+          fieldsPhase={fieldsPhase}
+          onRetryFields={onRetry}
           currentUser={currentUser}
           onOpenChange={(open) => {
             if (!open) setSelectedId(null)

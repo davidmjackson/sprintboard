@@ -176,22 +176,29 @@ export type TaggedRead<T> = {
  * so lint stays silent, and the parameter's type cannot express "stable reference". The
  * pre-refactor code had no such hazard because the fetch was written inline in the effect;
  * the ref keeps the dependency list identical to that original.
+ *
+ * **The scope is not always a project.** SPRIN-88 reads a ticket's custom field values, which
+ * are scoped to a TICKET, so the first parameter is `scopeId` rather than `activeProjectId` —
+ * a positional-only rename with no behaviour change. Nothing in the hook ever meant "project"
+ * specifically; it means "the id this read belongs to, and switching it invalidates the
+ * result". The internals still say `projectId` where they describe the tag, because switching
+ * projects is the case the staleness rules were written against and remains the sharpest one.
  */
 export function useTaggedRead<T>(
-  activeProjectId: string | undefined,
+  scopeId: string | undefined,
   nonce: number,
-  read: (projectId: string) => Promise<T[]>,
+  read: (scopeId: string) => Promise<T[]>,
 ): TaggedRead<T> {
   const [result, setResult] = useState<Tagged<T> | null>(null)
 
   const readRef = useLatest(read)
 
   useEffect(() => {
-    if (!activeProjectId) return
+    if (!scopeId) return
     let active = true
     runRead({
       read: readRef.current,
-      projectId: activeProjectId,
+      projectId: scopeId,
       nonce,
       isActive: () => active,
       setResult,
@@ -202,10 +209,10 @@ export function useTaggedRead<T>(
     // `readRef` is listed only to satisfy `exhaustive-deps`, which cannot see through
     // `useLatest` to know it returns a ref. `useRef` hands back the same object for the
     // life of the component, so this is referentially stable and the effect still re-runs
-    // on exactly `activeProjectId` and `nonce` — the pre-refactor dependency list.
-  }, [activeProjectId, nonce, readRef])
+    // on exactly `scopeId` and `nonce` — the pre-refactor dependency list.
+  }, [scopeId, nonce, readRef])
 
-  const current = isCurrent(result, activeProjectId, nonce) ? result : null
+  const current = isCurrent(result, scopeId, nonce) ? result : null
   return {
     phase: current?.phase ?? 'loading',
     items: current?.phase === 'loaded' ? current.items : [],
