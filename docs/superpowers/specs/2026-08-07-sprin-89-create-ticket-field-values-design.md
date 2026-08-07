@@ -116,19 +116,34 @@ a *partial* values result representable — some fields saved, some not, with no
 that cleans up or retries. A single statement is all-or-nothing, so the only outcomes are "every
 value saved" and "no value saved", and AC4's message is truthful in both.
 
-**Every row must carry all eight keys, and that is a trap with a test.** PostgREST rejects a bulk
-insert whose objects have differing keys (`PGRST102`, "All object keys must match"), and rows for
-different field types naturally differ — a `text` row wants `value_text`, a `date` row wants
-`value_date`. So each row spells out all four value columns, three of them `null`. That is exactly
-the shape `applyValueWrite` already constructs, so its row literal is extracted as
+**Every row must carry all eight keys, and that is a trap with a test — corrected below.** The
+original reasoning here was: PostgREST rejects a bulk insert whose objects have differing keys
+(`PGRST102`, "All object keys must match"), and rows for different field types naturally differ —
+a `text` row wants `value_text`, a `date` row wants `value_date`. So each row spells out all four
+value columns, three of them `null`. That is exactly the shape `applyValueWrite` already
+constructs, so its row literal is extracted as
 
 ```ts
 valueRow(keys: { ticketId, projectId, fieldId }, write: FieldValueWrite): TicketFieldValueRow
 ```
 
 and shared by both. One unit test asserts every row in the payload carries all eight keys, and one
-**live** test inserts a multi-row, multi-type batch — because a mocked client cannot see PGRST102,
-and this property is invisible until it meets the real PostgREST.
+**live** test was written to insert a multi-row, multi-type batch — because a mocked client cannot
+see PGRST102, and this property is invisible until it meets the real PostgREST.
+
+**Measured correction, 2026-08-07.** CI ran a negative counterpart — a batch whose rows had
+genuinely differing key sets — against the real database, expecting PGRST102. It got `error:
+null`: the batch was **accepted**. PGRST102 does not fire on this stack; either PostgREST fills a
+row's missing columns with DEFAULT, or supabase-js normalises the payload before sending. So "every
+row must carry all eight keys" was never a hard requirement here, only an assumption written as
+fact. The live test was replaced with one that answers the sharper question this exposed — does a
+bulk insert's column list come from the UNION of every row, or the FIRST row alone? A first-row
+derivation would mean a later row's column, unmentioned by an earlier sparse row, gets silently
+dropped: real data loss. CI's answer is the union, so the eight-column padding in `valueRow` is
+correct to keep, but as **defence in depth** against column-list semantics this project does not
+control, not as a workaround for an enforced constraint. See `valueRow`'s docblock in
+`src/lib/ticket-field-values.ts` and the corresponding test in `rls.integration.test.ts` for the
+corrected claim and its evidence.
 
 **Zero rows means no request at all.** `insertTicketFieldValues([])` returns `{ ok: true }` without
 touching the network. That is AC3 stated as code rather than as a comment, and it keeps the common
@@ -250,9 +265,12 @@ Acceptance tests are written from the ACs before implementation.
 
 Plus, not derived from an AC:
 
-- **every row in the payload carries all eight keys** (unit) — the PGRST102 property of §4;
-- **a multi-row, multi-type batch inserts against the real database** (live) — the same property
-  where it is actually enforced. A mocked client cannot see it.
+- **every row in the payload carries all eight keys** (unit) — `valueRow`'s own defence-in-depth
+  shape, restated §4;
+- **a multi-row, multi-type batch inserts against the real database** (live), plus, added
+  2026-08-07 after CI corrected the PGRST102 assumption, a live test that a later row's column is
+  not silently dropped when an earlier sparse row omits it. Both are properties a mocked client
+  cannot see.
 - `parseFieldValues` directly: a bad number blocks the whole submit; a stale record key is ignored.
 
 Two shapes to avoid, both recorded in memory from this project:

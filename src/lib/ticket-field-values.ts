@@ -133,12 +133,21 @@ export function fieldValueText(value: TicketFieldValue | undefined): string {
 /**
  * One value row, with ALL EIGHT columns spelled out — three of them null.
  *
- * The nulls are not padding. PostgREST rejects a bulk insert whose objects have differing keys
- * (`PGRST102`, "All object keys must match"), and rows for different field types naturally
- * differ: a `text` row wants `value_text`, a `date` row wants `value_date`. Omitting the nulls
- * would work for every single-row write and break the moment two types are created together —
- * a failure no mocked client can see, which is why `rls.integration.test.ts` inserts a real
- * multi-type batch.
+ * **Corrected 2026-08-07.** This docblock used to claim the nulls were required because
+ * PostgREST rejects a bulk insert whose objects have differing keys (`PGRST102`, "All object
+ * keys must match"). CI measured otherwise: a live batch whose rows had genuinely differing
+ * key sets was ACCEPTED, `error` null. PGRST102 does not fire on this stack — either PostgREST
+ * fills a row's missing columns with DEFAULT, or supabase-js normalises the payload before
+ * sending. So the padding is **not** a hard requirement here.
+ *
+ * It stays, as defence in depth. `rls.integration.test.ts` went on to ask the sharper
+ * question this correction exposed: does a bulk insert derive its column list from the UNION
+ * of every row, or from the FIRST row alone? CI's answer is the union — a later row's column,
+ * unmentioned by an earlier sparse row, survives with its real value rather than being
+ * silently dropped. That is what makes the padding belt-and-braces rather than essential: it
+ * protects against relying on behaviour this project does not control (a future PostgREST
+ * version, or a client library change, choosing first-row semantics instead) rather than
+ * against a failure measured to happen today.
  *
  * Shared with `applyValueWrite` so the row the client OPTIMISTICALLY renders and the row it
  * SENDS are constructed once. They drifted apart would mean the board showing a value the

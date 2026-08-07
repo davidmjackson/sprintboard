@@ -539,8 +539,12 @@ describe('valueRow', () => {
       { ticketId: 't1', projectId: 'p1', fieldId: 'f-2c7' },
       { fieldType: 'number', value: -2.5 },
     )
-    // Exact key set, not a subset: PostgREST rejects a bulk insert whose objects have
-    // differing keys (PGRST102), so a row that omits its null columns breaks the batch.
+    // Exact key set, not a subset. CORRECTED 2026-08-07: this used to say a row that omits
+    // its null columns "breaks the batch" (PGRST102) — CI measured that a differing-key batch
+    // is actually ACCEPTED on this stack, so that is false. The property still worth pinning
+    // is that `valueRow` itself always emits the full eight-key shape as defence in depth (see
+    // its docblock in `src/lib/ticket-field-values.ts`), independent of whether PostgREST
+    // would tolerate a narrower one.
     expect(Object.keys(row).sort()).toEqual([
       'field_id',
       'field_type',

@@ -2315,31 +2315,38 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
     // ---- SPRIN-89: several types in ONE statement ----
 
-    it('refuses a batch whose rows have differing key sets (PGRST102)', async () => {
-      // NEGATIVE FIRST, matching the per-type CASES idiom above (its own comment: "so the
-      // positive below cannot be what makes it pass"). Without this test, the positive test
-      // below only proves the eight-column shape WORKS; it would say nothing about whether
-      // PostgREST would just as happily have accepted a batch built with fewer keys per row.
-      // This test isolates that: PostgREST parses a bulk-insert body against the first
-      // object's keys, so an array whose objects disagree on shape is refused outright —
-      // PGRST102 — before any row is written. A mocked client cannot see this: it has no wire
-      // format to violate.
+    it("a later row's column is not silently dropped when the first row omits it", async () => {
+      // CORRECTED 2026-08-07. This test used to assert PGRST102 ("All object keys must
+      // match") on a batch whose rows had differing key sets, on the theory that PostgREST
+      // refuses such a batch outright. CI measured otherwise: `error` was `null` — the batch
+      // was ACCEPTED. Either PostgREST fills a row's missing columns with DEFAULT, or
+      // supabase-js normalises the payload before sending; either way PGRST102 does not fire
+      // on this stack, and that framing was wrong. Recorded here as a measured finding rather
+      // than quietly deleted — see `valueRow`'s docblock in `src/lib/ticket-field-values.ts`
+      // for where the corrected claim now lives.
       //
-      // A FRESH ticket, not `ticketA`, same reasoning as the positive test below: the primary
+      // The real question underneath, which this test settles instead: does PostgREST derive
+      // a bulk insert's column list from the UNION of every row, or from the FIRST row alone?
+      // If it were the first row, a batch whose first row happens to omit a column that a
+      // LATER row sets would silently DROP that later value — real data loss, and exactly what
+      // padding every row with all eight columns (`valueRow`) prevents. If it is the union,
+      // the padding is defence in depth rather than a hard requirement.
+      //
+      // A FRESH ticket, not `ticketA`, same reasoning as the sibling test below: the primary
       // key is (ticket_id, field_id), so reusing `ticketA` risks a 23505 that looks like a
       // bulk-insert failure and is not one.
       const created = await a
         .from('tickets')
-        .insert(ticketInsertPayload({ project_id: projectA, summary: 'SPRIN-89 differing keys' }))
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'SPRIN-89 sparse first row' }))
         .select('id')
         .single()
       expect(created.error).toBeNull()
       const ticketId = created.data!.id
 
-      // The first row spells out all eight columns, same as the positive test's `row()`
-      // helper. The other two omit the three null value columns entirely — rather than
-      // setting them to null — so their key set genuinely differs from the first row's,
-      // which is what PGRST102 exists to refuse.
+      // The FIRST row is sparse — only the five keys it needs, no null padding — and never
+      // mentions `value_number`. The SECOND row sets `value_number`. If the column list came
+      // from the first row alone, this insert would compile an INSERT with no `value_number`
+      // column at all, and the second row's -2.5 would go missing without raising an error.
       const { error } = await a.from('ticket_field_values').insert([
         {
           ticket_id: ticketId,
@@ -2347,9 +2354,6 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
           field_id: fieldOf.text!,
           field_type: 'text',
           value_text: 'ACME-1',
-          value_number: null,
-          value_date: null,
-          value_option: null,
         },
         {
           ticket_id: ticketId,
@@ -2358,35 +2362,34 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
           field_type: 'number',
           value_number: -2.5,
         },
-        {
-          ticket_id: ticketId,
-          project_id: projectA,
-          field_id: fieldOf.date!,
-          field_type: 'date',
-          value_date: '2026-08-07',
-        },
       ])
 
-      // Teardown BEFORE the assertions, same reasoning as the positive test below: a failed
-      // expect aborts the test, so a delete placed after it never runs. A refused batch writes
-      // no value rows, so deleting the ticket is enough to leave the table as it found it.
+      const readBack = await a
+        .from('ticket_field_values')
+        .select('value_number')
+        .eq('ticket_id', ticketId)
+        .eq('field_type', 'number')
+
+      // Teardown BEFORE the assertions: a failed expect aborts the test, so a delete placed
+      // after one never runs.
       await a.from('tickets').delete().eq('id', ticketId)
 
-      // The code is asserted, not just that an error occurred: this project's convention (see
-      // every constraint-name assertion above) is to pin the identity of a refusal, because
-      // more than one control can produce a failed insert and a bare "it errored" cannot say
-      // which one fired.
-      expect(error).not.toBeNull()
-      expect(error?.code).toBe('PGRST102')
+      expect(error).toBeNull()
+      // The point of the test: the second row's value really is -2.5, not null and not
+      // missing. Do not loosen this to `.not.toBeNull()` — the exact value is what proves the
+      // column survived rather than merely existing with some other value.
+      expect(readBack.data).toHaveLength(1)
+      expect(readBack.data?.[0]?.value_number).toBe(-2.5)
     })
 
     it('inserts values of different types for a new ticket in a single batch', async () => {
       // This proves the eight-column shape WORKS — that a real PostgREST instance accepts a
-      // batch of differing-type rows once every row carries the same key set. It does NOT by
-      // itself prove that shape is REQUIRED: a client sending only uniform-key rows passes
-      // this test whether or not PostgREST enforces uniformity at all. The negative test
-      // immediately above settles that half, by building a batch whose rows genuinely differ
-      // in shape and asserting PGRST102.
+      // batch of differing-type rows when every row carries the same key set. It does NOT
+      // prove that shape is REQUIRED: CI measured, 2026-08-07, that a batch whose rows have
+      // genuinely differing key sets is ALSO accepted (see the sibling test above) — PGRST102
+      // does not fire on this stack. The eight-column padding in `valueRow` is defence in
+      // depth against a bulk insert's column-list derivation, not a hard requirement enforced
+      // here; see `valueRow`'s docblock in `src/lib/ticket-field-values.ts`.
       //
       // A FRESH ticket, not `ticketA`: every other test in this block writes ticketA's values
       // under the same (ticket_id, field_id) primary key, and reusing it would earn a 23505
