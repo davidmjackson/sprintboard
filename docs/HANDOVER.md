@@ -50,11 +50,16 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
-### Session 58 — SPRIN-88 built, reviewed by four agents, PR #95 green and UNMERGED
+### Session 58 — SPRIN-88 built, reviewed by four agents, MERGED (PR #95, `baf9bba`)
 
-**State to carry: PR #95 is open on `ae38a8a`, `verify` green (1251 tests, 70 files, 0 skipped),
-Jira In Review, NOT merged — David had not given the merge instruction when the session ended.**
-The migration is unchanged from session 57 and still applied live, so there is nothing to run.
+**Shipped.** PR #95 squash-merged to `main` as `baf9bba`; `verify` green on the merge commit
+itself (1251 tests, 70 files, 0 skipped), branch deleted, Jira Done. The migration was applied
+in session 57 and is unchanged, so `main` and the database now agree.
+
+**Epic SPRIN-71 is halfway: stories 1, 2 and 3 are done. Next is SPRIN-89** (values on the
+create-ticket dialog), which will reuse `setTicketFieldValue` and `parseFieldValue` as they
+stand — note it writes values for a ticket that does not exist yet, so the write cannot happen
+until after the insert returns an id.
 
 The fk-index question session 57 left open was **decided by David: keep the `(field_id)` index,
 add nothing, accept 4 INFOs.** The reasoning that settled it is not the one in the spec's original
