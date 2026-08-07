@@ -50,6 +50,50 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 58 — SPRIN-88 built, reviewed by four agents, PR #95 green and UNMERGED
+
+**State to carry: PR #95 is open on `ae38a8a`, `verify` green (1251 tests, 70 files, 0 skipped),
+Jira In Review, NOT merged — David had not given the merge instruction when the session ended.**
+The migration is unchanged from session 57 and still applied live, so there is nothing to run.
+
+The fk-index question session 57 left open was **decided by David: keep the `(field_id)` index,
+add nothing, accept 4 INFOs.** The reasoning that settled it is not the one in the spec's original
+option list: mapping each fk to the lookup a cascade actually performs shows all three are already
+served (the PK covers `ticket_id`, the shipped index covers the other two), because `project_id`
+in those composite fks is a **tenancy** column, not a selectivity one. What goes unsatisfied is
+the advisor's prefix rule, not any query. Recorded in the migration file so it travels with the SQL.
+
+**The review was worth its cost and this is the part to read.** Three reviewers in isolated
+worktrees, then a fourth re-reviewing the fix wave. Eleven mutations were reported as surviving;
+**ten were real** (the re-review restored the pre-fix test file, re-planted the eleventh, and
+watched it kill three existing tests — the original reviewer had run a narrow subset). All now
+die. The three that mattered:
+
+- **The whole feature could be unplugged from the app in three places with 1094 tests green** —
+  only one hop was caught, and only by `no-unused-vars`. `ProjectShell.test.tsx` now carries the
+  "real wiring" test its `sprints`/`statuses` siblings already had. Two reviewers found this
+  independently.
+- **No `.upsert()` existed in any test**, so the eight-column UPDATE grant — the entire subject of
+  the story's §3 — was unverified. Every live write was a plain `.insert()`, which needs only
+  INSERT privilege and never builds a SET list. Now one two-write case per value column.
+- **`applyValueWrite`/`fieldValueText` had no direct tests**, resting on one component test that
+  began from an empty list. Five survivors there, including `fieldValueText` erasing a stored zero
+  — the exact defect its own docblock names, with no fixture holding a zero.
+
+**Three of my own claims were wrong and are corrected in place.** The important one:
+[[rls-with-check-precedes-fk-validation]] — RLS here reads `project_id` **and nothing else**, so
+`ticket_id`, `field_id` and `field_type` are fk-governed *including across tenants*. My first
+correction over-generalised one CI failure into "a cross-tenant row cannot isolate a foreign key",
+which a reviewer refuted with a passing test twenty lines away in my own file. **That matters for
+SPRIN-75**: the wrong version is exactly what licenses narrowing those composite fks to single
+columns during the membership rewrite. Also wrong: the migration's "WITH CHECK is load-bearing"
+note (Postgres falls back to USING, so deleting it is not observable), and my use of
+`npx tsc --noEmit -p tsconfig.json`, which checks **zero files** and exits 0 — the branch was
+type-clean via `npm run build` and CI, not via that check. Use `npm run typecheck`.
+
+`ticket_field_values` is now in `docs/sprintboard_phase1_schema.sql`, which it was missing from;
+`domain.test.ts`'s schema parser caught it the moment it was added without its policies.
+
 ### Session 57 — SPRIN-88 started, migration applied, no PR yet (branch `sprin-88-ticket-field-values`)
 
 **Ended early because David's terminal needed a restart — not a blocker, and nothing is lost.
@@ -513,6 +557,26 @@ Engineering items with no story yet. Each is a candidate for one.
   than this file's own convention elsewhere (the duplicate-name and slug-format tests both pin
   the name, because `message` is the only channel PostgREST exposes for constraint identity).
   Dropping the check still reddens them, so they are not vacuous — just less specific.
+
+## Owed to SPRIN-75, found by the SPRIN-88 security review (session 58)
+
+Both are LOW and neither is reachable today. Recorded here because they become reachable under a
+membership model, and because the reasoning is easier to reconstruct now than later.
+
+- **`TRUNCATE` survives the revoke on `ticket_field_values`.** Live `relacl` is `anon=rDxtm`,
+  `authenticated=rdDxtm` — the `D` is TRUNCATE, held by BOTH roles, and TRUNCATE bypasses RLS
+  entirely. Not reachable through PostgREST (no verb, no RPC), so there is no live exploit, and
+  the migration deliberately defers privilege sweeps to SPRIN-75. But `revoke truncate on
+  ticket_field_values from authenticated, anon;` is one line and would have kept the new table out
+  of that sweep. Worth checking whether the older tables share it.
+- **A cross-tenant existence oracle via PK-vs-fk error discrimination.** Insert ordering is RLS
+  WITH CHECK → CHECK → unique index → fk AFTER-triggers. So B, naming their OWN `project_id` with
+  A's `ticket_id` and `field_id`, gets `23505` if A has a row for that pair and `23503` if not —
+  learning whether tenant A has set a particular field on a particular ticket. Needs two of A's
+  uuids, which are never disclosed cross-tenant today. **It becomes reachable for a REMOVED MEMBER
+  who retains uuids from a project they no longer belong to**, which is a case SPRIN-75's isolation
+  suite is already required to cover. The fix, if wanted, is a partial unique index scoped by
+  project; it may not be worth it.
 
 ## What CI cannot pin
 
