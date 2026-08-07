@@ -1,5 +1,10 @@
 import { supabase } from './supabase'
-import { isCustomFieldType, type CustomFieldType, type TicketFieldValue } from './domain'
+import {
+  isCustomFieldType,
+  type CustomFieldType,
+  type ProjectField,
+  type TicketFieldValue,
+} from './domain'
 import type { Tables } from './database.types'
 
 /**
@@ -126,6 +131,37 @@ export function fieldValueText(value: TicketFieldValue | undefined): string {
 }
 
 /**
+ * One value row, with ALL EIGHT columns spelled out — three of them null.
+ *
+ * The nulls are not padding. PostgREST rejects a bulk insert whose objects have differing keys
+ * (`PGRST102`, "All object keys must match"), and rows for different field types naturally
+ * differ: a `text` row wants `value_text`, a `date` row wants `value_date`. Omitting the nulls
+ * would work for every single-row write and break the moment two types are created together —
+ * a failure no mocked client can see, which is why `rls.integration.test.ts` inserts a real
+ * multi-type batch.
+ *
+ * Shared with `applyValueWrite` so the row the client OPTIMISTICALLY renders and the row it
+ * SENDS are constructed once. They drifted apart would mean the board showing a value the
+ * database never received.
+ */
+export function valueRow(
+  keys: { ticketId: string; projectId: string; fieldId: string },
+  write: FieldValueWrite,
+): TicketFieldValue {
+  return {
+    ticket_id: keys.ticketId,
+    project_id: keys.projectId,
+    field_id: keys.fieldId,
+    field_type: write.fieldType,
+    value_text: null,
+    value_number: null,
+    value_date: null,
+    value_option: null,
+    ...valuePatch(write),
+  }
+}
+
+/**
  * The local list after one write — no refetch.
  *
  * A refetch here would be a second request whose response could land out of order with the
@@ -145,20 +181,7 @@ export function applyValueWrite(
 ): TicketFieldValue[] {
   const without = values.filter((v) => v.field_id !== keys.fieldId)
   if (write === null) return without
-  return [
-    ...without,
-    {
-      ticket_id: keys.ticketId,
-      project_id: keys.projectId,
-      field_id: keys.fieldId,
-      field_type: write.fieldType,
-      value_text: null,
-      value_number: null,
-      value_date: null,
-      value_option: null,
-      ...valuePatch(write),
-    },
-  ]
+  return [...without, valueRow(keys, write)]
 }
 
 /**
@@ -364,4 +387,72 @@ export function parseFieldValue(type: CustomFieldType, raw: string): FieldValueD
   // into one expression; it turns the gate red.
   const parse = DRAFT_PARSERS[type]
   return parse(raw)
+}
+
+/** Every filled field's write, or every bad field's message — never a mix. */
+export type FieldValuesDraft =
+  | { ok: true; writes: Array<{ field: ProjectField; write: FieldValueWrite }> }
+  | { ok: false; errors: Array<{ fieldId: string; message: string }> }
+
+/**
+ * Parse a whole form's worth of custom values, BEFORE any ticket exists.
+ *
+ * Iterates the DEFINITIONS, not the record's keys, so a draft left behind by a field deleted in
+ * another tab is ignored rather than written.
+ *
+ * All-or-nothing: one unparseable value refuses the entire submit. That ordering is the point —
+ * the only outcome in which the user loses nothing is the one where the refusal happens before
+ * the ticket is created.
+ */
+export function parseFieldValues(
+  fields: ProjectField[],
+  raw: Record<string, string | undefined>,
+): FieldValuesDraft {
+  const writes: Array<{ field: ProjectField; write: FieldValueWrite }> = []
+  const errors: Array<{ fieldId: string; message: string }> = []
+
+  for (const field of fields) {
+    const draft = parseFieldValue(field.type, raw[field.id] ?? '')
+    if (!draft.ok) errors.push({ fieldId: field.id, message: draft.message })
+    else if (draft.write !== null) writes.push({ field, write: draft.write })
+  }
+
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, writes }
+}
+
+/**
+ * The rows for a ticket that now exists. Tenancy comes from the TICKET, never from the field
+ * definition — `tfv_ticket_fk` and `tfv_field_fk` are both composite on `project_id`, so taking
+ * it from the ticket is what makes the row's tenancy the ticket's tenancy.
+ */
+export function ticketFieldValueRows(
+  ticket: { id: string; project_id: string },
+  writes: Array<{ field: ProjectField; write: FieldValueWrite }>,
+): TicketFieldValue[] {
+  return writes.map(({ field, write }) =>
+    valueRow({ ticketId: ticket.id, projectId: ticket.project_id, fieldId: field.id }, write),
+  )
+}
+
+/**
+ * Every custom value for a NEWLY CREATED ticket, in one statement.
+ *
+ * **An INSERT, not the upsert `setTicketFieldValue` uses.** The ticket id was returned moments
+ * ago by `createTicket`, so no row for it can exist and `ON CONFLICT DO UPDATE` is unreachable.
+ * An insert also needs only the INSERT privilege, where an upsert compiles a SET list and
+ * demands UPDATE on every payload column — narrower privilege, identical result.
+ *
+ * **One statement, not one per field**, so a PARTIAL values result is not representable. Either
+ * every value is stored or none is, which is what lets the dialog's failure message be true.
+ *
+ * Zero rows issues no request at all — the common case is a project with custom fields where the
+ * user filled none, and that must not cost a round trip.
+ */
+export async function insertTicketFieldValues(rows: TicketFieldValue[]): Promise<ValueWriteResult> {
+  if (rows.length === 0) return { ok: true }
+
+  const { error } = await supabase.from('ticket_field_values').insert(rows)
+
+  if (error) return { ok: false, error: writeError(error) }
+  return { ok: true }
 }

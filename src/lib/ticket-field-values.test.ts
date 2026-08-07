@@ -5,12 +5,21 @@ import {
   applyValueWrite,
   clearTicketFieldValue,
   fieldValueText,
+  insertTicketFieldValues,
   listTicketFieldValues,
   parseFieldNumber,
   parseFieldValue,
+  parseFieldValues,
   setTicketFieldValue,
+  ticketFieldValueRows,
+  valueRow,
 } from './ticket-field-values'
-import { CUSTOM_FIELD_TYPES, type CustomFieldType, type TicketFieldValue } from './domain'
+import {
+  CUSTOM_FIELD_TYPES,
+  type CustomFieldType,
+  type ProjectField,
+  type TicketFieldValue,
+} from './domain'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
@@ -35,6 +44,7 @@ const upsert = vi.fn()
 const eqField = vi.fn()
 const eqTicket = vi.fn(() => ({ eq: eqField }))
 const del = vi.fn(() => ({ eq: eqTicket }))
+const insert = vi.fn()
 
 function mockRows(data: unknown[] | null, error: { message: string } | null = null) {
   eqRead.mockResolvedValue({ data, error })
@@ -96,11 +106,28 @@ beforeEach(() => {
     select,
     upsert,
     delete: del,
+    insert,
   } as unknown as ReturnType<typeof supabase.from>)
   mockRows(ROWS)
   mockUpsert(null)
   mockDelete(null)
 })
+
+/**
+ * Field ids UNLIKE their slugs, and UNLIKE the type names, same reasoning as `ROWS` above.
+ * Mirrors `TicketCustomFields.test.tsx:50`'s `field()` helper.
+ */
+function field(overrides: Partial<ProjectField> = {}): ProjectField {
+  return {
+    id: 'f-9a3',
+    project_id: 'p1',
+    slug: 'cust_ref',
+    name: 'Customer ref',
+    type: 'text',
+    created_at: '2026-08-01T00:00:00+00:00',
+    ...overrides,
+  } as ProjectField
+}
 
 describe('VALUE_COLUMN', () => {
   it('covers every custom field type', () => {
@@ -505,3 +532,124 @@ describe('applyValueWrite', () => {
 function parseStoryPointsWouldReject(raw: string): boolean {
   return !/^\d{0,3}$/.test(raw.trim())
 }
+
+describe('valueRow', () => {
+  it('carries all eight columns, with three value columns null', () => {
+    const row = valueRow(
+      { ticketId: 't1', projectId: 'p1', fieldId: 'f-2c7' },
+      { fieldType: 'number', value: -2.5 },
+    )
+    // Exact key set, not a subset: PostgREST rejects a bulk insert whose objects have
+    // differing keys (PGRST102), so a row that omits its null columns breaks the batch.
+    expect(Object.keys(row).sort()).toEqual([
+      'field_id',
+      'field_type',
+      'project_id',
+      'ticket_id',
+      'value_date',
+      'value_number',
+      'value_option',
+      'value_text',
+    ])
+    expect(row).toMatchObject({
+      ticket_id: 't1',
+      project_id: 'p1',
+      field_id: 'f-2c7',
+      field_type: 'number',
+      value_number: -2.5,
+      value_text: null,
+      value_date: null,
+      value_option: null,
+    })
+  })
+})
+
+describe('parseFieldValues', () => {
+  it('returns one write per filled field, and drops the empty ones', () => {
+    const text = field({ id: 'f-1', type: 'text' })
+    const empty = field({ id: 'f-2', type: 'text' })
+    const result = parseFieldValues([text, empty], { 'f-1': 'ACME-1', 'f-2': '   ' })
+
+    expect(result).toEqual({
+      ok: true,
+      writes: [{ field: text, write: { fieldType: 'text', value: 'ACME-1' } }],
+    })
+  })
+
+  it('reports every bad value and produces no writes at all', () => {
+    const num = field({ id: 'f-2c7', type: 'number' })
+    const text = field({ id: 'f-1', type: 'text' })
+    const result = parseFieldValues([num, text], { 'f-2c7': 'twelve', 'f-1': 'fine' })
+
+    // NOT a partial result. One bad value refuses the whole submit, so the ticket is never
+    // created and the user loses nothing.
+    expect(result).toEqual({ ok: false, errors: [{ fieldId: 'f-2c7', message: 'Numbers only' }] })
+  })
+
+  it('ignores a record key with no matching field definition', () => {
+    // A field deleted in another tab leaves its draft behind. Iterating the DEFINITIONS means
+    // a value can only ever be written for a field that currently exists.
+    const text = field({ id: 'f-1', type: 'text' })
+    const result = parseFieldValues([text], { 'f-1': 'kept', 'f-gone': 'dropped' })
+
+    expect(result).toEqual({
+      ok: true,
+      writes: [{ field: text, write: { fieldType: 'text', value: 'kept' } }],
+    })
+  })
+
+  it('treats a missing record entry as empty rather than throwing', () => {
+    const text = field({ id: 'f-1', type: 'text' })
+    expect(parseFieldValues([text], {})).toEqual({ ok: true, writes: [] })
+  })
+})
+
+describe('insertTicketFieldValues', () => {
+  it('issues NO request at all for an empty list', async () => {
+    await expect(insertTicketFieldValues([])).resolves.toEqual({ ok: true })
+    expect(supabase.from).not.toHaveBeenCalled()
+  })
+
+  it('inserts every row in ONE call', async () => {
+    insert.mockResolvedValue({ error: null })
+    const rows = [
+      valueRow(
+        { ticketId: 't1', projectId: 'p1', fieldId: 'f-1' },
+        { fieldType: 'text', value: 'a' },
+      ),
+      valueRow(
+        { ticketId: 't1', projectId: 'p1', fieldId: 'f-2' },
+        { fieldType: 'number', value: 3 },
+      ),
+    ]
+
+    await expect(insertTicketFieldValues(rows)).resolves.toEqual({ ok: true })
+
+    expect(supabase.from).toHaveBeenCalledTimes(1)
+    expect(insert).toHaveBeenCalledTimes(1)
+    expect(insert).toHaveBeenCalledWith(rows)
+  })
+
+  it('tags a foreign-key violation as stale', async () => {
+    insert.mockResolvedValue({ error: { code: '23503' } })
+    const rows = [
+      valueRow(
+        { ticketId: 't1', projectId: 'p1', fieldId: 'f-1' },
+        { fieldType: 'text', value: 'a' },
+      ),
+    ]
+    await expect(insertTicketFieldValues(rows)).resolves.toEqual({ ok: false, error: 'stale' })
+  })
+})
+
+describe('ticketFieldValueRows', () => {
+  it('takes tenancy from the TICKET, never from the field definition', () => {
+    // tfv_ticket_fk and tfv_field_fk are both composite on project_id, so a row whose project
+    // disagreed with the ticket's would be refused. The ticket is what makes the row's tenancy.
+    const foreign = field({ id: 'f-1', project_id: 'SOME-OTHER-PROJECT', type: 'text' })
+    const rows = ticketFieldValueRows({ id: 't1', project_id: 'p1' }, [
+      { field: foreign, write: { fieldType: 'text', value: 'a' } },
+    ])
+    expect(rows[0]?.project_id).toBe('p1')
+  })
+})
