@@ -13,9 +13,11 @@ type Values = { thing: string }
 function Harness({
   onSubmit = vi.fn(),
   onClosed,
+  submitDisabled,
 }: {
   onSubmit?: (values: Values, actions: SubmitActions<Values>) => void | Promise<void>
   onClosed?: () => void
+  submitDisabled?: boolean
 }) {
   const form = useForm<Values>({ defaultValues: { thing: '' } })
   return (
@@ -27,6 +29,7 @@ function Harness({
       form={form}
       onSubmit={onSubmit}
       onClosed={onClosed}
+      submitDisabled={submitDisabled}
     >
       <FormField
         control={form.control}
@@ -161,6 +164,46 @@ describe('CreateDialog', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.')
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('disables the submit button when submitDisabled is set', async () => {
+    render(<Harness submitDisabled />)
+    await open()
+
+    expect(await screen.findByRole('button', { name: 'Create thing' })).toBeDisabled()
+  })
+
+  it('leaves the submit button enabled by default', async () => {
+    // The other two Create dialogs pass nothing. If this ever defaults to true they break,
+    // and this is the test that says so.
+    render(<Harness />)
+    await open()
+
+    expect(await screen.findByRole('button', { name: 'Create thing' })).toBeEnabled()
+  })
+
+  it('does not submit when submitDisabled is set', async () => {
+    // A disabled attribute that the form still honours on Enter would be decoration. This
+    // is the property that actually prevents the duplicate create.
+    const onSubmit = vi.fn()
+    render(<Harness submitDisabled onSubmit={onSubmit} />)
+    const user = await open()
+
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit on Enter when submitDisabled is set', async () => {
+    // A native disabled submit button is excluded from the form's default-submit
+    // candidates, so pressing Enter in a text field must not fire onSubmit either.
+    const onSubmit = vi.fn()
+    render(<Harness submitDisabled onSubmit={onSubmit} />)
+    const user = await open()
+
+    await user.type(screen.getByLabelText('Thing'), 'a widget{Enter}')
+
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 })
 

@@ -85,6 +85,7 @@ export function CreateDialog<T extends FieldValues>({
   form,
   onSubmit,
   onClosed,
+  submitDisabled = false,
   children,
 }: {
   trigger: string
@@ -94,6 +95,14 @@ export function CreateDialog<T extends FieldValues>({
   form: UseFormReturn<T>
   onSubmit: (values: T, actions: SubmitActions<T>) => void | Promise<void>
   onClosed?: () => void
+  /** Latches the submit button disabled for a reason the form itself cannot see — today,
+   *  a create that already succeeded (the ticket was written) but whose custom field
+   *  values failed to save (SPRIN-89 AC4). Retrying elsewhere in this shell is safe
+   *  because nothing was written yet; here it would create a second ticket, so the
+   *  caller must latch this instead of letting the user press Create again. Defaults to
+   *  `false`, so `CreateProjectDialog` and `CreateSprintDialog` — which never pass it —
+   *  are unaffected. */
+  submitDisabled?: boolean
   children: ReactNode
 }) {
   const [open, setOpen] = useState(false)
@@ -156,7 +165,11 @@ export function CreateDialog<T extends FieldValues>({
             {children}
             <FormRootError />
             <DialogFooter>
-              <SubmitButton label={submitLabel} pendingLabel="Creating…" />
+              <SubmitButton
+                label={submitLabel}
+                pendingLabel="Creating…"
+                disabled={submitDisabled}
+              />
             </DialogFooter>
           </form>
         </Form>
