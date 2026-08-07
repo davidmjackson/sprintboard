@@ -97,17 +97,29 @@ create table ticket_field_values (
   )
 );
 
--- ONE INDEX, and its shape was MEASURED rather than assumed (2026-08-07).
+-- ONE INDEX — AND THIS INDEX IS WRONG. Corrected in a follow-up; read this before copying
+-- the pattern into story 5.
 --
--- Today's advisor flags exactly three unindexed foreign keys, all on `tickets`. The
--- informative case is the one it does NOT flag: tickets_status_fk is (project_id, status)
--- and the only covering index is tickets_project_number_unique (project_id, number). So the
--- linter matches on the LEADING COLUMN, not on the full column set.
+-- The reasoning below was measured, and was still wrong, because it was measured from the
+-- wrong catalog. It read: the advisor flags three unindexed foreign keys, all on `tickets`,
+-- and does NOT flag tickets_status_fk (project_id, status) — whose only covering index looked
+-- like tickets_project_number_unique (project_id, number) — so the linter must match on the
+-- LEADING COLUMN rather than the full set.
 --
--- Applying that here: the primary key (ticket_id, field_id) already covers tfv_ticket_fk,
--- and tfv_field_fk and tfv_type_fk both lead with field_id, so this single index covers both.
--- It is not speculative — story 6's "how many tickets hold a value for this field" count is a
--- lookup by field_id and will use it.
+-- That conclusion came from querying pg_constraint alone. pg_indexes was never read, and it
+-- holds tickets_project_status_idx ON tickets (project_id, status) — an EXACT cover. The fk
+-- was never evidence of a leading-column rule; it was evidence of an index nobody had looked
+-- for.
+--
+-- THE REAL RULE, re-derived and checked on five cases: the foreign key's column list must be
+-- a PREFIX of some index's column list. tickets_epic_fk (parent_epic_id, project_id) is
+-- flagged despite tickets_epic_idx (parent_epic_id) existing, which is the same shape as this
+-- index and settles it.
+--
+-- So this index covers NONE of the three foreign keys here, and applying the migration added
+-- four INFO lints: three unindexed_foreign_keys plus an unused_index for this one. See the
+-- design spec §8 for the three options and which was chosen. Note there is no zero-lint answer
+-- available: a brand-new table has either unindexed foreign keys or unused indexes.
 create index ticket_field_values_field_id_idx on ticket_field_values (field_id);
 
 alter table ticket_field_values enable row level security;

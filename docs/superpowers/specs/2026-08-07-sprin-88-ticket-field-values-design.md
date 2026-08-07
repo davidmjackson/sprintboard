@@ -208,17 +208,51 @@ record: it reads as hardening and would break the SECURITY DEFINER paths.
 to column grants, so a partial reset is what invites the next author's partial reset), then
 INSERT and UPDATE on all eight columns and DELETE on the table, per §3.
 
-**One index: `(field_id)`.** Measured rather than assumed: today's advisor flags exactly three
-unindexed foreign keys, all on `tickets`, and `tickets_status_fk (project_id, status)` is *not*
-flagged despite the only covering index being `(project_id, number)` — so the advisor matches on
-the **leading column**, not the full column set. The PK `(ticket_id, field_id)` therefore already
-covers `tfv_ticket_fk`; `tfv_field_fk` and `tfv_type_fk` both lead with `field_id` and are
-covered by this one index. It is also the index story 6's "how many tickets hold a value for
-this field" count will use, so it is not speculative.
+**One index: `(field_id)` — and it was WRONG. Corrected below; this is the record of it.**
 
-`get_advisors` is re-run after the migration is applied and must show **no new lint** — the
-baseline is 3 unindexed-fk INFOs + 8 initplan WARNs (performance) and 1 unrelated
-`auth_leaked_password_protection` WARN (security), not zero.
+The original reasoning was measured and still wrong, because it was measured from the wrong
+catalog. It ran: the advisor flags three unindexed fks, all on `tickets`, and does *not* flag
+`tickets_status_fk (project_id, status)` despite its only covering index appearing to be
+`(project_id, number)` — therefore the advisor matches on the **leading column**. That came from
+querying `pg_constraint` alone. `pg_indexes` was never read, and it holds
+`tickets_project_status_idx ON tickets (project_id, status)`, an exact cover. The unflagged fk
+was never evidence of a leading-column rule; it was evidence of an index nobody looked for.
+
+**The real rule, re-derived and checked on five cases: the fk's column list must be a PREFIX of
+some index's column list.** `tickets_epic_fk (parent_epic_id, project_id)` is flagged despite
+`tickets_epic_idx (parent_epic_id)` existing — the same shape as the index this story wrote,
+which settles it.
+
+Applying the migration therefore added **four INFO lints**: `unindexed_foreign_keys` on all
+three of `tfv_ticket_fk`, `tfv_field_fk` and `tfv_type_fk`, plus `unused_index` on
+`ticket_field_values_field_id_idx`.
+
+**There is no zero-lint answer**, and that is the actual finding: a brand-new table has either
+unindexed foreign keys or unused indexes. `project_fields` reached zero only because
+`project_fields_project_slug_unique (project_id, slug)` happens to both cover its one fk and be
+used by `listProjectFields`. `ticket_field_values` gets no such luck — its only query is
+`where ticket_id = $1`, which the PK already serves, so any index added here is for fk coverage
+alone and is unused until story 6.
+
+Three options, **open for David** at the point this spec was written:
+
+1. **Cover all three** — `(ticket_id, project_id)`, `(field_id, project_id)`,
+   `(field_id, field_type)`. Returns `unindexed_foreign_keys` to its 3-on-`tickets` baseline and
+   trades it for three `unused_index` INFOs, which self-clear on first scan. Defensible on
+   merit rather than as linter appeasement: this is the epic's highest-cardinality table,
+   growing as tickets × fields, and all three fks cascade.
+2. **One index, accept two INFOs** — widen `(field_id)` to `(field_id, project_id)`, a strict
+   improvement at zero cost that kills one lint and still serves story 6's count-by-`field_id`.
+   Record the other two as accepted with the measured reason. No dead indexes; permanently 2
+   INFOs above baseline.
+3. **No secondary index at all** — drop it; story 6 adds one alongside the query that first uses
+   it. Three INFOs above baseline.
+
+**Baseline for comparison, measured 2026-08-07 before this migration:** 3 unindexed-fk INFOs
+(all on `tickets`) + 8 `auth_rls_initplan` WARNs on the older tables, and 1 unrelated
+`auth_leaked_password_protection` WARN on the security side. Not zero, and not zero since before
+SPRIN-79 — so "keep `get_advisors` at zero lints" is read in this repo as "add none", and this
+story has not yet met even that.
 
 ## 9. Testing — the shapes most likely to ship this green and broken
 
