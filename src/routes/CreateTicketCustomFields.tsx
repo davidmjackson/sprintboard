@@ -2,25 +2,11 @@ import type { Control } from 'react-hook-form'
 
 import type { CustomFieldType, ProjectField } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
+import type { CreateTicketValues } from '@/lib/ticket-schemas'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form'
 import { selectClass } from './form-primitives'
-
-/**
- * The structural minimum of the create-ticket form this component needs.
- *
- * `CreateTicketValues` (in `./CreateTicketDialog`) only gains a `custom` key once task 5 wires
- * this component in, and it is not exported today — so a value OR type import of it from here
- * would fail to resolve, not merely risk a cycle. Declaring the shape locally sidesteps that
- * without waiting on the export, and gets the same "closes no cycle" property an `import type`
- * would have: this type is erased at build regardless of where it is declared. When task 5 adds
- * `custom?: Record<string, string>` to `CreateTicketValues`, `Control<CreateTicketValues>` is
- * assignable to `Control<CreateTicketFormShape>` — `Control` only needs the fields it names to
- * exist and match, and this shape names none `CreateTicketValues` won't also have — so the call
- * site in task 5 needs no cast.
- */
-export type CreateTicketFormShape = { custom?: Record<string, string> }
 
 /**
  * What a create-form control needs: today's typed value and a setter, nothing else. No
@@ -99,7 +85,7 @@ function CreateTicketCustomFieldRow({
   control,
   field,
 }: {
-  control: Control<CreateTicketFormShape>
+  control: Control<CreateTicketValues>
   field: ProjectField
 }) {
   // Bound to a local, then called. `CREATE_CONTROLS[field.type](props)` is a call through a
@@ -132,11 +118,18 @@ function CreateTicketCustomFieldRow({
 }
 
 /**
- * The project's custom fields, rendered as controls on the create-ticket form (SPRIN-89). Not
- * wired into `CreateTicketDialog` yet — task 5 does that — so every prop here defaults to the
- * value that describes a dialog with no field wiring at all: a standalone
- * `<CreateTicketDialog projectId="p1" />`, exactly how the seven pre-existing dialog tests
- * render it, must render nothing extra. That is AC5.
+ * The project's custom fields, rendered as controls on the create-ticket form (SPRIN-89).
+ * Wired into `CreateTicketDialog` by task 5, which passes `fields`/`fieldsPhase` straight
+ * through with no defaults of its own — every prop here still defaults to the value that
+ * describes a dialog with no field wiring at all, so a standalone `<CreateTicketDialog
+ * projectId="p1" />`, exactly how the seven pre-existing dialog tests render it, renders
+ * nothing extra. That is AC5.
+ *
+ * `control`'s type, `Control<CreateTicketValues>`, is imported from `@/lib/ticket-schemas`
+ * rather than declared locally — see that module's docblock for why a locally-declared
+ * structural subset (this component's first draft) does not type-check against
+ * `form.control` at the call site: react-hook-form's `Control<T>` is effectively invariant
+ * in `T`.
  *
  * The empty check is BEFORE the phases, matching `TicketCustomFieldsBody`'s order: once the
  * definitions are known and the project has none, this renders nothing rather than a
@@ -158,7 +151,7 @@ export function CreateTicketCustomFields({
   fields = [],
   fieldsPhase = 'loaded',
 }: {
-  control: Control<CreateTicketFormShape>
+  control: Control<CreateTicketValues>
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
 }): React.ReactElement | null {

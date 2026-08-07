@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest'
 import { Form } from '@/components/ui/form'
 import type { ProjectField } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
-import { CreateTicketCustomFields, type CreateTicketFormShape } from './CreateTicketCustomFields'
+import type { CreateTicketValues } from '@/lib/ticket-schemas'
+import { CreateTicketCustomFields } from './CreateTicketCustomFields'
 
 /**
  * Mirrors `field()` at `src/routes/TicketCustomFields.test.tsx:50`: no id derived from the
@@ -38,7 +39,7 @@ const DATE = field({ id: 'f-7e5', slug: 'target', name: 'Go live', type: 'date' 
 const SELECT = field({ id: 'f-1d8', slug: 'band', name: 'Colour', type: 'select' })
 
 function Harness({ fields, fieldsPhase }: { fields?: ProjectField[]; fieldsPhase?: ReadPhase }) {
-  const form = useForm<CreateTicketFormShape>({ defaultValues: { custom: {} } })
+  const form = useForm<CreateTicketValues>({ defaultValues: { custom: {} } })
   return (
     <Form {...form}>
       <CreateTicketCustomFields control={form.control} fields={fields} fieldsPhase={fieldsPhase} />

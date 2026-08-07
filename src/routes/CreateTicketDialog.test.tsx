@@ -282,7 +282,19 @@ describe('CreateTicketDialog', () => {
    * A `vi.spyOn` on the real `parseFieldValues` forces the refusal so this test can still pin
    * what the DIALOG does with one: nothing is created and the message renders. Every other
    * test in this file leaves `parseFieldValues` real, per the file's own top-of-file note —
-   * this is the one deliberate, documented exception.
+   * this is the one deliberate, documented exception. The refusal LOGIC itself is already
+   * covered where it lives, by task 1's unit tests in `ticket-field-values.test.ts`; what this
+   * test pins is that the dialog routes the error to the right field and stops before writing
+   * anything.
+   *
+   * Coordinator-confirmed independently: a bare `<input type="number">` under jsdom +
+   * userEvent holds `""` after typing `twelve`, `1e999`, and even `1-2` — so this branch is
+   * unreachable through the CURRENT control, more comprehensively than the Chromium probe
+   * above found. Keeping the test (via the spy) is deliberate DEFENCE-IN-DEPTH: if a future
+   * story swaps the control for something that can carry an out-of-range or malformed string
+   * (a plain text input with its own numeric mask, say), this test is what would catch that
+   * `parseFieldNumber`'s rejection stopped being reachable from production — do not delete it
+   * as "dead" on the strength of today's control.
    */
   it('refuses a bad number before creating anything', async () => {
     const spy = vi.spyOn(ticketFieldValues, 'parseFieldValues').mockReturnValue({
