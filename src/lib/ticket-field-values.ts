@@ -304,8 +304,7 @@ export function parseFieldNumber(raw: string): { ok: true; value: number | null 
  * `draft.write === null` — one question, matching the one decision the row actually makes.
  */
 export type FieldValueDraft =
-  | { ok: true; write: FieldValueWrite | null }
-  | { ok: false; message: string }
+  { ok: true; write: FieldValueWrite | null } | { ok: false; message: string }
 
 /** Every type but `number` stores its trimmed string; empty means clear. */
 function textDraft(
@@ -313,7 +312,9 @@ function textDraft(
   raw: string,
 ): FieldValueDraft {
   const trimmed = raw.trim()
-  return trimmed === '' ? { ok: true, write: null } : { ok: true, write: { fieldType, value: trimmed } }
+  return trimmed === ''
+    ? { ok: true, write: null }
+    : { ok: true, write: { fieldType, value: trimmed } }
 }
 
 function numberDraft(raw: string): FieldValueDraft {

@@ -1965,4 +1965,421 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(after![0]).toMatchObject({ name: 'Target ship date', slug: 'delivery_date' })
     })
   })
+
+  /**
+   * SPRIN-88 — ticket_field_values (epic SPRIN-71, story 3).
+   *
+   * **This block is the evidence for the story's central design argument, not decoration.**
+   * The migration grants `authenticated` UPDATE on ALL EIGHT columns rather than on the four
+   * value columns alone, because PostgREST compiles `.upsert(row)` into
+   * `INSERT … ON CONFLICT DO UPDATE SET c = excluded.c` for every column in the payload and
+   * Postgres demands UPDATE privilege on each — so a narrow grant would let the FIRST write to
+   * a field succeed and every later one fail with 42501. The story therefore declines to use
+   * the grant as the control and rests on the constraints instead. That is either right or it
+   * is a tenancy hole, and it cannot be settled by reading, so every constraint it leans on is
+   * exercised below.
+   *
+   * **The type→column mapping is restated LITERALLY here rather than imported from
+   * `VALUE_COLUMN`.** Importing the client's own map would make this test agree with the code
+   * by construction: a map that routed `paragraph` to the wrong column would generate a
+   * "wrong" case that the database happily accepted, and the suite would stay green on exactly
+   * the defect it exists to catch. These literals encode what the CHECK CONSTRAINT says.
+   *
+   * All of it lives in this file rather than half in `tickets.integration.test.ts` so the CI
+   * tripwire gap stays at seven files, and because `projectA`, `projectB` and `ticketA` are
+   * already here — the cross-tenant cases need two tenants, which only this fixture has.
+   */
+  describe("a ticket carries values for its project's custom fields (SPRIN-88)", () => {
+    /** Field ids in project A, one per type, keyed by type. */
+    const fieldOf: Record<string, string> = {}
+    /** A field belonging to project B — the other tenant — for the AC5 cases. */
+    let fieldInB: string
+
+    /**
+     * The five arms of `tfv_one_value_matching_type`, each with a column that IS right for the
+     * type and one that is not. The wrong column is a different one for `number` and `date`
+     * than for the rest, so no single "always writes value_text" defect satisfies them all.
+     */
+    const CASES = [
+      {
+        type: 'text',
+        slug: 'tfv_ref',
+        right: { value_text: 'ACME-1' },
+        wrong: { value_number: 1 },
+      },
+      {
+        type: 'paragraph',
+        slug: 'tfv_notes',
+        right: { value_text: 'Two\nlines' },
+        wrong: { value_number: 1 },
+      },
+      {
+        type: 'number',
+        slug: 'tfv_tier',
+        right: { value_number: -2.5 },
+        wrong: { value_text: 'x' },
+      },
+      {
+        type: 'date',
+        slug: 'tfv_target',
+        right: { value_date: '2026-08-07' },
+        wrong: { value_text: 'x' },
+      },
+      {
+        type: 'select',
+        slug: 'tfv_band',
+        right: { value_option: 'red' },
+        wrong: { value_number: 1 },
+      },
+    ] as const
+
+    beforeAll(async () => {
+      const { data, error } = await a
+        .from('project_fields')
+        .insert(
+          CASES.map((c) => ({
+            project_id: projectA,
+            slug: c.slug,
+            name: `SPRIN-88 ${c.type}`,
+            type: c.type,
+          })),
+        )
+        .select('id, type')
+      if (error) throw new Error(`Fixture: could not seed SPRIN-88 fields: ${error.message}`)
+      for (const row of data!) fieldOf[row.type] = row.id
+
+      // Owned by B, so it is a genuinely foreign field rather than one A merely does not use.
+      const other = await b
+        .from('project_fields')
+        .insert({ project_id: projectB, slug: 'tfv_foreign', name: 'B only', type: 'text' })
+        .select('id')
+        .single()
+      if (other.error) throw new Error(`Fixture: could not seed B's field: ${other.error.message}`)
+      fieldInB = other.data.id
+    })
+
+    // ---- AC4: the value must be in the column its type calls for ----
+
+    for (const c of CASES) {
+      it(`stores a ${c.type} value in its own column and refuses it in another`, async () => {
+        // NEGATIVE FIRST, so the positive below cannot be what makes it pass — then POSITIVE,
+        // so the refusal cannot be an insert that was broken for some unrelated reason. Either
+        // half alone is a test that passes with the constraint dropped or with the table
+        // unwritable; the pair is what makes this attributable.
+        const refused = await a.from('ticket_field_values').insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: fieldOf[c.type]!,
+          field_type: c.type,
+          ...c.wrong,
+        })
+
+        // 23514 is check_violation. The CONSTRAINT NAME is asserted too, because `message` is
+        // the only channel PostgREST exposes for constraint identity and three different
+        // constraints on this table can refuse a row.
+        expect(refused.error?.code).toBe('23514')
+        expect(refused.error?.message).toMatch(/tfv_one_value_matching_type/)
+
+        const accepted = await a
+          .from('ticket_field_values')
+          .insert({
+            ticket_id: ticketA,
+            project_id: projectA,
+            field_id: fieldOf[c.type]!,
+            field_type: c.type,
+            ...c.right,
+          })
+          .select('field_id')
+        expect(accepted.error).toBeNull()
+        expect(accepted.data).toHaveLength(1)
+
+        // Leaves the table as it found it: the PK is (ticket_id, field_id) and later tests
+        // insert against the same pair, so a surviving row would turn their inserts into 23505
+        // and report a constraint failure that has nothing to do with what they assert.
+        await a
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketA)
+          .eq('field_id', fieldOf[c.type]!)
+      })
+    }
+
+    it('refuses a row with NO value and a row with TWO', async () => {
+      // The two edges of the same constraint. "No value" is what makes AC3's delete-to-clear
+      // structural rather than stylistic: a row of nulls is not representable, so the client
+      // could not clear by writing null even if it wanted to.
+      const none = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldOf.text!,
+        field_type: 'text',
+      })
+      expect(none.error?.code).toBe('23514')
+      expect(none.error?.message).toMatch(/tfv_one_value_matching_type/)
+
+      const two = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldOf.text!,
+        field_type: 'text',
+        value_text: 'ACME-1',
+        value_number: 1,
+      })
+      expect(two.error?.code).toBe('23514')
+      expect(two.error?.message).toMatch(/tfv_one_value_matching_type/)
+    })
+
+    // ---- The carried field_type must be the definition's own ----
+
+    it("refuses a field_type that is not the definition's", async () => {
+      // `tfv_type_fk (field_id, field_type)` references `project_fields (id, type)`. The row
+      // below satisfies the CHECK — field_type 'number' with value_number set is internally
+      // consistent — so this isolates the foreign key: the only thing wrong is that the field
+      // is a `text` one. This is what makes `field_type` immutable in practice despite the
+      // grant allowing it to be written.
+      const { error } = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldOf.text!,
+        field_type: 'number',
+        value_number: 1,
+      })
+
+      expect(error?.code).toBe('23503')
+      expect(error?.message).toMatch(/tfv_type_fk/)
+    })
+
+    // ---- AC5: a ticket in project A cannot hold project B's field ----
+
+    it("refuses another project's field on this project's ticket", async () => {
+      // `field_type` is set to B's field's own type ('text'), so `tfv_type_fk` is SATISFIED and
+      // the only failing constraint is `tfv_field_fk (field_id, project_id)`. Without that
+      // care two constraints could refuse this row and the name assertion would be reporting
+      // whichever fired first.
+      const { error } = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: fieldInB,
+        field_type: 'text',
+        value_text: 'cross-tenant',
+      })
+
+      expect(error?.code).toBe('23503')
+      expect(error?.message).toMatch(/tfv_field_fk/)
+    })
+
+    it("refuses a ticket that does not belong to the row's project", async () => {
+      // The mirror of AC5, isolating `tfv_ticket_fk` the same way: the field and the project
+      // agree (both B's), so `tfv_field_fk` passes and only the TICKET is foreign. Together the
+      // two cases are the whole of the composite-fk tenancy argument — one holds the field to
+      // the project, the other holds the ticket to it.
+      const { error } = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectB,
+        field_id: fieldInB,
+        field_type: 'text',
+        value_text: 'cross-tenant',
+      })
+
+      expect(error?.code).toBe('23503')
+      expect(error?.message).toMatch(/tfv_ticket_fk/)
+    })
+
+    // ---- RLS: a new table with new policies, on a two-tenant fixture ----
+
+    describe("user B cannot reach user A's values", () => {
+      let planted: string
+
+      beforeAll(async () => {
+        planted = fieldOf.text!
+        const { error } = await a.from('ticket_field_values').insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: planted,
+          field_type: 'text',
+          value_text: 'A-only',
+        })
+        if (error) throw new Error(`Fixture: could not seed A's value: ${error.message}`)
+      })
+
+      afterAll(async () => {
+        await a
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketA)
+          .eq('field_id', planted)
+      })
+
+      it("A can read the row, and B's unfiltered read returns none of it", async () => {
+        // The positive control is A's read, and it is REQUIRED: `tfv_owner_read` FILTERS rather
+        // than raising, so B seeing `[]` is indistinguishable from the row not existing, from
+        // the table being empty, or from the seed having silently failed.
+        const asA = await a
+          .from('ticket_field_values')
+          .select('value_text')
+          .eq('ticket_id', ticketA)
+        expect(asA.error).toBeNull()
+        expect(asA.data).toHaveLength(1)
+        expect(asA.data![0]!.value_text).toBe('A-only')
+
+        // UNFILTERED, so this asks what B can see of the whole table rather than what B can see
+        // of a row it names — a policy that leaked every tenant's values would still pass a
+        // read narrowed by `.eq('ticket_id', ticketA)` only by accident.
+        const asB = await b.from('ticket_field_values').select('ticket_id')
+        expect(asB.error).toBeNull()
+        expect(asB.data).toEqual([])
+      })
+
+      it("B cannot INSERT a value onto A's ticket", async () => {
+        const { error } = await b.from('ticket_field_values').insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: planted,
+          field_type: 'text',
+          value_text: 'pwned',
+        })
+
+        // 42501 here is unambiguously the POLICY, not a missing grant — `authenticated` holds
+        // INSERT on all eight columns and grants are role-wide rather than row-wide, so B has
+        // exactly the privilege A used to seed this row. That is the discrimination a bare
+        // "expect 42501" would skip: the two controls share a SQLSTATE.
+        expect(error?.code).toBe('42501')
+      })
+
+      it("B's UPDATE matches no row, and A's value is untouched", async () => {
+        const attempt = await b
+          .from('ticket_field_values')
+          .update({ value_text: 'pwned' })
+          .eq('ticket_id', ticketA)
+          .select()
+
+        // FILTERED, not refused — `tfv_owner_update`'s USING clause hides the row, so this is
+        // a successful update of zero rows. Counting them is the assertion; `error` being null
+        // here is the expected outcome and proves nothing on its own.
+        expect(attempt.error).toBeNull()
+        expect(attempt.data).toEqual([])
+
+        const after = await adminClient()
+          .from('ticket_field_values')
+          .select('value_text')
+          .eq('ticket_id', ticketA)
+        expect(after.data![0]!.value_text).toBe('A-only')
+      })
+
+      it("B's DELETE matches no row, and the row survives", async () => {
+        const attempt = await b
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketA)
+          .select()
+        expect(attempt.error).toBeNull()
+        expect(attempt.data).toEqual([])
+
+        // Read back through adminClient, which bypasses RLS: as A this would also return the
+        // row, but as a check it could not tell "survived" from "hidden from B and visible to
+        // A" if the delete had partially applied.
+        const after = await adminClient()
+          .from('ticket_field_values')
+          .select('field_id')
+          .eq('ticket_id', ticketA)
+        expect(after.data).toHaveLength(1)
+      })
+
+      it('an anonymous caller can neither read nor write values', async () => {
+        const anon = anonClient()
+
+        // The policies carry no TO clause, so they cover `anon` as well — and `anon` holds
+        // SELECT on this table. The read is therefore FILTERED to nothing rather than refused.
+        const read = await anon.from('ticket_field_values').select('field_id')
+        expect(read.error).toBeNull()
+        expect(read.data).toEqual([])
+
+        // The write is refused by the missing GRANT before any policy is consulted: the
+        // migration gives `anon` no INSERT. A different author of the same SQLSTATE from the
+        // case above, which is why both are asserted rather than one standing in for both.
+        const write = await anon.from('ticket_field_values').insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: planted,
+          field_type: 'text',
+          value_text: 'pwned',
+        })
+        expect(write.error?.code).toBe('42501')
+      })
+    })
+
+    // ---- AC2/AC3 at the database edge ----
+
+    it('a value survives being read back, and clearing REMOVES the row', async () => {
+      const seed = await a
+        .from('ticket_field_values')
+        .insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: fieldOf.number!,
+          field_type: 'number',
+          value_number: -2.5,
+        })
+        .select('value_number')
+      expect(seed.error).toBeNull()
+      // Round-tripped as a NUMBER, not as the digits. `numeric` arrives over PostgREST as a
+      // JS number here, which is what `fieldValueText` stringifies for the control.
+      expect(seed.data![0]!.value_number).toBe(-2.5)
+
+      const cleared = await a
+        .from('ticket_field_values')
+        .delete()
+        .eq('ticket_id', ticketA)
+        .eq('field_id', fieldOf.number!)
+        .select('field_id')
+      expect(cleared.error).toBeNull()
+      expect(cleared.data).toHaveLength(1)
+
+      // Absence of the ROW, not a row of nulls — which is the only representation the check
+      // constraint permits, and the reason `clearTicketFieldValue` is a delete.
+      const after = await adminClient()
+        .from('ticket_field_values')
+        .select('field_id')
+        .eq('ticket_id', ticketA)
+        .eq('field_id', fieldOf.number!)
+      expect(after.data).toEqual([])
+    })
+
+    it('deleting a field cascades its values away', async () => {
+      // `tfv_field_fk` and `tfv_type_fk` both point at project_fields and BOTH cascade on
+      // delete — deliberately, because two foreign keys to one table with different delete
+      // actions resolve in RI trigger name order, which is luck. This is that pair executed
+      // rather than catalogued.
+      const doomed = await a
+        .from('project_fields')
+        .insert({ project_id: projectA, slug: 'tfv_doomed', name: 'Doomed', type: 'text' })
+        .select('id')
+        .single()
+      expect(doomed.error).toBeNull()
+
+      const seeded = await a.from('ticket_field_values').insert({
+        ticket_id: ticketA,
+        project_id: projectA,
+        field_id: doomed.data!.id,
+        field_type: 'text',
+        value_text: 'goes with it',
+      })
+      expect(seeded.error).toBeNull()
+
+      // Through adminClient: `authenticated` holds no DELETE on project_fields until story 6.
+      const removed = await adminClient()
+        .from('project_fields')
+        .delete()
+        .eq('id', doomed.data!.id)
+        .select('id')
+      expect(removed.error).toBeNull()
+      expect(removed.data).toHaveLength(1)
+
+      const orphans = await adminClient()
+        .from('ticket_field_values')
+        .select('field_id')
+        .eq('field_id', doomed.data!.id)
+      expect(orphans.data).toEqual([])
+    })
+  })
 })

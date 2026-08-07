@@ -60,7 +60,12 @@ function field(overrides: Partial<ProjectField> = {}): ProjectField {
 }
 
 const TEXT = field()
-const PARAGRAPH = field({ id: 'f-4b1', slug: 'notes_long', name: 'Delivery notes', type: 'paragraph' })
+const PARAGRAPH = field({
+  id: 'f-4b1',
+  slug: 'notes_long',
+  name: 'Delivery notes',
+  type: 'paragraph',
+})
 const NUMBER = field({ id: 'f-2c7', slug: 'tier', name: 'Priority level', type: 'number' })
 const DATE = field({ id: 'f-7e5', slug: 'target', name: 'Go live', type: 'date' })
 const SELECT = field({ id: 'f-1d8', slug: 'band', name: 'Colour', type: 'select' })
@@ -299,7 +304,9 @@ describe('the read phases are consulted before the controls', () => {
     mockList.mockRejectedValueOnce(new Error('nope')).mockResolvedValue([])
     renderFields({ fields: [TEXT], onRetryFields })
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load custom field values.')
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not load custom field values.',
+    )
     expect(screen.queryByRole('button', { name: 'Edit Customer ref' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Retry' }))
@@ -310,7 +317,7 @@ describe('the read phases are consulted before the controls', () => {
     expect(onRetryFields).not.toHaveBeenCalled()
   })
 
-  it("renders the FIELDS failure and hands its Retry to the shell, which owns that read", async () => {
+  it('renders the FIELDS failure and hands its Retry to the shell, which owns that read', async () => {
     // The section's own nonce cannot refetch the definitions — they are the shell's read. A
     // Retry wired to the local nonce would render, click, and do nothing at all, which is the
     // "Retry that silently does nothing" LoadFailure's own docblock warns about.
@@ -423,7 +430,7 @@ describe('the section is scoped to its own ticket', () => {
     await waitFor(() => expect(mockList).toHaveBeenCalledWith('t1'))
   })
 
-  it('writes against the ticket AND its project, not the field definition\'s project', async () => {
+  it("writes against the ticket AND its project, not the field definition's project", async () => {
     // `project_id` reaches the row from the TICKET. Both fixtures use 'p1', so this asserts the
     // shape rather than distinguishing the two sources — declared rather than claimed, because
     // a value row whose project differed from its ticket's is exactly what `tfv_ticket_fk`

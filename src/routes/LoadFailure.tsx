@@ -7,11 +7,7 @@ import { Button } from '@/components/ui/button'
  * rather than restating it.
  */
 export type LoadFailureResource =
-  | 'tickets'
-  | 'sprints'
-  | 'statuses'
-  | 'custom fields'
-  | 'custom field values'
+  'tickets' | 'sprints' | 'statuses' | 'custom fields' | 'custom field values'
 
 /** The failure copy, keyed by resource. Lives here rather than in `domain.ts`: that module is
  *  the single home for status/type/column display names, which Rung 3 makes dynamic — this is
