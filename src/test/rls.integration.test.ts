@@ -2313,6 +2313,71 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       })
     }
 
+    // ---- SPRIN-89: several types in ONE statement ----
+
+    it('inserts values of different types for a new ticket in a single batch', async () => {
+      // The property under test is PGRST102: PostgREST refuses a bulk insert whose objects have
+      // differing keys. Rows for `text`, `number` and `date` naturally differ, so this passes
+      // only because every row spells out all four value columns. A mocked client cannot see
+      // this — only a real PostgREST instance enforces PGRST102.
+      //
+      // A FRESH ticket, not `ticketA`: every other test in this block writes ticketA's values
+      // under the same (ticket_id, field_id) primary key, and reusing it would earn a 23505
+      // that looks like a bulk-insert failure and is not one.
+      const created = await a
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'SPRIN-89 batch' }))
+        .select('id')
+        .single()
+      expect(created.error).toBeNull()
+      const ticketId = created.data!.id
+
+      const row = (fieldType: string, patch: Record<string, unknown>) => ({
+        ticket_id: ticketId,
+        project_id: projectA,
+        field_id: fieldOf[fieldType]!,
+        field_type: fieldType,
+        value_text: null,
+        value_number: null,
+        value_date: null,
+        value_option: null,
+        ...patch,
+      })
+
+      const { error } = await a
+        .from('ticket_field_values')
+        .insert([
+          row('text', { value_text: 'ACME-1' }),
+          row('number', { value_number: -2.5 }),
+          row('date', { value_date: '2026-08-07' }),
+        ])
+
+      const readBack = await a
+        .from('ticket_field_values')
+        .select('field_type, value_text, value_number, value_date')
+        .eq('ticket_id', ticketId)
+
+      // Teardown BEFORE the assertions: a failed expect aborts the test, so a delete placed
+      // after one never runs, and this suite's own history is ten fixture rows stranded exactly
+      // that way. Deleting the ticket cascades the value rows away.
+      await a.from('tickets').delete().eq('id', ticketId)
+
+      expect(error).toBeNull()
+      expect(readBack.data).toHaveLength(3)
+      // value_number compared as a JS number, not a string: UPSERT_CASES above already reads
+      // `value_number` back and asserts `.toBe(-2.5)` (a number literal), so PostgREST is
+      // already known, in this file, to serialise this `numeric` column as an unquoted JSON
+      // number rather than a string. Matching that convention here rather than the brief's
+      // more cautious string comparison.
+      expect(readBack.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field_type: 'text', value_text: 'ACME-1' }),
+          expect.objectContaining({ field_type: 'number', value_number: -2.5 }),
+          expect.objectContaining({ field_type: 'date', value_date: '2026-08-07' }),
+        ]),
+      )
+    })
+
     it("refuses an unrecognised field_type, reaching the check's else-false arm", async () => {
       // The migration comments claim "the live suite covers all five arms plus this one, so
       // `else false` is proven reachable-and-refusing rather than assumed." It did not — every
