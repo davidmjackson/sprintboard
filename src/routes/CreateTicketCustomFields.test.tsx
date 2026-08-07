@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useForm } from 'react-hook-form'
 import { describe, expect, it } from 'vitest'
 
@@ -96,6 +97,53 @@ describe('CreateTicketCustomFields', () => {
     // A raw DOM query, because queryByRole EXCLUDES aria-hidden subtrees and would report
     // "absent" for a control that is still in the DOM and still keyboard-reachable.
     expect(document.querySelectorAll('input, textarea, select')).toHaveLength(0)
+  })
+
+  /**
+   * The control on `rhf.value ?? ''`, and it has to live HERE rather than in
+   * `CreateTicketDialog.test.tsx`. That file's close-and-reopen test cannot pin the fallback for
+   * two independent reasons: radix unmounts the dialog content on close, so the control remounts
+   * fresh on reopen whether or not the reset did anything; and `CreateTicketDialog`'s
+   * `defaultValues` carry no `custom` key, so `rhf.value` is `undefined` from birth and no render
+   * ever observes the controlled→uncontrolled transition. Mutating the fallback away left all
+   * 1153 tests green, with no React warning.
+   *
+   * Rendered outside a dialog, under a `useForm` whose defaults DO include `custom: {}`, the
+   * transition is real: the control mounts controlled at `''`, takes a typed value, and
+   * `form.reset()` then restores `custom` to `{}` — at which point this path has no value. A bare
+   * `value={rhf.value}` hands React `undefined`, the input goes uncontrolled, and it KEEPS the
+   * text already in the DOM node rather than clearing.
+   */
+  it('keeps the control controlled across a form.reset()', async () => {
+    // `form.reset()` is fired from a button INSIDE the harness rather than through a captured
+    // `form` handle: reassigning a variable declared outside a component during render is a side
+    // effect, and `react-hooks/globals` rejects it.
+    function ResetHarness() {
+      const form = useForm<CreateTicketValues>({ defaultValues: { custom: {} } })
+      return (
+        <Form {...form}>
+          <CreateTicketCustomFields control={form.control} fields={[TEXT]} fieldsPhase="loaded" />
+          <button type="button" onClick={() => form.reset()}>
+            Reset the form
+          </button>
+        </Form>
+      )
+    }
+
+    const user = userEvent.setup()
+    render(<ResetHarness />)
+
+    await user.type(screen.getByLabelText('Customer ref'), 'ACME-1')
+    expect(screen.getByLabelText('Customer ref')).toHaveValue('ACME-1')
+
+    await user.click(screen.getByRole('button', { name: 'Reset the form' }))
+
+    // Nothing remounted, so an empty value here is the FALLBACK doing its job and not a fresh
+    // control. `toHaveValue('')` is what an uncontrolled input fails: it keeps 'ACME-1'.
+    expect(screen.getByLabelText('Customer ref')).toHaveValue('')
+    // And it is still a controlled element — React only sets the `value` PROPERTY on one it
+    // owns, so a `value` attribute alone would not distinguish the two.
+    expect(screen.getByLabelText('Customer ref')).toHaveAttribute('value', '')
   })
 
   it('shows a loading line rather than empty controls while the definitions load', () => {

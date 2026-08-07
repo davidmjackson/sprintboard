@@ -403,8 +403,9 @@ describe('CreateTicketDialog', () => {
   })
 
   it('re-enables the submit when the dialog is closed and reopened', async () => {
-    // The latch is per-attempt, not permanent. CreateDialog's onClosed is what clears it,
-    // the same seam CreateProjectDialog uses for `keyEdited`.
+    // The latch is per-attempt, not permanent. `CreateDialog` owns the state and clears it in
+    // `handleOpenChange` alongside `form.reset()`, so this dialog holds no latch state of its
+    // own and needs no `onClosed` to clear one.
     mockCreate.mockResolvedValue({
       ok: true,
       ticket: { id: 't1', project_id: 'p1', key: 'MP-12' } as never,
@@ -441,11 +442,17 @@ describe('CreateTicketDialog', () => {
   })
 
   /**
-   * Task 3's surviving mutation: removing the `?? ''` fallback on `rhf.value` in
-   * `CreateTicketCustomFields` passed every test that existed at the time, because nothing
-   * exercised `form.reset()`. `CreateDialog`'s `handleOpenChange` calls it on close, so this
-   * is the reset call site — closing then reopening must show an empty control, not the
-   * stale typed value and not a crash from an uncontrolled-to-controlled flip.
+   * Closing then reopening must show an empty control rather than the stale typed value —
+   * `CreateDialog`'s `handleOpenChange` calls `form.reset()` on close.
+   *
+   * **This is NOT a control on `CreateTicketCustomFields`'s `rhf.value ?? ''` fallback**, and an
+   * earlier version of this docblock said it was. Radix unmounts the dialog content on close, so
+   * the control remounts fresh on reopen whether or not `form.reset()` did anything, and this
+   * dialog's `defaultValues` carry no `custom` key, so `rhf.value` is `undefined` from birth and
+   * no render here ever observes a controlled→uncontrolled flip. Measured: mutating that line to
+   * a bare `value={rhf.value}` left all 1153 tests green, with no React warning. The real control
+   * is `CreateTicketCustomFields.test.tsx`'s "keeps the control controlled across a form.reset()",
+   * which renders outside a dialog so nothing remounts.
    */
   it('clears a typed custom value when the dialog is closed and reopened', async () => {
     const user = await openDialog({ fields: [TEXT] })

@@ -59,9 +59,10 @@ export function SubmitButton({
   pendingLabel: string
   className?: string
   /** Disables the button for a reason the FORM cannot see — today, a create that already
-   *  succeeded and must not be repeated (SPRIN-89 AC4). OR-ed with `isSubmitting`, never
-   *  replacing it. The label still keys on `isSubmitting` alone: a latched button reads
-   *  `label`, not `pendingLabel`, because nothing is in flight. */
+   *  succeeded and must not be repeated (SPRIN-89 AC4), which `CreateDialog` owns as its own
+   *  `latched` state and feeds in here. OR-ed with `isSubmitting`, never replacing it. The
+   *  label still keys on `isSubmitting` alone: a latched button reads `label`, not
+   *  `pendingLabel`, because nothing is in flight. */
   disabled?: boolean
 }) {
   const { isSubmitting } = useFormState()

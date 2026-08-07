@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useForm, type UseFormSetError } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
@@ -77,18 +76,22 @@ export function CreateTicketDialog({
       storyPoints: '',
       labels: '',
       acceptanceCriteria: '',
-      // No `custom: {}` here — it is not load-bearing. `custom` is `.optional()` in
-      // `CreateTicketSchema`, so its absence never trips `.parse()`, and
-      // `CreateTicketCustomFields`'s own `rhf.value ?? ''` already covers an absent (or
-      // post-`form.reset()`) key for every control's controlled `value`. Confirmed: deleting
-      // this line changes the outcome of no test in this file, including the reset test.
+      // No `custom: {}` here. `custom` is `.optional()` in `CreateTicketSchema`, so its absence
+      // never trips `.parse()`, and `CreateTicketCustomFields`'s own `rhf.value ?? ''` covers
+      // the absent key for every control's controlled `value`.
+      //
+      // Its absence means every custom control's `rhf.value` is `undefined` FROM BIRTH, so no
+      // render in this dialog ever observes a controlled→uncontrolled flip — which is why no
+      // test reachable through this dialog can pin that `?? ''`. The control for it lives where
+      // the transition is reachable: `CreateTicketCustomFields.test.tsx`'s "keeps the control
+      // controlled across a form.reset()", which renders the fields under a `useForm` whose
+      // defaults DO include `custom: {}`. Do not restore this line expecting a test to say so.
     },
   })
-  const [created, setCreated] = useState(false)
 
   async function onSubmit(
     values: CreateTicketValues,
-    { close, setError }: SubmitActions<CreateTicketValues>,
+    { close, setError, latch }: SubmitActions<CreateTicketValues>,
   ) {
     const parsed = CreateTicketSchema.parse(values)
 
@@ -116,13 +119,18 @@ export function CreateTicketDialog({
       // The dialog stays OPEN and its submit LATCHES. Retrying is right everywhere else
       // here, because everywhere else an error means nothing was written — this is the one
       // state where pressing Create again makes a second ticket.
+      //
+      // `latch()` is generation-guarded exactly like the `setError` above it, so an abandoned
+      // submit that fails this way cannot disable a dialog the user has since reopened. The two
+      // must stay together: latching a dialog whose explanation was correctly swallowed leaves
+      // a dead form with no message.
       setError('root', {
         message: unsavedFieldsMessage(
           result.ticket.key,
           drafts.writes.map((w) => w.field),
         ),
       })
-      setCreated(true)
+      latch()
       return
     }
 
@@ -137,8 +145,6 @@ export function CreateTicketDialog({
       submitLabel="Create ticket"
       form={form}
       onSubmit={onSubmit}
-      onClosed={() => setCreated(false)}
-      submitDisabled={created}
     >
       <FormField
         control={form.control}

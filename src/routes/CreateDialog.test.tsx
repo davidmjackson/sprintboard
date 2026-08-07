@@ -13,11 +13,9 @@ type Values = { thing: string }
 function Harness({
   onSubmit = vi.fn(),
   onClosed,
-  submitDisabled,
 }: {
   onSubmit?: (values: Values, actions: SubmitActions<Values>) => void | Promise<void>
   onClosed?: () => void
-  submitDisabled?: boolean
 }) {
   const form = useForm<Values>({ defaultValues: { thing: '' } })
   return (
@@ -29,7 +27,6 @@ function Harness({
       form={form}
       onSubmit={onSubmit}
       onClosed={onClosed}
-      submitDisabled={submitDisabled}
     >
       <FormField
         control={form.control}
@@ -65,7 +62,7 @@ describe('CreateDialog', () => {
     expect(screen.getByRole('button', { name: 'Create thing' })).toBeInTheDocument()
   })
 
-  it('hands the submitted values and both guarded callbacks to onSubmit', async () => {
+  it('hands the submitted values and all three guarded callbacks to onSubmit', async () => {
     const onSubmit = vi.fn()
     render(<Harness onSubmit={onSubmit} />)
     const user = await open()
@@ -78,6 +75,7 @@ describe('CreateDialog', () => {
     const actions = onSubmit.mock.calls[0]![1] as SubmitActions<Values>
     expect(typeof actions.close).toBe('function')
     expect(typeof actions.setError).toBe('function')
+    expect(typeof actions.latch).toBe('function')
     // Not called => still open. The shell must never close itself.
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
@@ -166,15 +164,17 @@ describe('CreateDialog', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
-  it('disables the submit button when submitDisabled is set', async () => {
-    render(<Harness submitDisabled />)
-    await open()
+  it('disables the submit button once onSubmit latches it', async () => {
+    render(<Harness onSubmit={(_values, { latch }) => latch()} />)
+    const user = await open()
 
-    expect(await screen.findByRole('button', { name: 'Create thing' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create thing' })).toBeDisabled())
   })
 
-  it('leaves the submit button enabled by default', async () => {
-    // The other two Create dialogs pass nothing. If this ever defaults to true they break,
+  it('leaves the submit button enabled until something latches it', async () => {
+    // The other two Create dialogs never latch. If the shell ever starts latched they break,
     // and this is the test that says so.
     render(<Harness />)
     await open()
@@ -182,28 +182,50 @@ describe('CreateDialog', () => {
     expect(await screen.findByRole('button', { name: 'Create thing' })).toBeEnabled()
   })
 
-  it('does not submit when submitDisabled is set', async () => {
-    // A disabled attribute that the form still honours on Enter would be decoration. This
-    // is the property that actually prevents the duplicate create.
-    const onSubmit = vi.fn()
-    render(<Harness submitDisabled onSubmit={onSubmit} />)
+  it('does not submit again once latched', async () => {
+    // A disabled attribute the form still honours would be decoration. This is the property
+    // that actually prevents the duplicate create.
+    const onSubmit = vi.fn((_values: Values, { latch }: SubmitActions<Values>) => latch())
+    render(<Harness onSubmit={onSubmit} />)
     const user = await open()
 
     await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create thing' })).toBeDisabled())
 
-    expect(onSubmit).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
   })
 
-  it('does not submit on Enter when submitDisabled is set', async () => {
+  it('does not submit on Enter once latched', async () => {
     // A native disabled submit button is excluded from the form's default-submit
     // candidates, so pressing Enter in a text field must not fire onSubmit either.
-    const onSubmit = vi.fn()
-    render(<Harness submitDisabled onSubmit={onSubmit} />)
+    const onSubmit = vi.fn((_values: Values, { latch }: SubmitActions<Values>) => latch())
+    render(<Harness onSubmit={onSubmit} />)
     const user = await open()
+
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create thing' })).toBeDisabled())
 
     await user.type(screen.getByLabelText('Thing'), 'a widget{Enter}')
 
-    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the latch when the dialog is closed and reopened', async () => {
+    // The latch is per-attempt, not permanent — and the shell clears it, so no call site has
+    // to remember an `onClosed` for it.
+    render(<Harness onSubmit={(_values, { latch }) => latch()} />)
+    const user = await open()
+
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create thing' })).toBeDisabled())
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await open()
+
+    expect(screen.getByRole('button', { name: 'Create thing' })).toBeEnabled()
   })
 })
 
@@ -353,6 +375,42 @@ describe('CreateDialog — a stale submit must not reach a reopened dialog', () 
 
     await waitFor(() => expect(screen.getByLabelText('Thing')).toHaveValue('second draft'))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  /**
+   * The review finding SPRIN-89's latch was rewritten for. While `latch` was a caller-owned
+   * `submitDisabled` prop it was the ONE effect of the continuation the shell's generation
+   * guard could not reach, so a stale submit disabled whichever dialog was open when it
+   * resolved. The `setError` beside it *was* guarded and correctly swallowed the explanation,
+   * which is what made the outcome so bad: a fresh draft, intact, unsubmittable, and no alert
+   * saying why. Only a second close/reopen recovered, discarding the draft.
+   *
+   * The alert assertion is deliberately paired with the enabled one. A latch that fired
+   * without its message is exactly the dead-dialog state, so asserting only `toBeEnabled()`
+   * would leave the pairing unpinned.
+   */
+  it('does not latch the reopened dialog when the abandoned submit latches', async () => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const resolved = vi.fn()
+    await submitThenAbandon(async (_values, { setError, latch }) => {
+      await held
+      setError('root', { message: 'Created it, but the rest did not save.' })
+      latch()
+      resolved()
+    })
+
+    release()
+    await waitFor(() => expect(resolved).toHaveBeenCalledTimes(1))
+
+    // A PLAIN assertion, not a `waitFor`: `waitFor` polls, so its first attempt could pass
+    // before a latch had rendered and the test would go green against the very defect it
+    // exists for. RTL's `waitFor` above already flushed React's work inside `act`.
+    expect(screen.getByRole('button', { name: 'Create thing' })).toBeEnabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Thing')).toHaveValue('second draft')
   })
 
   it('does not fire onClosed a second time when a hand-closed submit later resolves', async () => {

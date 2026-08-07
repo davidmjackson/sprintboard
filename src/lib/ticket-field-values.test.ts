@@ -602,6 +602,37 @@ describe('parseFieldValues', () => {
     const text = field({ id: 'f-1', type: 'text' })
     expect(parseFieldValues([text], {})).toEqual({ ok: true, writes: [] })
   })
+
+  /**
+   * DEFENCE IN DEPTH, and deliberately UNREACHABLE from production today — do not delete this as
+   * dead code. `raw[field.id]` reads the prototype chain as happily as the object's own keys, so
+   * a polluted `Object.prototype` would put an attacker-chosen value on a field the user never
+   * filled, and — measured by the SPRIN-89 security review — produce a REAL write of it.
+   *
+   * Three separate things make it unreachable, none of them a property of `parseFieldValues`:
+   * `project_fields.id` is a `uuid` column, `z.record` drops a `__proto__` key, and
+   * react-hook-form refuses those key names. Any one of them could change in a later story
+   * without this file being opened, which is exactly why the guard lives here.
+   *
+   * The prototype is restored in a `finally` so a failing assertion above cannot leak a polluted
+   * `Object.prototype` into every later test in the run.
+   */
+  it('ignores a value inherited from Object.prototype', () => {
+    const polluted = 'f-9a3'
+    const proto = Object.prototype as unknown as Record<string, string>
+    try {
+      proto[polluted] = 'INJECTED'
+      const text = field({ id: polluted, type: 'text' })
+
+      // Sanity: a plain index read really would see the planted value, so a green result below
+      // means the guard fired rather than that the pollution never took.
+      expect(({} as Record<string, string | undefined>)[polluted]).toBe('INJECTED')
+
+      expect(parseFieldValues([text], {})).toEqual({ ok: true, writes: [] })
+    } finally {
+      delete proto[polluted]
+    }
+  })
 })
 
 describe('insertTicketFieldValues', () => {

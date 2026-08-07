@@ -103,9 +103,18 @@ function CreateTicketCustomFieldRow({
           <FormLabel>{field.name}</FormLabel>
           <FormControl>
             {render({
-              // `?? ''` is load-bearing: `form.reset()` restores `custom` to `{}`, at which
-              // point this path has no value, and a bare `value={rhf.value}` would flip the
-              // input from controlled to uncontrolled mid-life.
+              // `?? ''` is load-bearing WHEREVER a value can go from defined to absent:
+              // `form.reset()` restores `custom` to the form's default, at which point this
+              // path has no value, and a bare `value={rhf.value}` flips the input from
+              // controlled to uncontrolled mid-life — React then keeps the text already in the
+              // DOM node rather than clearing it, and warns.
+              //
+              // Pinned by `CreateTicketCustomFields.test.tsx`'s "keeps the control controlled
+              // across a form.reset()", which renders OUTSIDE a dialog for a reason: through
+              // `CreateTicketDialog` this line cannot be pinned at all — radix unmounts the
+              // dialog content on close so the control remounts fresh, and that form's
+              // `defaultValues` omit `custom` entirely so `rhf.value` is `undefined` from birth
+              // and the transition never happens. Measured, not assumed.
               value: rhf.value ?? '',
               onChange: rhf.onChange,
             })}

@@ -403,6 +403,20 @@ export type FieldValuesDraft =
  * All-or-nothing: one unparseable value refuses the entire submit. That ordering is the point —
  * the only outcome in which the user loses nothing is the one where the refusal happens before
  * the ticket is created.
+ *
+ * **`Object.hasOwn`, not a bare `raw[field.id] ?? ''` — DEFENCE IN DEPTH, and not dead code.**
+ * `raw` is an untrusted-shaped bag keyed by field id. Read with a plain index it also sees the
+ * PROTOTYPE chain, so a polluted `Object.prototype` supplies a value for a field the user never
+ * filled: measured, a planted `Object.prototype.<fieldId>` produced a real write of an
+ * attacker-chosen value, and an inherited method name produced `raw.trim is not a function` as an
+ * unhandled rejection that left the dialog doing nothing at all.
+ *
+ * It is UNREACHABLE today through three independent facts, all of which a later story could
+ * change without touching this file: `project_fields.id` is a `uuid` column so no field id can be
+ * `__proto__` or `constructor`; zod's `z.record` drops a `__proto__` key outright; and
+ * react-hook-form refuses those key names too. None of them is a property of THIS function, which
+ * is the whole argument for the guard — do not delete it as unexercised. Its test is
+ * `ticket-field-values.test.ts`'s "ignores a value inherited from Object.prototype".
  */
 export function parseFieldValues(
   fields: ProjectField[],
@@ -412,7 +426,8 @@ export function parseFieldValues(
   const errors: Array<{ fieldId: string; message: string }> = []
 
   for (const field of fields) {
-    const draft = parseFieldValue(field.type, raw[field.id] ?? '')
+    const value = Object.hasOwn(raw, field.id) ? raw[field.id] : ''
+    const draft = parseFieldValue(field.type, value ?? '')
     if (!draft.ok) errors.push({ fieldId: field.id, message: draft.message })
     else if (draft.write !== null) writes.push({ field, write: draft.write })
   }

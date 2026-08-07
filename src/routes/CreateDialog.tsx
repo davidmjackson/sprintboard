@@ -18,11 +18,25 @@ import { FormRootError, SubmitButton } from './form-primitives'
  *  Shared so the three dialogs cannot drift apart on it. */
 export const GENERIC_CREATE_ERROR = 'Something went wrong. Please try again.'
 
-/** The generation-guarded callbacks the shell hands to `onSubmit`. Both no-op if the
- *  dialog has been closed or reopened since the submit began — see the shell's own note. */
+/** The generation-guarded callbacks the shell hands to `onSubmit`. All three no-op if the
+ *  dialog has been closed or reopened since the submit began — see the shell's own note.
+ *
+ *  `latch` disables the submit button for a reason the FORM cannot see: a create that already
+ *  succeeded in part (SPRIN-89 AC4 — the ticket was written, its custom field values were not),
+ *  where pressing Create again would write a SECOND record. Retrying is right everywhere else
+ *  in this shell precisely because everywhere else a failure means nothing was written.
+ *
+ *  It is an ACTION rather than a `submitDisabled` prop on purpose. The latch state lives in the
+ *  shell, beside `open` and the generation, so it goes stale with `close` and `setError` instead
+ *  of leaving one effect of the continuation unguarded — which is exactly the defect the review
+ *  of SPRIN-89 found in the prop-shaped version: a stale submit latched whichever dialog was
+ *  open at the moment it resolved, and the guarded `setError` beside it then swallowed the
+ *  explanation, leaving a live draft that could not be submitted and showed no reason why.
+ *  A guard per EFFECT only works if every effect is one of these. */
 export type SubmitActions<T extends FieldValues> = {
   close: () => void
   setError: UseFormSetError<T>
+  latch: () => void
 }
 
 /**
@@ -46,10 +60,16 @@ export type SubmitActions<T extends FieldValues> = {
  * anyway. Reproduced on `350ce2a`; it is not idempotent.
  *
  * The naive repair — bail out of the whole continuation when it is stale — is wrong,
- * because the three effects in it do not share an owner. `close()` belongs to the dialog
- * and `setError` to the form, so both are stale; but `onCreated` belongs to the *parent*
- * and the created row is real, so it must still fire or the new record stays invisible
- * until a refetch. Hence a guard per effect, not per continuation.
+ * because the effects in it do not share an owner. `close()` belongs to the dialog,
+ * `setError` to the form and `latch` to this shell's submit button, so all three are stale;
+ * but `onCreated` belongs to the *parent* and the created row is real, so it must still fire
+ * or the new record stays invisible until a refetch. Hence a guard per effect, not per
+ * continuation.
+ *
+ * That guarantee is only as good as the count of effects routed through `SubmitActions`.
+ * SPRIN-89 first latched the submit through a `submitDisabled` prop owned by the CALLER,
+ * which put a fourth, unguarded effect in the continuation and reproduced the SPRIN-51 bug in
+ * miniature. An effect the shell owns belongs on `SubmitActions`, not on the props.
  *
  * `openGeneration` is bumped on every open-state transition, in both directions, so any
  * close or reopen between submit and resolve invalidates the continuation. Bumping on
@@ -85,7 +105,6 @@ export function CreateDialog<T extends FieldValues>({
   form,
   onSubmit,
   onClosed,
-  submitDisabled = false,
   children,
 }: {
   trigger: string
@@ -95,17 +114,12 @@ export function CreateDialog<T extends FieldValues>({
   form: UseFormReturn<T>
   onSubmit: (values: T, actions: SubmitActions<T>) => void | Promise<void>
   onClosed?: () => void
-  /** Latches the submit button disabled for a reason the form itself cannot see — today,
-   *  a create that already succeeded (the ticket was written) but whose custom field
-   *  values failed to save (SPRIN-89 AC4). Retrying elsewhere in this shell is safe
-   *  because nothing was written yet; here it would create a second ticket, so the
-   *  caller must latch this instead of letting the user press Create again. Defaults to
-   *  `false`, so `CreateProjectDialog` and `CreateSprintDialog` — which never pass it —
-   *  are unaffected. */
-  submitDisabled?: boolean
   children: ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  // Owned HERE rather than by the caller — see `SubmitActions.latch`. A caller-owned flag is
+  // an effect of the submit continuation that this shell's generation guard cannot reach.
+  const [latched, setLatched] = useState(false)
   // A ref, not state: bumping it must not re-render, and the guard has to read the newest
   // value rather than one captured in the submit's own closure.
   const openGeneration = useRef(0)
@@ -115,6 +129,9 @@ export function CreateDialog<T extends FieldValues>({
     setOpen(next)
     if (!next) {
       form.reset()
+      // The latch is per-attempt, not permanent: a close/reopen clears it alongside the draft,
+      // with no call site needing to remember to.
+      setLatched(false)
       onClosed?.()
     }
   }
@@ -127,6 +144,9 @@ export function CreateDialog<T extends FieldValues>({
       },
       setError: (name, error, options) => {
         if (isCurrent()) form.setError(name, error, options)
+      },
+      latch: () => {
+        if (isCurrent()) setLatched(true)
       },
     }
   }
@@ -165,11 +185,7 @@ export function CreateDialog<T extends FieldValues>({
             {children}
             <FormRootError />
             <DialogFooter>
-              <SubmitButton
-                label={submitLabel}
-                pendingLabel="Creating…"
-                disabled={submitDisabled}
-              />
+              <SubmitButton label={submitLabel} pendingLabel="Creating…" disabled={latched} />
             </DialogFooter>
           </form>
         </Form>
