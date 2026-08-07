@@ -1234,6 +1234,34 @@ describe('ProjectShell', () => {
     await waitFor(() => expect(mockListFields.mock.calls.length).toBeGreaterThan(callsBefore))
   })
 
+  /**
+   * THE SAME SEAM, one hop shorter, for SPRIN-89's create-ticket form (task 6) — shell →
+   * header → dialog. Every hop here is a prop pass with no branch, so nothing else in the
+   * suite would notice one being dropped: the dialog renders fine with no `fields` at all,
+   * and lint sees a prop that is still "used" one level up in `ProjectShellHeader`. Mirrors
+   * the detail-dialog wiring test above, and exists for the identical reason.
+   */
+  it("gives the create-ticket dialog the shell's own custom fields (real wiring)", async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-cr1',
+      project_id: 'p1',
+      slug: 'customer_ref',
+      name: 'Customer ref',
+      type: 'text',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+    mockListFields.mockResolvedValue([field])
+
+    renderShell('/projects/p1')
+
+    // The trigger only renders once `ticketsPhase === 'loaded'` — `mockList`'s default
+    // `beforeEach` resolution to `[]` is what gets it there.
+    await u.click(await screen.findByRole('button', { name: 'New ticket' }))
+
+    expect(await screen.findByLabelText('Customer ref')).toBeInTheDocument()
+  })
+
   // THE SAME SEAM AGAIN, for SPRIN-82 AC3 — and this pair is the only place in the repo that
   // can see it. The rule spans four components: `ProjectShell` asks the predicate,
   // `TicketDetailDialog` forwards the answer, `TicketDetailSidebar` forwards it again, and

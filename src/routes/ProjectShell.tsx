@@ -281,6 +281,13 @@ export function ProjectShell() {
       <ProjectShellHeader
         project={project}
         ticketsPhase={ticketsPhase}
+        // SPRIN-89. Passed as VALUES, not as another branch — the shell is at 10 of 10
+        // cyclomatic, so this can only be a call/read, the same constraint `hasSprints` and
+        // the detail dialog's own `fields`/`fieldsPhase` below satisfy. No `onRetryFields`
+        // here: the create dialog's failed-read notice offers no Retry, deliberately — the
+        // Board and Backlog already carry the Retry for this same read.
+        fields={fields}
+        fieldsPhase={fieldsPhase}
         // A new ticket always carries the highest number, so appending it keeps the number
         // order the board and backlog use — no refetch needed. That also avoids a
         // stale-response race: an unguarded refetch resolving after a project switch would
