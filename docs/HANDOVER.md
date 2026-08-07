@@ -20,9 +20,11 @@ the security boundary, deliberately last)**.
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
 
-**Epic SPRIN-71 is designed and stories 1 and 2 have shipped.** The design is
+**Epic SPRIN-71 is designed and stories 1–4 have shipped.** The design is
 `docs/superpowers/specs/2026-08-05-sprin-71-custom-fields-design.md` — six stories, three
-migrations, all additive. Read it before planning any of them.
+migrations, all additive. Read it before planning any of them. **Both remaining stories (5 and 6)
+depend only on story 3, which is done, so either can be taken next.** SPRIN-92 is the intended
+order because it is the one with a migration.
 
 **The design says story 2 needs no migration. It was wrong**, and the story overrode it: the
 INSERT grant story 1 revoked is a migration, and widening a privilege with no file recording it
@@ -36,9 +38,9 @@ answer:
 |---|---|---|---|
 | 1 — the `project_fields` table and the field list | SPRIN-90 | **Done** | A, applied |
 | 2 — add and rename a custom field | SPRIN-91 | **Done** | B (grants), applied |
-| 3 — values on the ticket detail sidebar | **SPRIN-88 ← IN FLIGHT** | In Progress | C, **applied** |
-| 4 — values on the create-ticket dialog | SPRIN-89 | To Do | — |
-| 5 — single-select fields | SPRIN-92 | To Do | D |
+| 3 — values on the ticket detail sidebar | SPRIN-88 | **Done** | C, applied |
+| 4 — values on the create-ticket dialog | SPRIN-89 | **Done** | — (none needed, verified) |
+| 5 — single-select fields | **SPRIN-92 ← NEXT** | To Do | D |
 | 6 — delete a field, with its value count | SPRIN-93 | To Do | grants |
 
 **The migration letters have shifted by one.** The design calls `ticket_field_values` "migration
@@ -49,6 +51,80 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 59 — SPRIN-89, values on the create-ticket dialog, MERGED (PR #97, `5e8fbe1`)
+
+**Shipped.** Squash-merged to `main` as `5e8fbe1`; `verify` green **on the merge commit itself**
+(72 files / 1295 tests), branch deleted, Jira Done by re-query. No migration — verified twice, once
+against `sprin-88-ticket-field-values.sql` and once against the **live catalogue**.
+65 unit files / 1158 tests locally; tripwire gap still **7**.
+
+**Epic SPRIN-71 is now four of six. Next is SPRIN-92** (single-select fields, migration D), then
+SPRIN-93. Nothing in this story blocks either.
+
+**CI caught a wrong belief of mine, and that is the part worth reading.** The design claimed the
+bulk insert had to spell out all eight columns because *PostgREST rejects a batch whose objects
+have differing keys* (`PGRST102`). I had a live test written to prove it. **The claim is false on
+this stack** — the first CI run failed with `expected null not to be null`, because PostgREST
+happily **accepted** the differing-key batch. This is the clearest instance yet of the rule that a
+mechanistic rationale is a hypothesis until executed: it survived a design review, a plan, an
+implementer, two task reviews, a whole-branch adversarial pass and a security pass, because **not
+one of them could run it** — the seven live suites cannot execute in this environment.
+
+The replacement test asks the question that actually matters: does PostgREST derive the INSERT
+column list from the **union** of the rows or from the **first** row? If the first, a sparse leading
+row would silently drop a later row's value — real data loss, and the padding would be essential
+rather than tidy. It puts a sparse row first, a row setting a column that row omits second, and
+asserts the value survives the round trip. The `PGRST102` prose is corrected in `valueRow`'s
+docblock, both batch-test comments, the unit-test comment and the spec, each with a dated note.
+**Still open, deliberately:** whether PostgREST fills the missing columns with DEFAULT or
+supabase-js normalises client-side. The test pins the outcome, not the mechanism.
+
+**The design decisions, all recorded in the spec with what was rejected.** One bulk `insert`, not N
+upserts, so a *partial* values result is not representable — either every value saves or none does,
+which is what lets AC4's message be true. `insert` not `upsert` because a brand-new ticket id
+cannot conflict and insert needs the narrower privilege. Draft values live in react-hook-form as a
+`custom` record rather than beside it, so the reset is correct by construction instead of dependent
+on one `onClosed` line surviving.
+
+**The one real defect, found by the whole-branch pass (33 mutations, 32 killed).** `setCreated(true)`
+was **not generation-guarded** while the `setError` beside it was — so a stale submit whose values
+write failed latched *whichever dialog was open now*: submit disabled, no alert (the guarded
+`setError` correctly swallowed it), and the user's fresh draft trapped and unsubmittable. Reachable
+in production; it is the SPRIN-51 scenario with a new effect that never got its guard. Fixed
+**structurally** rather than with another remembered guard: the latch moved into `CreateDialog` as
+`SubmitActions.latch()`, sharing `isCurrent()` with `close` and `setError`, cleared in
+`handleOpenChange`. The `submitDisabled` prop added earlier in the story was deleted outright.
+
+**`src/lib/ticket-schemas.ts` is new, and not for tidiness.** react-hook-form's `Control<T>` is
+effectively **invariant** in `T` — `T` appears contravariantly in its subscriber callbacks — so a
+structural-superset type does **not** satisfy it and the control component could not type its
+`control` prop. Verified by the peer reviewer with its own compiler probe, which named the path
+`_subjects.state` → `FormStateSubjectRef<T>` → `subscribe`'s `Observer` parameter. It is the fifth
+`*-schemas.ts` sibling, and `status-schemas.ts` exists for this identical two-consumers-one-cycle
+reason.
+
+**Two of my plan's own code sketches were wrong and the implementers caught both** — which is what
+the deviation-reporting rule is for. `z.record(z.string(), z.string())` crashes `.parse()` on any
+multi-field project, because untouched fields arrive as `undefined`, not `''` (fixed with
+`z.string().optional()`, which lines up exactly with `parseFieldValues`'s existing signature). And
+the "refuses a bad number" test I specified is **unreachable**: a `number` input cannot hold a
+non-numeric string — measured under jsdom + userEvent, it holds `""` after `twelve`, `1e999` *and*
+`1-2`. That branch is now pinned with a scoped spy and documented as defence in depth.
+
+**A test I ordered to close a gap turned out to be vacuous.** After a review found the `?? ''`
+fallback unpinned, I asked for a close-and-reopen test. Radix **unmounts dialog content on close**,
+so the control remounts fresh regardless of `form.reset()` and the mutation still survived all 1153
+tests. The real test renders the row *outside* a dialog and calls `reset()` — and it fails with
+React's own controlled→uncontrolled warning when the fallback is removed. Two docblocks that
+asserted a guarantee no test provided were corrected.
+
+**Five reviewers, all briefed to mutate rather than read.** Security found nothing exploitable in 6
+mutations, verified the no-migration claim against the live catalogue, and measured XSS with a real
+payload rather than reasoning about it (`<img src=x onerror=…>` as a field name renders escaped, 0
+`img` elements). Its one Minor — `parseFieldValues` reading an **inherited** property, measured to
+emit a real write of an attacker-chosen value under a polluted prototype — is unreachable today
+(uuid ids, zod drops `__proto__`, RHF bails) and was closed with `Object.hasOwn` anyway.
 
 ### Session 58 — SPRIN-88 built, reviewed by four agents, MERGED (PR #95, `baf9bba`)
 
@@ -491,6 +567,13 @@ Engineering items with no story yet. Each is a candidate for one.
   `vi.fn(() => ({ eq }))` — argument-agnostic, so it cannot see the narrowing. A story should
   either pin the select's argument list or make a `wip_limit`-less fixture go red. Note this is
   a **class**, not one column: every future first-reader of a column inherits it.
+- **`TicketCustomFields`'s render order is unpinned** (SPRIN-88's detail sidebar). Reversing its
+  `fields.map` leaves the whole suite green, so the `(created_at, slug)` order `listProjectFields`
+  establishes is preserved by nothing. SPRIN-89 closed the identical gap on its own
+  `CreateTicketCustomFields` and deliberately left the sibling alone — same class, one test.
+- **`parseFieldValues`'s traversal direction is unpinned.** Iterating the raw record's keys instead
+  of the definitions list survives the suite. Observable only as the **order** fields are named in
+  AC4's failure message; the definitions order is the on-screen order and is the correct one.
 - **Lint budget, re-measure rather than recall.** `TicketDetailDialog` and `ProjectShell` are both
   at cyclomatic **10/10**, so one added branch reddens the gate; `TicketDetailSidebar` is at 9/10
   and is being kept there for SPRIN-71. `BoardTab` is at 7/10. A **default parameter costs a
