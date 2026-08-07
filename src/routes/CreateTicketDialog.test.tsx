@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CreateTicketDialog } from './CreateTicketDialog'
 import { createTicket } from '@/lib/tickets'
@@ -57,6 +57,14 @@ beforeEach(() => {
   mockCreate.mockReset()
   mockInsertValues.mockReset()
   mockInsertValues.mockResolvedValue({ ok: true })
+})
+
+// `vite.config.ts` sets neither `restoreMocks` nor `clearMocks`, so the one `vi.spyOn` in this
+// file (on the real `parseFieldValues`) would otherwise leak into every later test if an
+// assertion above its own `spy.mockRestore()` ever failed. Restoring here is unconditional and
+// covers that failure path, which a same-test `mockRestore()` call cannot.
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 describe('CreateTicketDialog', () => {
@@ -297,7 +305,7 @@ describe('CreateTicketDialog', () => {
    * as "dead" on the strength of today's control.
    */
   it('refuses a bad number before creating anything', async () => {
-    const spy = vi.spyOn(ticketFieldValues, 'parseFieldValues').mockReturnValue({
+    vi.spyOn(ticketFieldValues, 'parseFieldValues').mockReturnValue({
       ok: false,
       errors: [{ fieldId: NUMBER.id, message: 'Numbers only' }],
     })
@@ -306,11 +314,20 @@ describe('CreateTicketDialog', () => {
     await user.type(screen.getByLabelText('Summary'), 'Wire the board')
     await user.click(screen.getByRole('button', { name: 'Create ticket' }))
 
-    expect(await screen.findByText('Numbers only')).toBeInTheDocument()
+    // Scoped to the Priority level FIELD, not an unscoped `findByText`. `applyFieldErrors`
+    // exists solely to route a message to its own field via `setError(\`custom.${fieldId}\`,
+    // …)` rather than to `root` — an unscoped query would match `FormRootError`'s
+    // `role="alert"` just as happily as this field's own `FormMessage`, so it cannot tell
+    // "routed to the wrong place" from "routed correctly". The FormItem container is what
+    // `getByLabelText`'s `<input>` sits inside, alongside its own `FormMessage`.
+    const priorityField = screen.getByLabelText('Priority level').closest('[data-slot="form-item"]')
+    expect(priorityField).not.toBeNull()
+    expect(
+      await within(priorityField as HTMLElement).findByText('Numbers only'),
+    ).toBeInTheDocument()
     // The ORDERING is the point: parse first, so the user loses nothing.
     expect(mockCreate).not.toHaveBeenCalled()
     expect(mockInsertValues).not.toHaveBeenCalled()
-    spy.mockRestore()
   })
 
   it('keeps the ticket and names the unsaved fields when the values write fails', async () => {
@@ -328,14 +345,42 @@ describe('CreateTicketDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Create ticket' }))
 
     // Exact string, not a substring: toHaveTextContent with a bare string is a SUBSTRING
-    // match, so an additive reword would survive it.
+    // match, so an additive reword would survive it. The apostrophe is the LITERAL curly
+    // character (’), not a `.` wildcard — a `.` would let an apostrophe swap survive too.
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      /^Created MP-12, but couldn.t save: Customer ref, Go live\. Set them on the ticket\.$/,
+      /^Created MP-12, but couldn’t save: Customer ref, Go live\. Set them on the ticket\.$/,
     )
     // The ticket is REAL and must reach the board — withholding it is the invisible-create
     // defect.
     expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  /**
+   * The test above fills BOTH of its fields, so `drafts.writes.map((w) => w.field)` and
+   * `fields ?? []` produce identical lists and the test cannot tell "only the fields actually
+   * written" from "every field on the form" apart — a real mutation the reviewer demonstrated.
+   * A third field, left EMPTY, is what separates them: `parseFieldValues` excludes an empty
+   * field from `drafts.writes` (no write, nothing attempted, nothing to fail), so it must not
+   * be named in a message about what failed to save.
+   */
+  it('names only the fields actually attempted, not every custom field on the form', async () => {
+    mockCreate.mockResolvedValue({
+      ok: true,
+      ticket: { id: 't1', project_id: 'p1', key: 'MP-12' } as never,
+    })
+    mockInsertValues.mockResolvedValue({ ok: false, error: 'unknown' })
+    const user = await openDialog({ fields: [TEXT, NUMBER, DATE] })
+
+    await user.type(screen.getByLabelText('Summary'), 'Wire the board')
+    await user.type(screen.getByLabelText('Customer ref'), 'ACME-1')
+    // Priority level (NUMBER) deliberately left blank.
+    await user.type(screen.getByLabelText('Go live'), '2026-08-07')
+    await user.click(screen.getByRole('button', { name: 'Create ticket' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Created MP-12, but couldn’t save: Customer ref, Go live\. Set them on the ticket\.$/,
+    )
   })
 
   it('will not create a second ticket after a values failure', async () => {

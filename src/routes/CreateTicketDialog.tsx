@@ -77,7 +77,11 @@ export function CreateTicketDialog({
       storyPoints: '',
       labels: '',
       acceptanceCriteria: '',
-      custom: {},
+      // No `custom: {}` here — it is not load-bearing. `custom` is `.optional()` in
+      // `CreateTicketSchema`, so its absence never trips `.parse()`, and
+      // `CreateTicketCustomFields`'s own `rhf.value ?? ''` already covers an absent (or
+      // post-`form.reset()`) key for every control's controlled `value`. Confirmed: deleting
+      // this line changes the outcome of no test in this file, including the reset test.
     },
   })
   const [created, setCreated] = useState(false)
