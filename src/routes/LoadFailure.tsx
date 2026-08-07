@@ -6,7 +6,12 @@ import { Button } from '@/components/ui/button'
  * Named and exported so callers (and `firstUnready`'s `R`) can refer to the same list
  * rather than restating it.
  */
-export type LoadFailureResource = 'tickets' | 'sprints' | 'statuses' | 'custom fields'
+export type LoadFailureResource =
+  | 'tickets'
+  | 'sprints'
+  | 'statuses'
+  | 'custom fields'
+  | 'custom field values'
 
 /** The failure copy, keyed by resource. Lives here rather than in `domain.ts`: that module is
  *  the single home for status/type/column display names, which Rung 3 makes dynamic — this is
@@ -18,6 +23,11 @@ const FAILURE_COPY: Record<LoadFailureResource, string> = {
   sprints: 'Could not load sprints.',
   statuses: 'Could not load statuses.',
   'custom fields': 'Could not load custom fields.',
+  // Distinct from 'custom fields' above, and the distinction is the point: that one is the
+  // project's field DEFINITIONS, this one is a ticket's VALUES for them. Either read failing
+  // hides the section, but they fail independently and a user who retries needs to know which
+  // one they are retrying.
+  'custom field values': 'Could not load custom field values.',
 }
 
 /**

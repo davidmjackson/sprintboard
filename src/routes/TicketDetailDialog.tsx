@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDeliverables } from '@/lib/ticket-deliverables'
-import type { ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { statusName } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
@@ -36,6 +36,9 @@ export function TicketDetailDialog({
   statuses = [],
   statusesPhase = 'loading',
   hasSprints,
+  fields,
+  fieldsPhase,
+  onRetryFields,
   onOpenChange,
   onUpdated,
   onDeleted,
@@ -67,6 +70,19 @@ export function TicketDetailDialog({
    *  11 and turn `npm run lint` red. The default lives one hop further down instead, which
    *  is also where it reads as a decision rather than as plumbing. */
   hasSprints?: boolean
+  /** The project's custom field definitions and that read's phase (SPRIN-88). Threaded
+   *  straight through to the sidebar and on to `TicketCustomFields`, which owns both
+   *  defaults.
+   *
+   *  UNDEFAULTED HERE FOR THE SAME REASON AS `hasSprints`, and the reason has only got
+   *  sharper: this component is still at 10 of 10, so `fields = []` and
+   *  `fieldsPhase = 'loading'` would take it to 12 on their own. That is why the story's
+   *  design says the dialog "threads them straight through" — it is a lint-budget
+   *  constraint stated as an architecture, not a preference. */
+  fields?: ProjectField[]
+  fieldsPhase?: ReadPhase
+  /** The shell's retry, for the definitions read the shell owns. */
+  onRetryFields?: () => void
   onOpenChange: (open: boolean) => void
   onUpdated: (ticket: Ticket) => void
   onDeleted: (id: string) => void
@@ -177,6 +193,9 @@ export function TicketDetailDialog({
             setError={setError}
             onEditingChange={handleEditingChange}
             hasSprints={hasSprints}
+            fields={fields}
+            fieldsPhase={fieldsPhase}
+            onRetryFields={onRetryFields}
           />
         </div>
 

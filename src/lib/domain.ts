@@ -360,6 +360,24 @@ export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
 export type ProjectField = Omit<Tables<'project_fields'>, 'type'> & {
   type: CustomFieldType
 }
+
+/**
+ * One ticket's value for one custom field (SPRIN-88). The definition is `ProjectField`.
+ *
+ * `field_type` is narrowed the same way and for the same reason `ProjectField.type` is, and
+ * `listTicketFieldValues` enforces it rather than casting past it.
+ *
+ * **All four `value_*` columns are independently nullable here, and that is the generated
+ * shape rather than the real rule.** The database insists — via `tfv_one_value_matching_type`
+ * — that EXACTLY ONE is populated and that it is the one `field_type` calls for. TypeScript
+ * cannot express that, so a row of four nulls and a row of four values both type-check. Do
+ * not read the optionality as permission: the only writer is `setTicketFieldValue`, which
+ * sends a single value column, and "no value" is the ABSENCE of the row rather than a row of
+ * nulls — which is why clearing a field deletes it.
+ */
+export type TicketFieldValue = Omit<Tables<'ticket_field_values'>, 'field_type'> & {
+  field_type: CustomFieldType
+}
 export type Ticket = Omit<Tables<'tickets'>, 'status' | 'type'> & {
   status: TicketStatus
   type: TicketType

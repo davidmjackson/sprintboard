@@ -492,6 +492,28 @@ describe('TicketDetailDialog', () => {
     await waitFor(() => expect(updateTicket).toHaveBeenCalledWith('t1', { story_points: 8 }))
   })
 
+  it('bounds the story points input at zero, from the CALL SITE that owns the rule', async () => {
+    // `min={0}` was `EditableText`'s hardcoded behaviour for any `numeric` field until
+    // SPRIN-88, which gave custom `number` fields the same component and needs them UNbounded
+    // (a temperature, a variance, a balance). Moving the bound to this call site left it
+    // unpinned — nothing was asserting it, so dropping the prop would have been silent. The
+    // matching negative, that a custom number field carries no `min`, is in
+    // `TicketCustomFields.test.tsx`; the pair is what stops the rule drifting back into the
+    // shared component or falling out of this one.
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
+    expect(screen.getByRole('spinbutton', { name: /story points/i })).toHaveAttribute('min', '0')
+  })
+
   it('returns focus to the field trigger button after commit (Enter) and after cancel (Escape)', async () => {
     render(
       <TicketDetailDialog
