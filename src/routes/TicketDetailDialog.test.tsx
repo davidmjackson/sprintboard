@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { TicketDetailDialog } from './TicketDetailDialog'
 import {
   DEFAULT_PROJECT_STATUSES,
+  type ProjectField,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -21,6 +22,16 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+// SPRIN-88's per-ticket read. Needed the moment any test here supplies a non-empty `fields`,
+// which the phase test below does — without it the real `listTicketFieldValues` issues a live
+// PostgREST request, invisibly, because the section catches the rejection and renders its
+// failure state. The spread keeps `parseFieldValue`/`fieldValueText` real.
+vi.mock('@/lib/ticket-field-values', async (orig) => ({
+  ...(await orig<typeof import('@/lib/ticket-field-values')>()),
+  listTicketFieldValues: vi.fn().mockResolvedValue([]),
+  setTicketFieldValue: vi.fn().mockResolvedValue({ ok: true }),
+  clearTicketFieldValue: vi.fn().mockResolvedValue({ ok: true }),
+}))
 vi.mock('@/lib/tickets', async (orig) => ({
   ...(await orig<typeof tickets>()),
   updateTicket: vi.fn(),
@@ -512,6 +523,43 @@ describe('TicketDetailDialog', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /edit story points/i }))
     expect(screen.getByRole('spinbutton', { name: /story points/i })).toHaveAttribute('min', '0')
+  })
+
+  it('forwards fieldsPhase, so custom field controls wait for the definitions read', () => {
+    // The DIALOG hop for `fieldsPhase`, the sibling of the `statusesPhase` test above and for
+    // the identical reason: the prop is optional and UNDEFAULTED here (a destructuring default
+    // costs a cyclomatic point and this component is at 10 of 10), so forgetting it at the call
+    // site is silent. A re-review found `fieldsPhase={fieldsPhase}` could be dropped from this
+    // component with all 1112 tests green.
+    //
+    // Note the deliberate shape, copied from the statuses test: the field rows ARE supplied and
+    // the phase is NOT resolved, so a section that rendered controls anyway could only be
+    // defaulting the phase to 'loaded' — which is exactly the mutation this kills. Unwired, the
+    // controls appear over an empty value list, which is the overwrite hazard
+    // `TicketCustomFields` is written against.
+    const field = {
+      id: 'f-9a3',
+      project_id: 'p1',
+      slug: 'cust_ref',
+      name: 'Customer ref',
+      type: 'text',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        fields={[field]}
+        fieldsPhase="loading"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit Customer ref' })).not.toBeInTheDocument()
   })
 
   it('returns focus to the field trigger button after commit (Enter) and after cancel (Escape)', async () => {

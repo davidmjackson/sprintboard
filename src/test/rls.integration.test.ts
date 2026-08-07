@@ -2257,52 +2257,61 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
      * `(ticket_id, field_id)` really is the constraint PostgREST can infer (a wrong target
      * raises 42P10 at runtime, which no mocked test could see).
      */
-    it('accepts a SECOND write to the same field, updating it in place', async () => {
-      const row = {
-        ticket_id: ticketA,
-        project_id: projectA,
-        field_id: fieldOf.paragraph!,
-        field_type: 'paragraph' as const,
-      }
-      try {
-        const first = await a
-          .from('ticket_field_values')
-          .upsert(
-            { ...row, value_text: 'first' },
-            { onConflict: 'ticket_id,field_id', ignoreDuplicates: false },
-          )
-        expect(first.error).toBeNull()
+    // ONE CASE PER VALUE COLUMN, not one case overall. A single `paragraph` case exercises a
+    // SET list of `value_text` plus the four identity columns — five of the eight granted
+    // columns — so dropping `value_number`, `value_date` and `value_option` from the grant
+    // would leave it green while the SECOND edit of any number, date or select field 42501s.
+    // A re-review caught that; `text` is omitted only because it shares `value_text`.
+    const UPSERT_CASES = [
+      { type: 'paragraph', column: 'value_text', first: 'first', second: 'second' },
+      { type: 'number', column: 'value_number', first: 1, second: -2.5 },
+      { type: 'date', column: 'value_date', first: '2026-01-01', second: '2026-02-02' },
+      { type: 'select', column: 'value_option', first: 'red', second: 'blue' },
+    ] as const
 
-        // The one that would 42501 under a narrow column grant: this compiles to
-        // `INSERT … ON CONFLICT (ticket_id, field_id) DO UPDATE SET ticket_id = excluded.ticket_id,
-        // project_id = …, field_id = …, field_type = …, value_text = …` — five columns in the
-        // SET list, four of which are identity columns a value-columns-only grant would omit.
-        const second = await a
-          .from('ticket_field_values')
-          .upsert(
-            { ...row, value_text: 'second' },
-            { onConflict: 'ticket_id,field_id', ignoreDuplicates: false },
-          )
-        expect(second.error).toBeNull()
+    for (const c of UPSERT_CASES) {
+      it(`accepts a SECOND write to a ${c.type} field, updating ${c.column} in place`, async () => {
+        const row = {
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: fieldOf[c.type]!,
+          field_type: c.type,
+        }
+        const options = { onConflict: 'ticket_id,field_id', ignoreDuplicates: false } as const
+        try {
+          const first = await a
+            .from('ticket_field_values')
+            .upsert({ ...row, [c.column]: c.first }, options)
+          expect(first.error).toBeNull()
 
-        // It UPDATED rather than inserting a duplicate or silently doing nothing. Row count
-        // and value together: `ignoreDuplicates: true` would leave exactly one row holding
-        // 'first', which a count-only assertion could not tell from success.
-        const after = await adminClient()
-          .from('ticket_field_values')
-          .select('value_text')
-          .eq('ticket_id', ticketA)
-          .eq('field_id', fieldOf.paragraph!)
-        expect(after.data).toHaveLength(1)
-        expect(after.data![0]!.value_text).toBe('second')
-      } finally {
-        await a
-          .from('ticket_field_values')
-          .delete()
-          .eq('ticket_id', ticketA)
-          .eq('field_id', fieldOf.paragraph!)
-      }
-    })
+          // The one that would 42501 under a narrow column grant. It compiles to
+          // `INSERT … ON CONFLICT (ticket_id, field_id) DO UPDATE SET ticket_id = excluded.ticket_id,
+          // project_id = …, field_id = …, field_type = …, <value column> = …` — five columns in
+          // the SET list, four of them identity columns a value-columns-only grant would omit.
+          const second = await a
+            .from('ticket_field_values')
+            .upsert({ ...row, [c.column]: c.second }, options)
+          expect(second.error).toBeNull()
+
+          // It UPDATED rather than inserting a duplicate or silently doing nothing. Row count
+          // AND value together: `ignoreDuplicates: true` would leave exactly one row still
+          // holding the first value, which a count-only assertion could not tell from success.
+          const after = await adminClient()
+            .from('ticket_field_values')
+            .select(c.column)
+            .eq('ticket_id', ticketA)
+            .eq('field_id', fieldOf[c.type]!)
+          expect(after.data).toHaveLength(1)
+          expect((after.data![0] as Record<string, unknown>)[c.column]).toBe(c.second)
+        } finally {
+          await a
+            .from('ticket_field_values')
+            .delete()
+            .eq('ticket_id', ticketA)
+            .eq('field_id', fieldOf[c.type]!)
+        }
+      })
+    }
 
     it("refuses an unrecognised field_type, reaching the check's else-false arm", async () => {
       // The migration comments claim "the live suite covers all five arms plus this one, so

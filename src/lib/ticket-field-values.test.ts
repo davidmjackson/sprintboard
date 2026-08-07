@@ -387,8 +387,16 @@ describe('parseFieldValue', () => {
 /**
  * `fieldValueText` and `applyValueWrite` had NO direct tests until a review found it — both
  * rested entirely on one component test that starts from an empty value list, so the REPLACE
- * path and every column but `value_text` were unexercised. Four mutations survived in that
- * state; each has a test below now.
+ * path, the `field_type` stamp, the identity columns and the documented idempotence were all
+ * unexercised. Four mutations survived in that state; each has a test below now.
+ *
+ * ONE CORRECTION, recorded because the discipline cuts both ways: a fifth reported survivor —
+ * `fieldValueText` always reading `value_text` — was NOT one. A re-review restored the
+ * pre-fix test file, re-planted it, and watched it kill three tests that already existed. The
+ * original reviewer had run a narrow subset. So read a survivor list as a hypothesis too, not
+ * only a kill list: the count was ten, not eleven. These direct tests remain worth having —
+ * they name the property rather than catching it incidentally — but they did not close a hole
+ * that was open.
  */
 describe('fieldValueText', () => {
   it("reads the column the ROW's own field_type names, for every type", () => {

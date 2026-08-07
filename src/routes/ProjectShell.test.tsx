@@ -1144,9 +1144,11 @@ describe('ProjectShell', () => {
     renderShell('/projects/p1/backlog')
     await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
 
-    // Rendered at all only because BOTH `fields` and `fieldsPhase` arrived: with `fields={[]}`
-    // the section renders nothing, and with `fieldsPhase` missing it would default to 'loaded'
-    // over an empty list — the same nothing.
+    // Rendered at all only because `fields` arrived: with `fields={[]}` the section renders
+    // nothing. This assertion says nothing about `fieldsPhase` — with a non-empty list the
+    // phase is irrelevant to it — so that prop gets its own test below. (An earlier version of
+    // this comment claimed BOTH props were pinned here; a re-review disproved it, which is the
+    // comment-as-control shape appearing inside a fix for comment-as-control.)
     const control = await screen.findByRole('button', { name: 'Edit Customer ref' })
     // And the ticket's OWN value, which can only have come from the per-ticket read the
     // section issues for the ticket the shell selected.
@@ -1163,6 +1165,73 @@ describe('ProjectShell', () => {
         expect.objectContaining({ ticketId: 'tA', projectId: 'p1', fieldId: 'f-9a3' }),
       ),
     )
+  })
+
+  /**
+   * The SIBLING props at the same seam. The test above pins `fields`; these pin `fieldsPhase`
+   * and `onRetryFields`, which a re-review found were still naked — dropping either from the
+   * shell's call site left all 1112 tests green. Same defect class, one prop over.
+   *
+   * `fieldsPhase` is not cosmetic. Unwired it defaults to `'loaded'`, so while the definitions
+   * read is still in flight the section renders CONTROLS over an empty value list rather than
+   * "Loading…" — an empty writable control that says "this ticket has no value for this field"
+   * and is one keystroke from overwriting real stored data. That is the exact hazard
+   * `TicketCustomFields`'s docblock is written against, and it is invisible without this test.
+   */
+  it('waits for the definitions read before offering any custom field control (real wiring)', async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-9a3',
+      project_id: 'p1',
+      slug: 'cust_ref',
+      name: 'Customer ref',
+      type: 'text',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+    // Never resolves: the definitions read stays in flight for the whole test, which is the
+    // only state in which `fieldsPhase` can be told apart from its default.
+    mockListFields.mockReturnValue(new Promise(() => {}) as never)
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // "Loading…" IS the discriminator, not the absent control. Absence alone would be trivially
+    // true here — the read never resolves, so there are no fields to render either way. What
+    // separates the two is that an unwired `fieldsPhase` defaults to 'loaded' over an empty
+    // list and renders NOTHING, so this line is what goes red on that mutation. The positive
+    // control — the same field fixture DOES produce a control once loaded — is the preceding
+    // test, which uses the same fixture and asserts exactly that.
+    expect(await screen.findByText('Loading…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit Customer ref' })).not.toBeInTheDocument()
+    // Referenced so the fixture above is not dead weight to a reader: it is the shape the
+    // preceding test loads successfully.
+    expect(field.name).toBe('Customer ref')
+  })
+
+  it("retries the definitions read from the section's own failure state (real wiring)", async () => {
+    // `onRetryFields` is the SHELL's retry, threaded three hops down, because the definitions
+    // read belongs to the shell and no state the dialog owns can refetch it. Unwired it
+    // defaults to a no-op, so the Retry button renders, is clicked, and does nothing at all —
+    // the "Retry that silently does nothing" `LoadFailure`'s own docblock warns about, and
+    // exactly what no test could see before this one.
+    const u = userEvent.setup()
+    mockListFields.mockRejectedValue(new Error('offline'))
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    // Scoped to the dialog: the Settings tab renders its own custom-fields failure from the
+    // same read, so an unscoped query could pass against the wrong one.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not load custom fields.')
+
+    const callsBefore = mockListFields.mock.calls.length
+    await u.click(within(dialog).getByRole('button', { name: 'Retry' }))
+
+    // The shell re-read. A no-op retry leaves this equal.
+    await waitFor(() => expect(mockListFields.mock.calls.length).toBeGreaterThan(callsBefore))
   })
 
   // THE SAME SEAM AGAIN, for SPRIN-82 AC3 — and this pair is the only place in the repo that
