@@ -52,6 +52,65 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 61 — SPRIN-92 BUILT AND PUSHED, NOT MERGED (branch `sprin-92-single-select-fields`, `79137b3`)
+
+**Read this before touching anything.** 21 commits, pushed, `verify` has **never run** — CI only
+fires on a pull request and there is no PR yet. Local `test:unit` is 68 files / 1244 tests, lint and
+typecheck clean. The tripwire gap held at **7** throughout.
+
+**THE DATABASE IS AHEAD OF `main`.** Migration D (`docs/migrations/sprin-92-project-field-options.sql`)
+was hand-applied 2026-08-08 and verified from the catalogue: `project_field_options` live, RLS on,
+four `options_owner_*` policies all using `(select auth.uid())`, exactly six column grants (INSERT on
+five columns, UPDATE on `label` alone), plus `tfv_option_fk` on `ticket_field_values`. **If this
+branch is abandoned the table must be DROPPED BY HAND** — nothing else will do it. Same shape as
+session 57.
+
+**Advisors moved 14 → 16 performance lints**, both new ones `unindexed_foreign_keys` INFOs
+(`pfo_field_fk`, `tfv_option_fk`), accepted with no index — adding one is a further migration and
+David's call. Security unchanged at 1 WARN. **No new `auth_rls_initplan`** — still 8.
+**A prediction in the spec and plan was WRONG and is corrected in the migration file:** fk index
+coverage needs the fk columns to be a **prefix of an index**, not merely to share a leading column.
+`pfo_field_fk (field_id, project_id)` is flagged despite the PK `(field_id, slug)` leading with
+`field_id`.
+
+**ONE DEFECT CLASS ACCOUNTED FOR FIVE OF THE SIX FINDINGS.** A wire or guard that could be dropped,
+crossed or defaulted with the entire suite green:
+1. an untested `.trim()` (found by deleting it — nothing went red);
+2. a **vacuous** live RLS test asserting `error === null`, where RLS FILTERS rather than raising, so
+   a zero-row update looked like success — **CI would not have caught this either**;
+3. six prop pass-throughs pinned by nothing;
+4. two **same-signature callbacks that could be SWAPPED** with 1216 tests green, type-clean and
+   lint-clean — found only because a reviewer invented that mutation unprompted;
+5. a required-prop fix that closed the hole at the leaves and left it open one level up, proven by a
+   probe that compiled clean and rendered an enabled empty select.
+**It is now closed by construction, not vigilance**: `options` and `optionsPhase` are REQUIRED (no
+defaults) at every component in both chains, so an unplugged wire is a `TS2741` compile error.
+Removing those defaults also *lowered* complexity — a default parameter costs a cyclomatic point
+here — taking `TicketCustomFields` 6→5, `CreateTicketCustomFields` 8→7 and restoring
+`TicketDetailSidebar` from 10 back to **9**.
+
+**Three times an implementer corrected a premise I handed it**, which is why the deviation-reporting
+rule earns its keep: the plan told one to put `ALTER TABLE` in the schema doc (a guard forbids it);
+plan test code violated `noUncheckedIndexedAccess` twice; and **twice** a dispatch claimed an earlier
+task had already threaded `options`/`optionsPhase` to a dialog when it had not — Task 9 stopped at
+the Outlet context. Unchecked, the controls would have passed every test and received no data in the
+running app.
+
+**A reviewer was also wrong once, and the implementer disproved it by mutation** rather than
+argument: the claim that one test closed both wiring hops was false — with the second test skipped
+and the swap applied, the whole suite ran green. Compare the mutation, never the verdict.
+
+**Lint headroom, re-measure rather than recall:** `ProjectShell` and `TicketDetailDialog` are at
+cyclomatic **10/10**, zero headroom. `TicketDetailSidebar` is back to 9. Measure with
+`npx eslint <file> --rule '{"complexity":["error",1]}'`.
+
+**Still open on this branch:** an adversarial ultracode review (5 lenses + skeptic verification) was
+running at session end — read its report before merging. No whole-branch or security pass has been
+accepted yet. **`TicketDetailSidebar` and `TicketDetailDialog` still lack an independent hop test for
+the options list**; compile-time requiredness partly compensates. And `renameProjectFieldOption`
+leans on `.single()`'s incidental zero-row error rather than an explicit row count — a **third**
+instance of the class this file already records for `renameProjectStatus`.
+
 ### Session 60 — housekeeping: SPRIN-57 closed, the advisor baseline corrected
 
 **No feature work.** Two items, both from reading the board against this file.
@@ -688,6 +747,23 @@ Engineering items with no story yet. Each is a candidate for one.
   than this file's own convention elsewhere (the duplicate-name and slug-format tests both pin
   the name, because `message` is the only channel PostgREST exposes for constraint identity).
   Dropping the check still reddens them, so they are not vacuous — just less specific.
+
+## Owed to SPRIN-75, added by SPRIN-92 (session 61)
+
+- **`project_field_options` is born with TRUNCATE granted to BOTH roles**, and TRUNCATE bypasses RLS.
+  Not reachable through PostgREST, so defence-in-depth rather than a live hole — but
+  `revoke truncate on project_field_options from authenticated, anon;` is one line and would keep the
+  new table out of the sweep. Same note SPRIN-88 recorded for `ticket_field_values`.
+- **The `options_owner_*` policies read `project_id` and nothing else**, so `field_id` and `slug` are
+  fk-governed *including across tenants*. Re-audit before narrowing those composite fks during the
+  membership rewrite — that narrowing is exactly what the **wrong** version of the SPRIN-88 finding
+  would license.
+- **`deleteProjectFieldOption` filters on `(field_id, slug)` and leans on the policy's USING clause** —
+  a fresh instance of the SPRIN-64 class. Correct today; under a membership model where read is
+  broader than write, a viewer-role delete would not be caught here.
+- **`renameProjectFieldOption` relies on `.single()`'s INCIDENTAL zero-row error**, not an explicit
+  row count. That makes **three** instances of the class this file already records against
+  `renameProjectStatus`. Worth settling together before SPRIN-75 rewrites these policies.
 
 ## Owed to SPRIN-75, found by the SPRIN-88 security review (session 58)
 
