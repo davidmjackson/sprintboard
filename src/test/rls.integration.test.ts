@@ -2987,5 +2987,145 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .eq('field_id', fieldId)
       expect(count).toBe(0)
     })
+
+    /**
+     * ---- ISOLATION. The four verbs against a STRANGER, plus anon ----
+     *
+     * ADDED AFTER THE FACT, and the gap is worth recording rather than quietly closing. Every
+     * assertion in the block above used client `a`, so this table shipped with its AC coverage
+     * complete and its ISOLATION coverage empty — while its three siblings all carry B-side
+     * assertions (`project_statuses` at :381/:466/:540, `project_fields` at :1691,
+     * `ticket_field_values` at :2512). The migration file's own comment claimed "a live test
+     * proves it" of `options_owner_delete`. No such test existed.
+     *
+     * It matters more here than on any sibling: this is the only one of the four holding a
+     * table-wide `grant delete … to authenticated`, and its delete CASCADES into ticket data
+     * through `tfv_option_fk`. `options_owner_delete` is the sole barrier between a stranger
+     * and another tenant's stored values, and nothing would have gone red if SPRIN-75's
+     * rewrite dropped it.
+     *
+     * ROW COUNTS, never `error === null`. RLS FILTERS a read/update/delete rather than raising
+     * on it, so a wide-open policy and a working one both return a successful response — the
+     * count is the only channel that separates them. The INSERT is the exception, because a
+     * WITH CHECK violation genuinely raises.
+     *
+     * Uses the block's own `'low'` fixture rather than seeding its own. None of these
+     * operations can change anything (that is the assertion), so they cannot disturb the AC
+     * tests around them — and no assertion below reads the LABEL, which the AC3 test above
+     * legitimately renames, so nothing here depends on execution order.
+     */
+    it('B cannot SELECT any of A’s field options', async () => {
+      // UNFILTERED, so this asks what B can see of the WHOLE table rather than what B can see
+      // of a row it names. `options_owner_read` reaches this table through an EXISTS on
+      // `projects`; drop the correlating clause and the predicate becomes "does this caller own
+      // any project at all", which leaks every option row in the database to every user who
+      // owns a project — and a read narrowed by `.eq('field_id', …)` would pass anyway.
+      const asB = await b.from('project_field_options').select('field_id')
+      expect(asB.error).toBeNull()
+      expect(asB.data).toEqual([])
+
+      // Positive control: A can. Without it the assertion above also passes when the fixture
+      // never created anything.
+      const asA = await a.from('project_field_options').select('slug').eq('field_id', fieldId)
+      expect(asA.error).toBeNull()
+      expect(asA.data).toHaveLength(1)
+    })
+
+    it('B cannot INSERT an option into A’s field', async () => {
+      const { error } = await b.from('project_field_options').insert({
+        project_id: projectA,
+        field_id: fieldId,
+        slug: 'planted_by_b',
+        label: 'Planted by B',
+        position: 99,
+      })
+
+      // 42501 here is unambiguously the POLICY, not a missing grant: `authenticated` holds
+      // INSERT on exactly these five columns and grants are role-wide rather than row-wide, so
+      // B has precisely the privilege A used to seed its own option. The MESSAGE is what
+      // discriminates the two controls that share this SQLSTATE — an RLS refusal says "violates
+      // row-level security policy", a privilege refusal says "permission denied".
+      expect(error?.code).toBe('42501')
+      expect(error?.message).toMatch(/row-level security/)
+
+      // And nothing landed. Read through adminClient(), which bypasses RLS: a row HIDDEN from
+      // `a` by a broken read policy would otherwise look identical to a row never written.
+      const { count } = await adminClient()
+        .from('project_field_options')
+        .select('*', { head: true, count: 'exact' })
+        .eq('field_id', fieldId)
+      expect(count).toBe(1)
+    })
+
+    it('B cannot UPDATE A’s option label', async () => {
+      const attempt = await b
+        .from('project_field_options')
+        .update({ label: 'pwned' })
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+        .select()
+      // The ROW COUNT. `authenticated` holds UPDATE on `label`, so this write reaches the
+      // policy rather than being refused by the grant — and RLS answers by matching zero rows,
+      // with no error at all. `expect(error).toBeNull()` would pass on a wide-open database.
+      expect(attempt.error).toBeNull()
+      expect(attempt.data).toEqual([])
+
+      // Positive control on the STORED value, through adminClient(). Deliberately not an
+      // equality check: the AC3 test above renames this option, so the label depends on
+      // execution order. What must never be true is that B's string is in there.
+      const { data } = await adminClient()
+        .from('project_field_options')
+        .select('label')
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+      expect(data).toHaveLength(1)
+      expect(data?.[0]?.label).not.toBe('pwned')
+    })
+
+    /**
+     * THE ONE THAT MATTERS MOST. `grant delete on project_field_options to authenticated` is
+     * table-wide — Postgres has no column-level DELETE — so `options_owner_delete` is the only
+     * thing standing between a stranger and this row, and deleting it CASCADES through
+     * `tfv_option_fk` into every ticket value holding the option.
+     */
+    it('B cannot DELETE A’s option, and the cascade never fires', async () => {
+      const attempt = await b
+        .from('project_field_options')
+        .delete()
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+        .select()
+      expect(attempt.error).toBeNull()
+      expect(attempt.data).toEqual([])
+
+      // Still there, seen past RLS entirely.
+      const { count } = await adminClient()
+        .from('project_field_options')
+        .select('*', { head: true, count: 'exact' })
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+      expect(count).toBe(1)
+    })
+
+    /**
+     * anonClient() performs no sign-in, so this costs the GoTrue rate limiter nothing. It
+     * matters because ALTER DEFAULT PRIVILEGES grants `anon` full DML on every new table in
+     * `public` — this table was born with it, and the migration revoked only insert/update/
+     * delete. SELECT is still granted to anon, so RLS is the only thing emptying this result.
+     *
+     * The four policies carry no TO clause, so they apply to `public`, which INCLUDES anon.
+     * anon reads nothing because `auth.uid()` is NULL and the EXISTS matches no project —
+     * never because anon was excluded by the absence of a policy.
+     */
+    it('an anonymous caller sees no field options at all', async () => {
+      const anon = anonClient()
+      const { data, error } = await anon.from('project_field_options').select('slug')
+      expect(error).toBeNull()
+      expect(data).toEqual([])
+
+      // Positive control: the rows are there for their owner.
+      const asA = await a.from('project_field_options').select('slug').eq('field_id', fieldId)
+      expect(asA.data).toHaveLength(1)
+    })
   })
 })

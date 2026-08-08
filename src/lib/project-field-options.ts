@@ -120,7 +120,12 @@ export async function createProjectFieldOption(input: {
     .single()
 
   if (error) return { ok: false, error: writeError(error) }
-  return { ok: true, value: data as ProjectFieldOption }
+  // NO CAST. `as ProjectFieldOption` stood here and suppressed TS2739: narrowing the returning
+  // `.select()` to fewer columns than the type needs then compiles clean and fails only at
+  // runtime, against a live database a mocked unit test never reaches. `renameProjectFieldOption`
+  // below has no cast and IS caught by the compiler for exactly that mutation — the two must
+  // behave the same way, and the compiler is the cheaper of the two guards.
+  return { ok: true, value: data }
 }
 
 /**
@@ -135,6 +140,19 @@ export async function createProjectFieldOption(input: {
  * The slug is untouched by construction, which is the whole point: `tfv_option_fk` keys value
  * rows on the slug, so a rename must rewrite nothing but this one cell. AC3 is therefore true
  * by construction rather than by care.
+ *
+ * The affected row count is checked EXPLICITLY, like `deleteProjectFieldOption` below and
+ * `deleteProjectStatus` before it, rather than leaning on `.single()`'s incidental zero-row
+ * error. RLS FILTERS an update rather than raising on it, so a cross-tenant or already-deleted
+ * row is a successful ZERO-row update; `.single()` happens to turn that into an error today,
+ * but that is a property of the terminator we chose, not of the check we meant to make. Stating
+ * it makes the guard survive anyone swapping `.single()` for `.maybeSingle()` — which would be
+ * a one-word change with no test to notice.
+ *
+ * Zero rows is `'stale'` for the same reason it is on the delete: the list this rename was
+ * driven from is older than the database, and only a reload fixes that. The caller
+ * (`CustomFieldOptionRow`) shows generic retry copy for either tag, so this changes no
+ * sentence on screen — it changes what the function KNOWS.
  */
 export async function renameProjectFieldOption(
   fieldId: string,
@@ -147,10 +165,15 @@ export async function renameProjectFieldOption(
     .eq('field_id', fieldId)
     .eq('slug', slug)
     .select(OPTION_COLUMNS)
-    .single()
 
   if (error) return { ok: false, error: writeError(error) }
-  return { ok: true, value: data }
+  // The FIRST row rather than a `length !== 1` count (the delete's shape below): both `.eq()`
+  // filters name a primary-key column, so the update matches at most one row and "no first row"
+  // and "no rows" are the same fact. `noUncheckedIndexedAccess` types this `| undefined`, so
+  // deleting this line does not compile.
+  const renamed = (data ?? [])[0]
+  if (!renamed) return { ok: false, error: 'stale' }
+  return { ok: true, value: renamed }
 }
 
 /**

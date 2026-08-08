@@ -38,21 +38,26 @@ const FIELD: ProjectField = {
   created_at: '2026-08-01T00:00:00+00:00',
 }
 
-// Positions deliberately NOT in list order and neither slug is its label lowercased with
-// underscores swapped for nothing — SPRIN-87 already cost this project three tests whose
-// fixture slug was `name.toLowerCase()`, which made a read of `.slug` indistinguishable from a
-// read of `.label`.
+// Positions deliberately NOT in list order, and NEITHER SLUG IS ITS LABEL LOWERCASED —
+// SPRIN-87 already cost this project three tests whose fixture slug was `name.toLowerCase()`,
+// which made a read of `.slug` indistinguishable from a read of `.label`.
+//
+// That docblock stood here from the first draft while the fixtures beneath it said
+// `slug: 'high', label: 'High'` — i.e. exactly the thing it forbids, so `option.label` could be
+// passed wherever `option.slug` belonged with nothing to notice. The slugs below are now
+// genuinely independent of the labels; every assertion on a slug therefore fails if the label
+// is read instead.
 const HIGH: ProjectFieldOption = {
   project_id: 'p1',
   field_id: 'f1',
-  slug: 'high',
+  slug: 'tier_c',
   label: 'High',
   position: 2,
 }
 const LOW: ProjectFieldOption = {
   project_id: 'p1',
   field_id: 'f1',
-  slug: 'low',
+  slug: 'tier_a',
   label: 'Low',
   position: 1,
 }
@@ -87,15 +92,53 @@ describe('CustomFieldOptions', () => {
 
   // The point of this test: `position`-only ordering survives every OTHER test in this file.
   // Only a tied position exercises the slug tiebreak at all.
+  //
+  // The two labels sort OPPOSITE to the two slugs, deliberately. An earlier version paired
+  // `apple`/`Apple` with `zebra`/`Zebra`, so a tiebreak on `label` produced the identical order
+  // and this test could not tell the two apart — the same slug-is-its-label trap the fixture
+  // docblock above describes, in the one test whose whole subject is which key is read.
   it('breaks a position TIE on slug, so the order is total', () => {
     const tied = [
-      { ...HIGH, slug: 'zebra', label: 'Zebra', position: 1 },
-      { ...LOW, slug: 'apple', label: 'Apple', position: 1 },
+      { ...HIGH, slug: 'zebra', label: 'Alpha', position: 1 },
+      { ...LOW, slug: 'apple', label: 'Zulu', position: 1 },
     ]
     render(<CustomFieldOptions field={FIELD} options={tied} {...noopHandlers} />)
     const items = screen.getAllByRole('listitem')
-    expect(within(items[0]!).getByText('Apple')).toBeInTheDocument()
-    expect(within(items[1]!).getByText('Zebra')).toBeInTheDocument()
+    expect(within(items[0]!).getByText('Zulu')).toBeInTheDocument()
+    expect(within(items[1]!).getByText('Alpha')).toBeInTheDocument()
+  })
+
+  /**
+   * Each option row carries its OWN React key. `key={fieldId}` — every row on a field sharing
+   * one key — renders identically, and all 21 tests in this file stayed green under it: the
+   * fixtures never put two fields' options in one list, so nothing distinguishes a per-option
+   * key from a per-field one by output alone. React's own duplicate-key error is the channel
+   * that does, so this test listens for it.
+   *
+   * `console.error` is spied rather than silenced (the precedent in `ErrorBoundary.test.tsx`
+   * silences it because a thrown render is the subject there; here the message IS the subject).
+   * The positive control matters as much as the assertion: without it a React version that
+   * stopped warning, or a spy attached too late, would look exactly like a correct key.
+   */
+  it('gives each option row its own key, so React reports no duplicate', () => {
+    const errors: unknown[][] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => {
+      errors.push(args)
+    })
+    try {
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+      expect(errors.flat().join(' ')).not.toMatch(/same key/i)
+
+      // Positive control: two options that genuinely DO collide on the key this list uses
+      // produce the warning, proving the spy is wired and React still emits it.
+      errors.length = 0
+      render(
+        <CustomFieldOptions field={FIELD} options={[LOW, { ...HIGH, slug: LOW.slug }]} {...noopHandlers} />,
+      )
+      expect(errors.flat().join(' ')).toMatch(/same key/i)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('shows an empty state when the field has no options', () => {
@@ -232,7 +275,7 @@ describe('CustomFieldOptions', () => {
       const input = await startRename(u, 'Low')
       await u.type(input, 'Lowest{Enter}')
 
-      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('f1', 'low', 'Lowest'))
+      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('f1', 'tier_a', 'Lowest'))
       expect(mockRename).toHaveBeenCalledOnce()
       await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(renamed))
     })
@@ -245,7 +288,7 @@ describe('CustomFieldOptions', () => {
       const input = await startRename(u, 'Low')
       await u.type(input, 'Lowest   {Enter}')
 
-      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('f1', 'low', 'Lowest'))
+      await waitFor(() => expect(mockRename).toHaveBeenCalledWith('f1', 'tier_a', 'Lowest'))
     })
 
     it('reports a failed rename on the row that failed, and hands nothing up', async () => {
@@ -305,6 +348,27 @@ describe('CustomFieldOptions', () => {
       const dialog = await screen.findByRole('alertdialog')
       expect(await within(dialog).findByText(/3 tickets/i)).toBeInTheDocument()
       expect(mockDelete).not.toHaveBeenCalled()
+
+      // WHICH option was counted, not merely that a count happened. This is the assertion the
+      // whole dialog rests on: the count is what UNLOCKS the destructive Remove, so crossing
+      // the two arguments — or passing `option.label` for `option.slug` — makes a live database
+      // report ZERO tickets for every option and unlock a delete whose blast radius the user
+      // was told was nil. The three sibling call sites in this file are all pinned this way;
+      // this one was not, and the mutation survived. Row 0 is LOW (position 1).
+      expect(mockCount).toHaveBeenCalledWith('f1', LOW.slug)
+    })
+
+    // The singular branch of `${n} ${n === 1 ? 'ticket' : 'tickets'}`, which no other fixture
+    // reaches — they use 3 and 0, both plural. "1 tickets will lose this value" is what ships
+    // without it.
+    it('says "1 ticket", not "1 tickets", when exactly one ticket holds the option', async () => {
+      const u = userEvent.setup()
+      mockCount.mockResolvedValue(1)
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const dialog = await screen.findByRole('alertdialog')
+      expect(await within(dialog).findByText(/1 ticket will lose this value/i)).toBeInTheDocument()
     })
 
     it('reads the count only when the confirm opens, not on render', () => {
@@ -339,8 +403,8 @@ describe('CustomFieldOptions', () => {
       const dialog = await screen.findByRole('alertdialog')
       await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
 
-      expect(mockDelete).toHaveBeenCalledWith('f1', 'low')
-      expect(onDeleted).toHaveBeenCalledWith('f1', 'low')
+      expect(mockDelete).toHaveBeenCalledWith('f1', 'tier_a')
+      expect(onDeleted).toHaveBeenCalledWith('f1', 'tier_a')
     })
 
     // `DELETE_FAILURE_COPY`'s two tags, each pinned to its OWN sentence with an anchored regex

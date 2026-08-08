@@ -650,6 +650,36 @@ describe('the select control offers real options (SPRIN-92)', () => {
     expect(opts.map((o) => o.textContent)).toEqual(['—', 'Low', 'High'])
   })
 
+  /**
+   * The `optionsForField` SLICE, and it needs the list-level helper: every other test in this
+   * block uses `renderRow`, which hands one field a pre-filtered list, so dropping the slice
+   * (`options={options}` in the map) is invisible to all of them — the row is handed the same
+   * array either way. With TWO select fields carrying options, it is not.
+   *
+   * Verified by mutation: dropping the slice put all four options in both controls, and this is
+   * the only test in the file that noticed.
+   */
+  it('gives each select field ONLY its own options, never the whole project’s', async () => {
+    renderFields({
+      fields: [SELECT, RISK],
+      options: [option(), option({ slug: 'blue', label: 'Blue', position: 2 }), LOW, HIGH],
+      optionsPhase: 'loaded',
+    })
+
+    const colour = await screen.findByRole('combobox', { name: 'Colour' })
+    const risk = screen.getByRole('combobox', { name: 'Risk' })
+    expect(within(colour).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '—',
+      'Red',
+      'Blue',
+    ])
+    expect(within(risk).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '—',
+      'Low',
+      'High',
+    ])
+  })
+
   it('CLEARS rather than writing an empty string when the blank choice is picked', async () => {
     const user = userEvent.setup()
     renderRow({ field: RISK, options: OPTIONS, optionsPhase: 'loaded', value: LOW_VALUE })

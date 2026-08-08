@@ -263,6 +263,36 @@ describe('the select control offers real options (SPRIN-92)', () => {
     expect(opts.map((o) => o.textContent)).toEqual(['—', 'Low', 'High'])
   })
 
+  /**
+   * The `optionsForField` SLICE. Every other test in this block renders ONE select field, so
+   * dropping the slice (`options={options}` in the map) hands that single control the same
+   * array either way and nothing notices. Two select fields, each with options, is the only
+   * arrangement that separates them — the identical gap, and the identical fix, as the sidebar's
+   * own block in `TicketCustomFields.test.tsx`.
+   */
+  it('gives each select field ONLY its own options, never the whole project’s', () => {
+    const COLOURS = [
+      { project_id: 'p1', field_id: SELECT.id, slug: 'red', label: 'Red', position: 1 },
+      { project_id: 'p1', field_id: SELECT.id, slug: 'blue', label: 'Blue', position: 2 },
+    ] satisfies ProjectFieldOption[]
+    render(
+      <Harness fields={[SELECT, RISK]} options={[...COLOURS, ...OPTIONS]} optionsPhase="loaded" />,
+    )
+
+    const colour = screen.getByRole('combobox', { name: 'Colour' })
+    const risk = screen.getByRole('combobox', { name: 'Risk' })
+    expect(within(colour).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '—',
+      'Red',
+      'Blue',
+    ])
+    expect(within(risk).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '—',
+      'Low',
+      'High',
+    ])
+  })
+
   it('carries the option SLUG as its value, never its label', () => {
     render(<Harness fields={[RISK]} options={OPTIONS} optionsPhase="loaded" />)
 

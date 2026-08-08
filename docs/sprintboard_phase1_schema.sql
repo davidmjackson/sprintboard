@@ -1053,6 +1053,70 @@ create policy options_owner_delete on project_field_options
                  where p.id = project_field_options.project_id
                    and p.owner_id = (select auth.uid())));
 
+-- ------------------------------------------------------------
+-- GRANTS for the two custom-field write tables.
+--
+-- BOTH BLOCKS WERE MISSING FROM THIS FILE and were added together. ticket_field_values'
+-- (SPRIN-88) and project_field_options' (SPRIN-92) policies were both recorded here without
+-- the privileges beside them, so a rebuild from this document produced two tables carrying
+-- the FULL default CRUD grant for `authenticated` — which is not a smaller version of the
+-- real schema, it is a different one: `slug` becomes patchable and AC3's guarantee (a rename
+-- can never orphan a value row, because the privilege to write `slug` does not exist) is a
+-- convention again rather than a database property.
+--
+-- EVERY TABLE HERE IS BORN WITH FULL CRUD FOR authenticated AND anon — measured from
+-- pg_default_acl, not information_schema, whose grant views return zero rows under a
+-- read-only role and read exactly like "no privileges". So each revoke below is the statement
+-- that changes something. Each is written TABLE-WIDE with the permitted columns granted back
+-- afterwards, because `revoke update (col)` against a table-wide grant is a SILENT NO-OP and
+-- a table-level revoke CASCADES to column grants. Any later migration widening either set
+-- must RESTATE EVERY GRANTED COLUMN, not just add its new one.
+--
+-- SELECT is deliberately left at the default for both roles on both tables: authenticated
+-- needs it, and anon reads zero rows because `auth.uid()` is NULL, so the policies' EXISTS
+-- matches no project. That is RLS emptying the result, NOT the absence of a policy for anon —
+-- these policies carry no TO clause, so they apply to `public`, which includes anon.
+-- ------------------------------------------------------------
+
+-- ticket_field_values (SPRIN-88). INSERT and UPDATE on ALL EIGHT columns, which departs from
+-- the epic design deliberately: PostgREST compiles `.upsert(row)` to `INSERT … ON CONFLICT DO
+-- UPDATE SET c = excluded.c` for every column in the payload, and Postgres requires UPDATE on
+-- every column in a SET list — so a narrow `grant update (value_*)` makes every SECOND write
+-- to a field 42501. The identity columns are defended by tfv_ticket_fk/tfv_field_fk (composite
+-- on project_id), tfv_type_fk and tfv_owner_update's WITH CHECK, not by this grant. The full
+-- argument is in docs/migrations/sprin-88-ticket-field-values.sql.
+revoke insert, update, delete on ticket_field_values from authenticated, anon;
+
+grant insert (ticket_id, project_id, field_id, field_type,
+              value_text, value_number, value_date, value_option)
+  on ticket_field_values to authenticated;
+
+grant update (ticket_id, project_id, field_id, field_type,
+              value_text, value_number, value_date, value_option)
+  on ticket_field_values to authenticated;
+
+-- Table-wide because Postgres has no column-level DELETE, and AC3 needs it: clearing a custom
+-- field DELETES the row rather than storing a null, because tfv_one_value_matching_type makes
+-- a row of nulls unrepresentable.
+grant delete on ticket_field_values to authenticated;
+
+-- project_field_options (SPRIN-92).
+revoke insert, update, delete on project_field_options from authenticated, anon;
+
+grant insert (project_id, field_id, slug, label, position)
+  on project_field_options to authenticated;
+
+-- UPDATE on `label` ALONE is what makes AC3 a DATABASE property rather than a convention: a
+-- patch touching `slug` earns 42501 before any policy is consulted, so no value row can be
+-- orphaned by a rename. `position` is insertable but not updatable — there is no reorder
+-- surface, so a writable position would be machinery with no caller.
+grant update (label) on project_field_options to authenticated;
+
+-- Table-wide DELETE, so options_owner_delete is the ONLY thing in front of it. That is why
+-- rls.integration.test.ts asserts a stranger's delete removes zero rows, rather than only
+-- asserting the owner's own delete works.
+grant delete on project_field_options to authenticated;
+
 -- THE TABLE WAS BORN WITH FULL CRUD FOR BOTH APP ROLES. Measured from pg_default_acl (not
 -- information_schema, whose grant views return zero rows under a read-only role and read
 -- exactly like "no privileges"): public tables default to anon=arwdDxtm, authenticated=

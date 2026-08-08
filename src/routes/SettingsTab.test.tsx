@@ -574,6 +574,40 @@ describe('SettingsTab custom field options (SPRIN-92 task 9, fix round 1)', () =
     vi.mocked(countTicketsHoldingOption).mockReset()
   })
 
+  /**
+   * The seam one level ABOVE the callbacks: `SettingsTab` reads TWO independent read phases off
+   * the outlet context and must hand each to the prop it belongs to. Crossing them
+   * (`optionsPhase={fieldsPhase}`) is type-clean — both are `ReadPhase` — lint-clean, and
+   * survived the whole suite, because every other fixture in this file leaves both phases
+   * `'loaded'` and nothing there can tell one from the other.
+   *
+   * So this test needs a state where the two DISAGREE, and only one such state is renderable:
+   * fields loaded, options failed. The mirror (fields failed, options loaded) proves nothing —
+   * `CustomFieldBody` short-circuits to `LoadFailure` before the options notice is reached.
+   *
+   * The equivalent cross in the OTHER direction (`phase={optionsPhase}`) is already caught, by
+   * "shows a failed fields read as a failure" above: that test leaves `optionsPhase` loaded, so
+   * the crossed `phase` would render the list instead of the failure.
+   *
+   * This is the sixth instance of the class this branch has now paid for, and the second time
+   * the hole sat one level ABOVE where it had been closed — `CustomFieldSettings.test.tsx`
+   * kills the identical cross between its own props, and could not see this one.
+   */
+  it('takes the options notice from optionsPhase, never from fieldsPhase', () => {
+    renderTab({
+      fields: [SELECT_FIELD],
+      fieldsPhase: 'loaded',
+      options: [],
+      optionsPhase: 'failed',
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/^Could not load field options\.$/)
+    // The FIELD list is still on screen: a failed OPTIONS read is not a failed fields read.
+    expect(screen.getByText('Priority tier')).toBeInTheDocument()
+    // And the editor is withheld, so the failure cannot impersonate "no options yet".
+    expect(screen.queryByRole('button', { name: 'Add option' })).not.toBeInTheDocument()
+  })
+
   it('adds, renames and removes an option through the tab, and never crosses the callbacks', async () => {
     const u = userEvent.setup()
     const created: ProjectFieldOption = {

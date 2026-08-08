@@ -1070,6 +1070,28 @@ describe('ProjectShell', () => {
       position: 1,
     }
 
+    /**
+     * A same-slug option on a DIFFERENT field, and the reason the two tests below can claim to
+     * be about `(field_id, slug)` at all.
+     *
+     * Two fields sharing the slug `low` is the DESIGNED state, not a contrived one: the primary
+     * key is `(field_id, slug)` and `createProjectFieldOption` de-duplicates the derived slug
+     * within ONE field only, so any project with two `select` fields called "Low" has this row.
+     *
+     * Every other option fixture in this block carries `field_id: 'f1'`. Without this one, the
+     * update and delete reducers keyed on the SLUG ALONE — `o.slug === updated.slug`,
+     * `o.slug === slug` — passed both tests, including the halves whose names say "by
+     * (field_id, slug)". Verified by mutation: dropping the `field_id` clause from either reducer
+     * left the whole suite green.
+     */
+    const CROSS_FIELD_OPTION: ProjectFieldOption = {
+      project_id: 'p1',
+      field_id: 'f2',
+      slug: 'low',
+      label: 'Low on another field',
+      position: 1,
+    }
+
     it("loads the project's custom field options itself, scoped to the project id", async () => {
       renderShell('/projects/p1/option-probe')
       await waitFor(() => expect(mockListOptions).toHaveBeenCalledWith('p1'))
@@ -1118,6 +1140,7 @@ describe('ProjectShell', () => {
       mockListOptions.mockResolvedValue([
         OPTION,
         { project_id: 'p1', field_id: 'f1', slug: 'high', label: 'High', position: 2 },
+        CROSS_FIELD_OPTION,
       ])
       renderShell('/projects/p1/option-probe')
       expect(await screen.findByText('Low')).toBeVisible()
@@ -1129,8 +1152,12 @@ describe('ProjectShell', () => {
       expect(screen.queryByText('Low')).not.toBeInTheDocument()
       // The sibling option, keyed on a DIFFERENT slug, is unaffected.
       expect(screen.getByText('High')).toBeVisible()
+      // AND the option on ANOTHER FIELD that shares this one's slug. This is the assertion that
+      // needs the `field_id` half: a slug-only reducer overwrites this row with the renamed one,
+      // leaving two identical labels and no 'Low on another field' anywhere.
+      expect(screen.getByText('Low on another field')).toBeVisible()
       const list = within(screen.getByRole('list', { name: 'probe options' }))
-      expect(list.getAllByRole('listitem')).toHaveLength(2)
+      expect(list.getAllByRole('listitem')).toHaveLength(3)
     })
 
     it('removes a deleted option by (field_id, slug)', async () => {
@@ -1138,6 +1165,7 @@ describe('ProjectShell', () => {
       mockListOptions.mockResolvedValue([
         OPTION,
         { project_id: 'p1', field_id: 'f1', slug: 'high', label: 'High', position: 2 },
+        CROSS_FIELD_OPTION,
       ])
       renderShell('/projects/p1/option-probe')
       expect(await screen.findByText('Low')).toBeVisible()
@@ -1148,6 +1176,11 @@ describe('ProjectShell', () => {
       // The sibling option survives — a reducer that cleared the whole list would pass the
       // assertion above alone.
       expect(screen.getByText('High')).toBeVisible()
+      // And so does the SAME-SLUG option on another field — the `field_id` half of the key. A
+      // slug-only filter deletes both rows and this is the only assertion that says so.
+      expect(screen.getByText('Low on another field')).toBeVisible()
+      const list = within(screen.getByRole('list', { name: 'probe options' }))
+      expect(list.getAllByRole('listitem')).toHaveLength(2)
     })
 
     it('re-runs the options read on Retry, so one nonce still drives all four', async () => {

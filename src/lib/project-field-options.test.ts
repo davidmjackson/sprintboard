@@ -195,12 +195,11 @@ describe('createProjectFieldOption', () => {
 
 // The update chain gets its OWN link functions past `.eq()`, for the same reason the insert
 // chain does not reuse the read chain: `.update()` starts a different shape than `.select()`
-// does. The terminal `single` mock IS shared with the insert chain on purpose — both chains
-// end in `.select().single()` resolving the same `{ data, error }` shape, and every test
-// calls `mockWrite()` immediately before acting, so there is nothing for two callers of
-// `single` to collide on.
-const selectUpdate = vi.fn(() => ({ single }))
-const eqUpdateSlug = vi.fn(() => ({ select: selectUpdate }))
+// does. It no longer shares the insert chain's terminal `single` mock either — the rename now
+// counts its own affected rows, so this chain ends in a bare `.select(...)` resolving an ARRAY,
+// the same shape the delete chain below uses.
+const updateSelect = vi.fn()
+const eqUpdateSlug = vi.fn(() => ({ select: updateSelect }))
 const eqUpdateField = vi.fn(() => ({ eq: eqUpdateSlug }))
 const update = vi.fn(() => ({ eq: eqUpdateField }))
 
@@ -214,11 +213,33 @@ describe('renameProjectFieldOption', () => {
   // and the label is TRIMMED before it is sent — asserted EXACTLY, not with
   // `objectContaining`, the same discipline as `createProjectFieldOption`'s trim test.
   it('sends label ALONE, trimmed, filtered on both key columns', async () => {
-    mockWrite({ ...LOW, label: 'Lowest' })
+    updateSelect.mockResolvedValue({ data: [{ ...LOW, label: 'Lowest' }], error: null })
     await renameProjectFieldOption('f1', 'low', '  Lowest  ')
     expect(update).toHaveBeenCalledWith({ label: 'Lowest' })
     expect(eqUpdateField).toHaveBeenCalledWith('field_id', 'f1')
     expect(eqUpdateSlug).toHaveBeenCalledWith('slug', 'low')
+  })
+
+  it('returns the renamed row when exactly one was updated', async () => {
+    const renamed = { ...LOW, label: 'Lowest' }
+    updateSelect.mockResolvedValue({ data: [renamed], error: null })
+    await expect(renameProjectFieldOption('f1', 'low', 'Lowest')).resolves.toEqual({
+      ok: true,
+      value: renamed,
+    })
+  })
+
+  // The explicit count, mirroring the delete's own `reports stale when no row was deleted`.
+  // RLS FILTERS an update rather than raising on it, so a cross-tenant or already-deleted row
+  // arrives here as `{ data: [], error: null }` — a SUCCESS. Without this check the function
+  // depended on `.single()` happening to error on zero rows, which is a property of the
+  // terminator rather than of any guard we wrote.
+  it('reports stale when the update matched NO row, even with no error', async () => {
+    updateSelect.mockResolvedValue({ data: [], error: null })
+    await expect(renameProjectFieldOption('f1', 'low', 'Lowest')).resolves.toEqual({
+      ok: false,
+      error: 'stale',
+    })
   })
 })
 
