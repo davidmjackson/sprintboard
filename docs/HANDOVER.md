@@ -52,6 +52,54 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 62 — the unread review, read and acted on (branch `sprin-92-single-select-fields`)
+
+The adversarial review session 61 left running was recovered from `journal.jsonl` and written up
+as **`docs/sprin-92-review-findings.md`**, which is now committed. **Read its header before
+trusting any of it:** four of five lenses journaled, the fifth (`wiring-and-seams`, 68 mutations)
+was reconstructed from its transcript, and **the Verify and Synthesise phases never ran** — so
+there is no KILLED list and not one finding was adversarially verified. Mutation counts were
+12/9/13/14/54; no lens reported zero.
+
+**All eleven findings are fixed.** Every behavioural one was confirmed the way this project asks
+for — plant the mutation, watch the suite, restore — and each new test was checked to be the
+*only* thing that kills its mutation:
+
+| # | Fix | Mutation that now dies |
+|---|---|---|
+| 2 | `SettingsTab.test.tsx` | `optionsPhase={fieldsPhase}` — sixth instance of the class, second time one level ABOVE where it was closed |
+| 3 | `CustomFieldOptions.test.tsx` | crossing `countTicketsHoldingOption`'s arguments (found by 4 of 5 lenses) |
+| 4 | `ProjectShell.test.tsx` | either option reducer keyed on `slug` alone |
+| 5 | both ticket-field test files | dropping the `optionsForField` slice at either `<select>` site |
+| 6 | `project-field-options.ts` | narrowing the create's `.select()` — now **TS2739 at compile time**, which the `as ProjectFieldOption` cast had been suppressing |
+| 11 | `CustomFieldOptions.test.tsx` | `key={option.slug}` → `key={fieldId}`, caught through React's own duplicate-key error |
+
+**Finding #9 was right about the hole and WRONG about its extent, and that is worth recording.**
+It said the schema doc was missing `project_field_options`' grant block while "every sibling
+table's block is present". `ticket_field_values` had no block either — SPRIN-88 recorded its
+policies here without its privileges. **Both blocks were added.** A rebuild from the doc had been
+producing two tables with the full default CRUD grant for `authenticated`, which is not a smaller
+schema but a different one: `slug` patchable, AC3 demoted from a database property back to a
+convention. An unverified finding's *reasoning* is a hypothesis even when its *conclusion* holds.
+
+**Finding #1 was the Tier-1 one and the migration file had already claimed it was covered.**
+`sprin-92-project-field-options.sql` says of `options_owner_delete` "…and why a live test proves
+it". No such test existed: all 8 references to the table in `rls.integration.test.ts` used client
+`a`, so the table shipped with complete AC coverage and **empty isolation coverage** while all
+three siblings carry B-side assertions. Five tests were added — B-select/insert/update/delete plus
+anon — all on ROW COUNTS rather than `error === null`, because RLS filters rather than raising.
+It matters most here: this is the only one of the four tables holding a table-wide `grant delete`,
+and that delete cascades into ticket data through `tfv_option_fk`.
+
+⚠ **Those five are LIVE tests and CANNOT run locally** (placeholder Supabase URL → `ENOTFOUND`).
+They are unverified until CI runs them on the PR. Treat a green local `test:unit` as saying
+nothing about them.
+
+Local gate after the fixes: **68 files / 1251 tests** (`test:unit`), 75 collected by `npm test`,
+tripwire gap still **7**; lint and typecheck clean. `renameProjectFieldOption` now counts its own
+affected rows instead of leaning on `.single()`'s incidental zero-row error, which closes the
+third instance of that class this file recorded — the entry is struck from the SPRIN-75 list below.
+
 ### Session 61 — SPRIN-92 BUILT AND PUSHED, NOT MERGED (branch `sprin-92-single-select-fields`, `79137b3`)
 
 **Read this before touching anything.** 21 commits, pushed, `verify` has **never run** — CI only
@@ -662,6 +710,12 @@ Engineering items with no story yet. Each is a candidate for one.
   the `projects → project_statuses` RI cascade? The migration records this **unresolved**. If
   reachable it is rare, non-corrupting and retryable (`40P01`). The lock's mutual exclusion is
   **untested** — a single transaction has no second session to contend with. Deserves its own story.
+- **Four untested guards in the option-delete confirm dialog** (`CustomFieldOptions.tsx`), left
+  deliberately by session 62 as the review's own "Deferrable" tier: the count reset on close
+  (`:248`), the `if (deleting) return` that ignores Escape mid-delete (`:243`), the `setError(null)`
+  ordering (`:364`), and the confirm staying disabled while the count is in flight (`:280`). Each
+  is a correct guard with no test that fails without it. The first two need a close-and-reopen
+  driven through the real dialog, which is why they were not free.
 - **`lg:grid-cols-4` in `BoardTab` is a fixed column count** under a status list users can now
   grow — a fifth status wraps. Deferred three times; needs a layout story.
 - **Nothing pins `listProjectStatuses`'s no-arg `.select()`, and SPRIN-86 gave that a
@@ -776,9 +830,11 @@ Engineering items with no story yet. Each is a candidate for one.
 - **`deleteProjectFieldOption` filters on `(field_id, slug)` and leans on the policy's USING clause** —
   a fresh instance of the SPRIN-64 class. Correct today; under a membership model where read is
   broader than write, a viewer-role delete would not be caught here.
-- **`renameProjectFieldOption` relies on `.single()`'s INCIDENTAL zero-row error**, not an explicit
-  row count. That makes **three** instances of the class this file already records against
-  `renameProjectStatus`. Worth settling together before SPRIN-75 rewrites these policies.
+- ~~**`renameProjectFieldOption` relies on `.single()`'s INCIDENTAL zero-row error**~~ — **FIXED in
+  session 62.** It now reads the returned row and reports `'stale'` when there is none, matching
+  `deleteProjectFieldOption` ten lines below it. **`renameProjectStatus` still has the defect**, so
+  the class is down to one recorded instance rather than gone; settle that one before SPRIN-75
+  rewrites these policies.
 
 ## Owed to SPRIN-75, found by the SPRIN-88 security review (session 58)
 
