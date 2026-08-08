@@ -329,43 +329,34 @@ export function TicketCustomFields({
   fields = [],
   fieldsPhase = 'loaded',
   options = [],
-  optionsPhase = 'loading',
+  optionsPhase,
   onRetryFields = () => {},
 }: {
   ticket: Ticket
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through the
-   *  dialog and the sidebar with no default at either stop — the same division as `fields`
-   *  above, for the same reason: a destructuring default costs a cyclomatic point neither
-   *  `TicketDetailSidebar` (9 of 10) nor `TicketDetailDialog` (10 of 10) can pay.
-   *
-   *  **`optionsPhase` DEFAULTS TO `'loading'`, deliberately the OPPOSITE of `fieldsPhase`'s own
-   *  default (fix round 1, SPRIN-92 task 10) — and that asymmetry is the point, not an
-   *  inconsistency.** `fieldsPhase = 'loaded'` is safe because an unwired `fields` defaults to
-   *  `[]` too, and an empty definitions list renders NOTHING — the empty case is inert. There
-   *  is no equivalent inert case for `optionsPhase`: an empty `options` list under a `'loaded'`
-   *  phase is indistinguishable, to the rendered control, from "this select field genuinely has
-   *  no options" — which is exactly the ambiguity `optionsReady` exists to resolve everywhere
-   *  else in this file. Defaulting the phase to its OWN trusting value would defeat that,
-   *  silently, for every unwired render: the select would come up ENABLED, offering only the
-   *  blank `—` choice, which reads as a confident "nothing to pick" rather than "we don't know
-   *  yet". `'loading'` fails CLOSED instead — disabled — matching `sprintsPhase`'s own default
-   *  a few props over in `TicketDetailDialog`, and the same argument: unknown means disabled.
-   *
-   *  A REQUIRED prop (no default at all) was considered and is the objectively stronger fix —
-   *  it would turn an unplugged wire into a compile error instead of a runtime one. Rejected
-   *  for THIS fix round on blast radius: every intermediate hop in this epic (`fields`,
-   *  `hasSprints`, and now `options`) is deliberately optional-and-undefaulted precisely so a
-   *  destructuring default is never needed at `TicketDetailSidebar` (9/10) or
-   *  `TicketDetailDialog` (10/10), which cannot pay for one; making `options` required here
-   *  would force it to stop being optional at both of those ceiling-bound components too, and
-   *  would also force every existing test in this repo that renders `TicketDetailDialog`,
-   *  `TicketDetailSidebar` or `TicketCustomFields` without touching a `select` field (the large
-   *  majority) to start passing it regardless. That is a proportionate change for a story that
-   *  makes `options` universally load-bearing, not for a one-default fix round. */
+  /** The project's `select`-field options (SPRIN-92 task 10). Optional and defaulted to `[]`,
+   *  like `fields` above — an empty options list is inert, since `optionsReady` (below) is
+   *  what actually gates the control, not the list's length. */
   options?: ProjectFieldOption[]
-  optionsPhase?: ReadPhase
+  /** Whether `options` is trustworthy (SPRIN-92 task 10, fix round 2). **REQUIRED, not
+   *  defaulted — unlike every other read-phase prop in this chain.** Fix round 1 gave it a
+   *  `'loading'` default to fail closed, on the reasoning that a required prop would force
+   *  `TicketDetailSidebar` (9/10 cyclomatic) and `TicketDetailDialog` (10/10) to stop being
+   *  optional-and-undefaulted at this seam, which neither could afford. That reasoning was
+   *  never actually measured and turned out to be WRONG: removing the default here dropped
+   *  this component from 7 to 6 (a default parameter COSTS a cyclomatic point in this
+   *  project's eslint config, so removing one lowers the count), and threading `optionsPhase`
+   *  as required through `TicketDetailSidebar` and `TicketDetailDialog` left both UNCHANGED
+   *  at 9/10 and 10/10 — only their type annotations lost a `?`, which is not a branch.
+   *
+   *  The real reason a default existed at all was never the complexity ceiling — it was that
+   *  this exact defect class (a prop that can be dropped or crossed with the whole suite
+   *  green) had already recurred, and fixing it with tests alone meant trusting every future
+   *  editor of three files to keep re-deriving the same discipline. A required prop makes an
+   *  unplugged or crossed wire a COMPILE error instead of a passing test suite hiding a
+   *  runtime silent-wrong-answer — strictly stronger than any test, and free once measured. */
+  optionsPhase: ReadPhase
   /** The SHELL's retry. Only reachable when the definitions read failed — see the body. */
   onRetryFields?: () => void
 }) {

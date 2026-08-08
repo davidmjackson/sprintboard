@@ -138,6 +138,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -157,6 +158,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={null}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -175,6 +177,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -203,6 +206,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -224,6 +228,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -241,6 +246,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -255,6 +261,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -295,6 +302,7 @@ describe('TicketDetailDialog', () => {
         <TicketDetailDialog
           ticket={t}
           currentUser={user}
+          optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
             setT(next)
@@ -350,6 +358,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -373,6 +382,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -393,6 +403,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -413,6 +424,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={ticketB}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -440,6 +452,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -456,6 +469,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={null}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -481,6 +495,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -516,6 +531,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -553,6 +569,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         fields={[field]}
         fieldsPhase="loading"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -614,6 +631,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -649,6 +667,7 @@ describe('TicketDetailDialog', () => {
         key={base.id}
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -668,6 +687,7 @@ describe('TicketDetailDialog', () => {
         key={ticketB.id}
         ticket={ticketB}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -705,6 +725,7 @@ describe('TicketDetailDialog', () => {
           key={t.id}
           ticket={t}
           currentUser={user}
+          optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
             setT(next)
@@ -756,6 +777,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -797,6 +819,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -822,6 +845,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -837,6 +861,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -859,6 +884,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -883,6 +909,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -906,6 +933,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -925,6 +953,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -963,6 +992,7 @@ describe('TicketDetailDialog', () => {
           currentUser={user}
           statuses={[]}
           statusesPhase={phase}
+          optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={() => {}}
           onDeleted={() => {}}
@@ -985,6 +1015,7 @@ describe('TicketDetailDialog', () => {
         ticket={base}
         currentUser={user}
         statuses={SEEDED_STATUSES}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1002,6 +1033,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={[]}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1017,6 +1049,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1039,6 +1072,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1057,6 +1091,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1074,6 +1109,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1091,6 +1127,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1110,6 +1147,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -1136,6 +1174,7 @@ describe('TicketDetailDialog', () => {
           currentUser={user}
           statuses={SEEDED_STATUSES}
           statusesPhase="loaded"
+          optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
             setT(next)
@@ -1180,6 +1219,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={onDeleted}
@@ -1198,6 +1238,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={onDeleted}
@@ -1217,6 +1258,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={onDeleted}
@@ -1247,6 +1289,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1263,6 +1306,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1286,6 +1330,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -1317,6 +1362,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -1336,6 +1382,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1357,6 +1404,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -1380,6 +1428,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}
@@ -1398,6 +1447,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1423,6 +1473,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof TicketDetailDia
     <TicketDetailDialog
       ticket={epicTicket}
       currentUser={user}
+      optionsPhase="loaded"
       onOpenChange={() => {}}
       onUpdated={() => {}}
       onDeleted={() => {}}
@@ -1444,6 +1495,7 @@ describe('TicketDetailDialog — epic fields', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
         onDeleted={() => {}}
@@ -1570,6 +1622,7 @@ describe('TicketDetailDialog — epic fields', () => {
         ticket={epicWithOne}
         currentUser={user}
         epics={[]}
+        optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
         onDeleted={() => {}}

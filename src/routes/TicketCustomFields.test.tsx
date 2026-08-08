@@ -119,7 +119,13 @@ function renderFields(
       fields={props.fields ?? [TEXT]}
       fieldsPhase={props.fieldsPhase ?? 'loaded'}
       options={props.options}
-      optionsPhase={props.optionsPhase}
+      // `optionsPhase` is REQUIRED on `TicketCustomFields` (fix round 2) — this helper is the
+      // one place that keeps supplying a convenience default for the many callers below that
+      // never touch a `select` field, matching `fieldsPhase`'s own `?? 'loaded'` immediately
+      // above. `'loading'` (not `'loaded'`) is the SAFE default here: it fails closed, so a
+      // caller that forgets `optionsPhase` gets a disabled select rather than a silently
+      // trusted empty one.
+      optionsPhase={props.optionsPhase ?? 'loading'}
       onRetryFields={props.onRetryFields ?? vi.fn()}
     />,
   )
@@ -147,7 +153,10 @@ function renderRow(props: {
       fields={[props.field]}
       fieldsPhase="loaded"
       options={props.options}
-      optionsPhase={props.optionsPhase}
+      // Same convenience default as `renderFields` above, for the same reason — every call
+      // site in the select-behaviour block below passes `optionsPhase` explicitly anyway, so
+      // this is never actually relied on today, but it keeps the helper's contract honest.
+      optionsPhase={props.optionsPhase ?? 'loading'}
       onRetryFields={vi.fn()}
     />,
   )
@@ -397,7 +406,11 @@ describe('AC6 — a project with no custom fields renders nothing', () => {
     // Mutating the default to 'loading' left 1094 tests green, and the consequence is exactly
     // what the docblock warns of: a dialog rendered without field wiring shows a "Loading…"
     // line that never resolves, because no read is ever issued for an empty field list.
-    const { container } = render(<TicketCustomFields ticket={TICKET} />)
+    // `optionsPhase` is REQUIRED (fix round 2), so it must be passed here regardless of value —
+    // but it is INERT to this test either way: `fields` defaults to `[]` too, and the
+    // empty-fields early return happens before `optionsPhase` is ever read, so this pins only
+    // `fieldsPhase`'s own default, exactly as the comment above already claims.
+    const { container } = render(<TicketCustomFields ticket={TICKET} optionsPhase="loaded" />)
 
     expect(container).toBeEmptyDOMElement()
     expect(screen.queryByText('Loading…')).not.toBeInTheDocument()

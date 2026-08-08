@@ -66,11 +66,14 @@ export function TicketDetailSidebar({
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
   /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through to
-   *  `TicketCustomFields` with NO DEFAULT HERE — same reason and same shape as `fields` above:
-   *  this component sits at 9 of 10, and a destructuring default costs the one point it has
-   *  left. Both defaults live in `TicketCustomFields`. */
+   *  `TicketCustomFields`, which owns the `[]` default. */
   options?: ProjectFieldOption[]
-  optionsPhase?: ReadPhase
+  /** REQUIRED (fix round 2), not optional — a plain pass-through with no destructuring
+   *  default either way, so this costs nothing regardless: this component is measured
+   *  UNCHANGED at 9/10 with the type made required, `?` removed. `TicketCustomFields` no
+   *  longer defaults it, so a caller of THIS component that forgets to pass it now gets a
+   *  compile error here rather than a silently-'loaded' select three hops down. */
+  optionsPhase: ReadPhase
   /** The SHELL's retry. The definitions read belongs to the shell, so a failure of it cannot
    *  be fixed by anything this dialog owns. */
   onRetryFields?: () => void
