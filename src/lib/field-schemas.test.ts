@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { CUSTOM_FIELD_TYPES } from './domain'
-import { AddFieldSchema, RenameFieldSchema, AddOptionSchema, RenameOptionSchema } from './field-schemas'
+import {
+  AddFieldSchema,
+  RenameFieldSchema,
+  AddOptionSchema,
+  RenameOptionSchema,
+} from './field-schemas'
 
 describe('AddFieldSchema', () => {
   it('accepts a name and a type', () => {

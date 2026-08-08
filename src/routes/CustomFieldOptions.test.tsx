@@ -133,7 +133,11 @@ describe('CustomFieldOptions', () => {
       // produce the warning, proving the spy is wired and React still emits it.
       errors.length = 0
       render(
-        <CustomFieldOptions field={FIELD} options={[LOW, { ...HIGH, slug: LOW.slug }]} {...noopHandlers} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={[LOW, { ...HIGH, slug: LOW.slug }]}
+          {...noopHandlers}
+        />,
       )
       expect(errors.flat().join(' ')).toMatch(/same key/i)
     } finally {
@@ -269,7 +273,12 @@ describe('CustomFieldOptions', () => {
       mockRename.mockResolvedValue({ ok: true, value: renamed })
       const onUpdated = vi.fn()
       render(
-        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onUpdated={onUpdated} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={OPTIONS}
+          {...noopHandlers}
+          onUpdated={onUpdated}
+        />,
       )
 
       const input = await startRename(u, 'Low')
@@ -296,7 +305,12 @@ describe('CustomFieldOptions', () => {
       mockRename.mockResolvedValue({ ok: false, error: 'unknown' })
       const onUpdated = vi.fn()
       render(
-        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onUpdated={onUpdated} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={OPTIONS}
+          {...noopHandlers}
+          onUpdated={onUpdated}
+        />,
       )
 
       const input = await startRename(u, 'Low')
@@ -396,7 +410,12 @@ describe('CustomFieldOptions', () => {
       mockDelete.mockResolvedValue({ ok: true, value: undefined })
       const onDeleted = vi.fn()
       render(
-        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={OPTIONS}
+          {...noopHandlers}
+          onDeleted={onDeleted}
+        />,
       )
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
@@ -417,7 +436,12 @@ describe('CustomFieldOptions', () => {
       mockDelete.mockResolvedValue({ ok: false, error: 'stale' })
       const onDeleted = vi.fn()
       render(
-        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={OPTIONS}
+          {...noopHandlers}
+          onDeleted={onDeleted}
+        />,
       )
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
@@ -436,7 +460,12 @@ describe('CustomFieldOptions', () => {
       mockDelete.mockResolvedValue({ ok: false, error: 'unknown' })
       const onDeleted = vi.fn()
       render(
-        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+        <CustomFieldOptions
+          field={FIELD}
+          options={OPTIONS}
+          {...noopHandlers}
+          onDeleted={onDeleted}
+        />,
       )
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)

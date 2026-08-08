@@ -281,16 +281,16 @@ describe('the select control offers real options (SPRIN-92)', () => {
 
     const colour = screen.getByRole('combobox', { name: 'Colour' })
     const risk = screen.getByRole('combobox', { name: 'Risk' })
-    expect(within(colour).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      '—',
-      'Red',
-      'Blue',
-    ])
-    expect(within(risk).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      '—',
-      'Low',
-      'High',
-    ])
+    expect(
+      within(colour)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Red', 'Blue'])
+    expect(
+      within(risk)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Low', 'High'])
   })
 
   it('carries the option SLUG as its value, never its label', () => {

@@ -668,16 +668,16 @@ describe('the select control offers real options (SPRIN-92)', () => {
 
     const colour = await screen.findByRole('combobox', { name: 'Colour' })
     const risk = screen.getByRole('combobox', { name: 'Risk' })
-    expect(within(colour).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      '—',
-      'Red',
-      'Blue',
-    ])
-    expect(within(risk).getAllByRole('option').map((o) => o.textContent)).toEqual([
-      '—',
-      'Low',
-      'High',
-    ])
+    expect(
+      within(colour)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Red', 'Blue'])
+    expect(
+      within(risk)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Low', 'High'])
   })
 
   it('CLEARS rather than writing an empty string when the blank choice is picked', async () => {

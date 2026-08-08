@@ -274,11 +274,7 @@ function OptionDeleteDialog({
               Cancel
             </Button>
           </AlertDialogCancel>
-          <Button
-            variant="destructive"
-            onClick={() => void submit()}
-            disabled={deleting || !known}
-          >
+          <Button variant="destructive" onClick={() => void submit()} disabled={deleting || !known}>
             {deleting ? 'Removing…' : 'Remove option'}
           </Button>
         </AlertDialogFooter>
