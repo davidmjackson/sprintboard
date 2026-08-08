@@ -4,6 +4,7 @@ import {
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   type ProjectField,
+  type ProjectFieldOption,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -34,6 +35,8 @@ export function TicketDetailSidebar({
   hasSprints,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
   onRetryFields,
 }: {
   ticket: Ticket
@@ -62,6 +65,12 @@ export function TicketDetailSidebar({
    *  budget. Adding `= []` at either stop is what would redden the gate. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through to
+   *  `TicketCustomFields` with NO DEFAULT HERE — same reason and same shape as `fields` above:
+   *  this component sits at 9 of 10, and a destructuring default costs the one point it has
+   *  left. Both defaults live in `TicketCustomFields`. */
+  options?: ProjectFieldOption[]
+  optionsPhase?: ReadPhase
   /** The SHELL's retry. The definitions read belongs to the shell, so a failure of it cannot
    *  be fixed by anything this dialog owns. */
   onRetryFields?: () => void
@@ -237,6 +246,8 @@ export function TicketDetailSidebar({
         ticket={ticket}
         fields={fields}
         fieldsPhase={fieldsPhase}
+        options={options}
+        optionsPhase={optionsPhase}
         onRetryFields={onRetryFields}
       />
 

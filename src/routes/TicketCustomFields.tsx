@@ -1,7 +1,14 @@
 import { useState } from 'react'
 
-import type { CustomFieldType, ProjectField, Ticket, TicketFieldValue } from '@/lib/domain'
+import type {
+  CustomFieldType,
+  ProjectField,
+  ProjectFieldOption,
+  Ticket,
+  TicketFieldValue,
+} from '@/lib/domain'
 import { firstUnready, useTaggedRead, type ReadPhase, type TaggedRead } from '@/lib/project-reads'
+import { optionsForField } from '@/lib/project-field-options'
 import {
   applyValueWrite,
   clearTicketFieldValue,
@@ -15,11 +22,25 @@ import { EditableText, FieldLabel } from './EditableText'
 import { LoadFailure } from './LoadFailure'
 import { selectClass } from './form-primitives'
 
-/** What a control needs, whatever its type. */
+/**
+ * What a control needs, whatever its type.
+ *
+ * `options`/`optionsReady` are consumed by `select` alone — the other four entries destructure
+ * neither, which costs nothing: TypeScript does not require every property of a parameter's
+ * type to be named in the destructuring pattern.
+ */
 type ControlProps = {
   name: string
   value: string
   onCommit: (raw: string) => void
+  /** This field's own options (already filtered from the project's full list), in
+   *  `(position, slug)` order. */
+  options: readonly ProjectFieldOption[]
+  /** Whether `options` is trustworthy — `optionsPhase === 'loaded'`. `false` covers BOTH
+   *  `'loading'` and `'failed'` deliberately: an empty list from a failed read and an empty
+   *  list from a field with genuinely no options are the same value arriving for opposite
+   *  reasons, and only this flag tells them apart. */
+  optionsReady: boolean
 }
 
 /**
@@ -34,12 +55,21 @@ type ControlProps = {
  * Four types reuse the sidebar's own controls, so a custom field looks like a built-in one —
  * `EditableText` is the click-to-edit motif every other field in the dialog uses.
  *
- * **`select` renders a DISABLED control rather than nothing, and that is AC1.** Select fields
- * are creatable TODAY: SPRIN-91's add form offers all five types from `CUSTOM_FIELD_TYPES`, so
- * rendering nothing for one would be a field a user created and then could not find. It is
- * disabled because `project_field_options` does not exist until story 5 — until `tfv_option_fk`
- * lands, `value_option` would accept any string at all, and a free-text editor would strand
- * values that the option fk then refuses. Disabled is the honest state, not a placeholder.
+ * **`select` is a real `<select>` (SPRIN-92), populated from the project's `project_field_options`
+ * rows for this field.** It carries a blank `—` choice FIRST, always — every custom field is
+ * optional in this epic, so the control needs a way to express "no value" the same way an
+ * emptied `EditableText` does. Picking it commits `''`, which `parseFieldValue`'s `textDraft`
+ * already treats as CLEAR for every string-valued type (`select` included) — see `commit` below,
+ * which needs no `select`-specific branch for that reason. The value committed for a real choice
+ * is the option's `slug`, never its `label`: `tfv_option_fk` is keyed on the slug, which is what
+ * makes renaming a label rewrite no ticket rows.
+ *
+ * **Disabled whenever `optionsReady` is false**, i.e. whenever `optionsPhase` is not `'loaded'`.
+ * An empty options list from a still-loading or failed read and an empty list from a field that
+ * genuinely has no options are the same value arriving for opposite reasons — an enabled, empty
+ * select would quietly tell the user this field has nothing to choose, which is the S4.6 shape
+ * again. A field with no options AND a loaded read renders the blank choice alone, enabled: that
+ * is the honest "nothing to pick, but you could clear it" state.
  *
  * **`number` passes no `min`.** It used to get one for free: `EditableText`'s numeric mode
  * hardcoded `min={0}`, which is the ESTIMATION rule and a property of story points rather than
@@ -65,9 +95,20 @@ const CONTROLS = {
       onChange={(e) => onCommit(e.target.value)}
     />
   ),
-  select: ({ name, value }: ControlProps) => (
-    <select aria-label={name} className={selectClass} value={value} disabled>
-      <option value={value}>{value || '—'}</option>
+  select: ({ name, value, onCommit, options, optionsReady }: ControlProps) => (
+    <select
+      aria-label={name}
+      className={selectClass}
+      value={value}
+      disabled={!optionsReady}
+      onChange={(e) => onCommit(e.target.value)}
+    >
+      <option value="">—</option>
+      {options.map((o) => (
+        <option key={o.slug} value={o.slug}>
+          {o.label}
+        </option>
+      ))}
     </select>
   ),
 } as const satisfies Record<CustomFieldType, (props: ControlProps) => React.ReactElement>
@@ -95,11 +136,17 @@ function TicketCustomFieldRow({
   ticket,
   field,
   value,
+  options,
+  optionsReady,
   onWritten,
 }: {
   ticket: Ticket
   field: ProjectField
   value: TicketFieldValue | undefined
+  /** This field's own slice of the project's options — already filtered by `optionsForField`
+   *  in `TicketCustomFieldsBody`, so every OTHER control ignores it for free. */
+  options: readonly ProjectFieldOption[]
+  optionsReady: boolean
   onWritten: (fieldId: string, write: FieldValueWrite | null) => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -147,6 +194,8 @@ function TicketCustomFieldRow({
         name={field.name}
         value={fieldValueText(value)}
         onCommit={(raw) => void commit(raw)}
+        options={options}
+        optionsReady={optionsReady}
       />
       {error ? (
         <p role="alert" className="text-destructive text-xs">
@@ -181,6 +230,8 @@ function TicketCustomFieldsBody({
   fields,
   fieldsPhase,
   values,
+  options,
+  optionsPhase,
   onRetryFields,
   onRetryValues,
 }: {
@@ -188,6 +239,10 @@ function TicketCustomFieldsBody({
   fields: ProjectField[]
   fieldsPhase: ReadPhase
   values: TaggedRead<TicketFieldValue>
+  /** The project's FULL options list — across every `select` field it has. Sliced per field
+   *  with `optionsForField` in the map below, so each row gets only its own. */
+  options: ProjectFieldOption[]
+  optionsPhase: ReadPhase
   onRetryFields: () => void
   onRetryValues: () => void
 }) {
@@ -223,6 +278,8 @@ function TicketCustomFieldsBody({
           // Looked up by `field_id`, never by position. The values list is a lookup table and
           // `applyValueWrite` does not preserve its order.
           value={values.items.find((v) => v.field_id === field.id)}
+          options={optionsForField(options, field.id)}
+          optionsReady={optionsPhase === 'loaded'}
           onWritten={(fieldId, write) =>
             values.patch(ticket.id, (items) =>
               applyValueWrite(
@@ -271,11 +328,22 @@ export function TicketCustomFields({
   ticket,
   fields = [],
   fieldsPhase = 'loaded',
+  options = [],
+  optionsPhase = 'loaded',
   onRetryFields = () => {},
 }: {
   ticket: Ticket
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through the
+   *  dialog and the sidebar with no default at either stop — the same division as `fields`
+   *  above, for the same reason: a destructuring default costs a cyclomatic point neither
+   *  `TicketDetailSidebar` (9 of 10) nor `TicketDetailDialog` (10 of 10) can pay. Defaulting to
+   *  `'loaded'`, not `'loading'`, matches `fieldsPhase`'s own default and the same argument:
+   *  it describes a dialog rendered WITHOUT options wiring — standalone, or in a test — where
+   *  "this project has no options" is the honest read, not an indefinite spinner. */
+  options?: ProjectFieldOption[]
+  optionsPhase?: ReadPhase
   /** The SHELL's retry. Only reachable when the definitions read failed — see the body. */
   onRetryFields?: () => void
 }) {
@@ -292,6 +360,8 @@ export function TicketCustomFields({
       fields={fields}
       fieldsPhase={fieldsPhase}
       values={values}
+      options={options}
+      optionsPhase={optionsPhase}
       onRetryFields={onRetryFields}
       onRetryValues={() => setNonce((n) => n + 1)}
     />

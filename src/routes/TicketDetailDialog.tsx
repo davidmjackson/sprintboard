@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDeliverables } from '@/lib/ticket-deliverables'
-import type { ProjectField, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { statusName } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
@@ -38,6 +38,8 @@ export function TicketDetailDialog({
   hasSprints,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
   onRetryFields,
   onOpenChange,
   onUpdated,
@@ -81,6 +83,12 @@ export function TicketDetailDialog({
    *  constraint stated as an architecture, not a preference. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** The project's `select`-field options (SPRIN-92 task 10). UNDEFAULTED HERE for the same
+   *  reason as `fields`: this component is still at 10 of 10, so `options = []` and
+   *  `optionsPhase = 'loading'` would take it over. Threaded straight through to the sidebar
+   *  and on to `TicketCustomFields`, which owns both defaults. */
+  options?: ProjectFieldOption[]
+  optionsPhase?: ReadPhase
   /** The shell's retry, for the definitions read the shell owns. */
   onRetryFields?: () => void
   onOpenChange: (open: boolean) => void
@@ -195,6 +203,8 @@ export function TicketDetailDialog({
             hasSprints={hasSprints}
             fields={fields}
             fieldsPhase={fieldsPhase}
+            options={options}
+            optionsPhase={optionsPhase}
             onRetryFields={onRetryFields}
           />
         </div>

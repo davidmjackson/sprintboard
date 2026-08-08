@@ -416,6 +416,11 @@ export function ProjectShell() {
           // are one of the four project reads it reloads.
           fields={fields}
           fieldsPhase={fieldsPhase}
+          // SPRIN-92 task 10. Same reasoning as `fields` immediately above: passed as VALUES,
+          // never a branch, and `onRetry` is reused rather than a sixth reducer — options are
+          // one of the shell's five project reads and share its retry.
+          options={options}
+          optionsPhase={optionsPhase}
           onRetryFields={onRetry}
           currentUser={currentUser}
           onOpenChange={(open) => {
