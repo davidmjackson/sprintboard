@@ -65,8 +65,11 @@ export function TicketDetailSidebar({
    *  budget. Adding `= []` at either stop is what would redden the gate. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through to
-   *  `TicketCustomFields`, which owns the `[]` default. */
+  /** The project's `select`-field options (SPRIN-92 task 10), staying OPTIONAL here — this
+   *  component sits at 9/10 cyclomatic with no headroom to cascade `options` required up through
+   *  `TicketDetailDialog` (10/10, capped) too. `TicketCustomFields`'s own `options` is now
+   *  REQUIRED (fix round 1), so the JSX call below coalesces to `[]` at the one point this
+   *  optional value actually reaches it. */
   options?: ProjectFieldOption[]
   /** REQUIRED (fix round 2), not optional — a plain pass-through with no destructuring
    *  default either way, so this costs nothing regardless: this component is measured
@@ -249,7 +252,13 @@ export function TicketDetailSidebar({
         ticket={ticket}
         fields={fields}
         fieldsPhase={fieldsPhase}
-        options={options}
+        // `options` is REQUIRED on `TicketCustomFields` (fix round 1), but stays OPTIONAL here —
+        // this component sits at 9/10 cyclomatic with nothing left to spend on removing the `?`
+        // and cascading it up through `TicketDetailDialog` too (10/10, capped). `?? []` is the
+        // one-point coalesce that satisfies the leaf's required type without widening this
+        // component's own contract; it costs the identical point a destructuring default would
+        // have, just paid here instead of at the leaf.
+        options={options ?? []}
         optionsPhase={optionsPhase}
         onRetryFields={onRetryFields}
       />

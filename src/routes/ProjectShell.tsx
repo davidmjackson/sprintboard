@@ -316,7 +316,9 @@ export function ProjectShell() {
 
   const onOptionUpdated = (updated: ProjectFieldOption) =>
     optionRead.patch(project.id, (os) =>
-      os.map((o) => (o.field_id === updated.field_id && o.slug === updated.slug ? updated : o)),
+      os.map((o) =>
+        o.field_id === updated.field_id && o.slug === updated.slug ? updated : o,
+      ),
     )
 
   const onOptionDeleted = (fieldId: string, slug: string) =>

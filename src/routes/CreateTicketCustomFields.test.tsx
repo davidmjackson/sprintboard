@@ -65,7 +65,11 @@ function Harness({
         control={form.control}
         fields={fields}
         fieldsPhase={fieldsPhase}
-        options={options}
+        // `options` is REQUIRED on `CreateTicketCustomFields` (fix round 1) — this helper is the
+        // one place supplying a convenience `[]` default for the many callers below that never
+        // touch a `select` field, mirroring `optionsPhase`'s own `?? 'loading'` immediately
+        // below.
+        options={options ?? []}
         // `optionsPhase` is REQUIRED on `CreateTicketCustomFields` — no default, mirroring
         // `TicketCustomFields.test.tsx`'s `renderFields` helper. `'loading'` is the SAFE
         // convenience default for the many callers below that never touch a `select` field: it
@@ -98,7 +102,7 @@ function renderRowWithForm(props: {
           control={form.control}
           fields={[props.field]}
           fieldsPhase="loaded"
-          options={props.options}
+          options={props.options ?? []}
           optionsPhase={props.optionsPhase ?? 'loaded'}
         />
         <button type="button" onClick={() => form.reset()}>
@@ -202,6 +206,9 @@ describe('CreateTicketCustomFields', () => {
             control={form.control}
             fields={[TEXT]}
             fieldsPhase="loaded"
+            // TEXT is not a `select` field, so `options` is genuinely inert to this test — `[]`
+            // is the honest value, not a compiler-silencing placeholder.
+            options={[]}
             optionsPhase="loaded"
           />
           <button type="button" onClick={() => form.reset()}>

@@ -328,17 +328,23 @@ export function TicketCustomFields({
   ticket,
   fields = [],
   fieldsPhase = 'loaded',
-  options = [],
+  options,
   optionsPhase,
   onRetryFields = () => {},
 }: {
   ticket: Ticket
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 10). Optional and defaulted to `[]`,
-   *  like `fields` above — an empty options list is inert, since `optionsReady` (below) is
-   *  what actually gates the control, not the list's length. */
-  options?: ProjectFieldOption[]
+  /** REQUIRED (fix round 1), not defaulted to `[]` — unlike `fields` above. A reviewer probe
+   *  rendered this component with `optionsPhase="loaded"` and NO `options` prop at all: it
+   *  typechecked clean against the old `options = []` default and rendered an ENABLED select
+   *  offering only the blank choice, telling the user a `select` field has no options when in
+   *  truth none were ever passed in — the exact silent-wrong-answer shape `optionsPhase` itself
+   *  was made required to close, and this was the twin hole left open. A dropped `options` wire
+   *  is now a COMPILE error at every call site instead. See `optionsPhase`'s own docblock
+   *  immediately below for why a required prop with no default costs nothing here: measured,
+   *  not assumed. */
+  options: ProjectFieldOption[]
   /** Whether `options` is trustworthy (SPRIN-92 task 10, fix round 2). **REQUIRED, not
    *  defaulted — unlike every other read-phase prop in this chain.** Fix round 1 gave it a
    *  `'loading'` default to fail closed, on the reasoning that a required prop would force

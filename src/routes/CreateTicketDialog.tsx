@@ -74,9 +74,11 @@ export function CreateTicketDialog({
   onCreated?: (ticket: Ticket) => void
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 11). Threaded straight through to
-   *  `CreateTicketCustomFields`, which owns the `[]` default — mirroring `fields` above and
-   *  `TicketDetailDialog`'s identical `options` pass-through. */
+  /** The project's `select`-field options (SPRIN-92 task 11), staying OPTIONAL here (unlike
+   *  `optionsPhase` below) — mirroring `fields` above and `TicketDetailDialog`'s identical
+   *  `options` pass-through. `CreateTicketCustomFields`'s own `options` is REQUIRED (fix round
+   *  1), so the JSX call below coalesces to `[]` rather than forwarding this raw — that keeps
+   *  this component's own contract, and every standalone-render test of it, unchanged. */
   options?: ProjectFieldOption[]
   /** REQUIRED, not defaulted. A plain pass-through, so this costs nothing either way — see
    *  `CreateTicketCustomFields`'s own docblock for why a required prop is shipped from this
@@ -256,7 +258,12 @@ export function CreateTicketDialog({
         control={form.control}
         fields={fields}
         fieldsPhase={fieldsPhase}
-        options={options}
+        // `options` is REQUIRED on `CreateTicketCustomFields` (fix round 1), but stays OPTIONAL
+        // here — mirroring `TicketDetailSidebar`'s identical `?? []` coalesce at its own call to
+        // `TicketCustomFields`, and for the same reason: this component's own `options` prop
+        // stays optional-and-undefaulted so a standalone `<CreateTicketDialog projectId="p1" />`
+        // still renders with no field wiring at all (AC5).
+        options={options ?? []}
         optionsPhase={optionsPhase}
       />
     </CreateDialog>
