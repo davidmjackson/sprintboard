@@ -288,6 +288,17 @@ create table ticket_field_values (
   constraint tfv_field_fk foreign key (field_id, project_id)
     references project_fields (id, project_id) on delete cascade,
 
+  -- SPRIN-92. AC2 and AC4 in one constraint: ON DELETE CASCADE clears a ticket's value
+  -- the moment the option it points at is deleted, rather than stranding it (the default
+  -- `no action` would refuse the option delete with 23503 instead). In the real,
+  -- hand-applied migration this arrived as a separate ALTER TABLE, because
+  -- project_field_options did not exist yet when THIS table was first created
+  -- (SPRIN-88) — it is written inline here, forward-referencing project_field_options
+  -- below, to represent final cumulative state, matching how tfv_ticket_fk above already
+  -- forward-references `tickets`, defined later in this same file.
+  constraint tfv_option_fk foreign key (field_id, value_option)
+    references project_field_options (field_id, slug) on delete cascade,
+
   -- Keeps the denormalised copy equal to the definition's. ON DELETE CASCADE matches
   -- tfv_field_fk deliberately: two fks to one table with different delete actions resolve in
   -- RI trigger name order, i.e. luck.
@@ -322,6 +333,39 @@ create table ticket_field_values (
 -- prefix rule rather than any query — project_id in those composite fks is a tenancy column,
 -- not a selectivity one.
 create index ticket_field_values_field_id_idx on ticket_field_values (field_id);
+
+-- ---------------------------------------------------------------------------
+-- project_field_options (SPRIN-92, epic SPRIN-71 story 5)
+--
+-- One option of one 'select' custom field. ADDITIVE: touches no existing table's shape
+-- except the one new fk below on ticket_field_values.
+--
+-- Carries `project_id`, departing from the epic design's §3.3, because every
+-- ProjectShell read is `useTaggedRead(projectId, nonce, fn)` and a list function must
+-- be `(projectId) => Promise<T[]>` — an embedded join or a second query fed by the
+-- fields list would both be the "new plumbing" the epic's own §4.4 forbids.
+--
+-- Full rationale (the grant argument, the advisor delta) lives in
+-- docs/migrations/sprin-92-project-field-options.sql.
+-- ---------------------------------------------------------------------------
+create table project_field_options (
+  project_id uuid not null,
+  field_id   uuid not null,
+  slug       text not null,
+  label      text not null,
+  position   int  not null,
+
+  -- Keyed on SLUG rather than a surrogate id, so renaming a LABEL rewrites no value
+  -- row. Same reasoning that keyed tickets_status_fk on (project_id, slug) in SPRIN-79.
+  primary key (field_id, slug),
+
+  constraint pfo_field_fk foreign key (field_id, project_id)
+    references project_fields (id, project_id) on delete cascade,
+
+  constraint pfo_slug_format check (slug ~ '^[a-z][a-z0-9_]{0,29}$'),
+  constraint pfo_label_nonempty check (btrim(label) <> '' and length(label) <= 40),
+  constraint pfo_position_positive check (position > 0)
+);
 
 -- At most one initial status per project. Same idiom as sprints_one_active_per_project,
 -- and the same limitation: it prevents two, not zero.
@@ -738,6 +782,7 @@ alter table project_counters  enable row level security;
 alter table project_statuses  enable row level security;
 alter table project_fields    enable row level security;
 alter table ticket_field_values enable row level security;
+alter table project_field_options enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
@@ -977,6 +1022,100 @@ create policy tfv_owner_delete on ticket_field_values
   using (exists (select 1 from projects p
                  where p.id = ticket_field_values.project_id
                    and p.owner_id = (select auth.uid())));
+
+-- project_field_options (SPRIN-92). Four policies, shaped exactly like tfv_owner_*: no
+-- TO clause, `(select auth.uid())` throughout — adds ZERO auth_rls_initplan warnings
+-- (measured: still 8 after applying).
+create policy options_owner_read on project_field_options
+  for select
+  using (exists (select 1 from projects p
+                 where p.id = project_field_options.project_id
+                   and p.owner_id = (select auth.uid())));
+
+create policy options_owner_insert on project_field_options
+  for insert
+  with check (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy options_owner_update on project_field_options
+  for update
+  using      (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())))
+  with check (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy options_owner_delete on project_field_options
+  for delete
+  using (exists (select 1 from projects p
+                 where p.id = project_field_options.project_id
+                   and p.owner_id = (select auth.uid())));
+
+-- ------------------------------------------------------------
+-- GRANTS for the two custom-field write tables.
+--
+-- BOTH BLOCKS WERE MISSING FROM THIS FILE and were added together. ticket_field_values'
+-- (SPRIN-88) and project_field_options' (SPRIN-92) policies were both recorded here without
+-- the privileges beside them, so a rebuild from this document produced two tables carrying
+-- the FULL default CRUD grant for `authenticated` — which is not a smaller version of the
+-- real schema, it is a different one: `slug` becomes patchable and AC3's guarantee (a rename
+-- can never orphan a value row, because the privilege to write `slug` does not exist) is a
+-- convention again rather than a database property.
+--
+-- EVERY TABLE HERE IS BORN WITH FULL CRUD FOR authenticated AND anon — measured from
+-- pg_default_acl, not information_schema, whose grant views return zero rows under a
+-- read-only role and read exactly like "no privileges". So each revoke below is the statement
+-- that changes something. Each is written TABLE-WIDE with the permitted columns granted back
+-- afterwards, because `revoke update (col)` against a table-wide grant is a SILENT NO-OP and
+-- a table-level revoke CASCADES to column grants. Any later migration widening either set
+-- must RESTATE EVERY GRANTED COLUMN, not just add its new one.
+--
+-- SELECT is deliberately left at the default for both roles on both tables: authenticated
+-- needs it, and anon reads zero rows because `auth.uid()` is NULL, so the policies' EXISTS
+-- matches no project. That is RLS emptying the result, NOT the absence of a policy for anon —
+-- these policies carry no TO clause, so they apply to `public`, which includes anon.
+-- ------------------------------------------------------------
+
+-- ticket_field_values (SPRIN-88). INSERT and UPDATE on ALL EIGHT columns, which departs from
+-- the epic design deliberately: PostgREST compiles `.upsert(row)` to `INSERT … ON CONFLICT DO
+-- UPDATE SET c = excluded.c` for every column in the payload, and Postgres requires UPDATE on
+-- every column in a SET list — so a narrow `grant update (value_*)` makes every SECOND write
+-- to a field 42501. The identity columns are defended by tfv_ticket_fk/tfv_field_fk (composite
+-- on project_id), tfv_type_fk and tfv_owner_update's WITH CHECK, not by this grant. The full
+-- argument is in docs/migrations/sprin-88-ticket-field-values.sql.
+revoke insert, update, delete on ticket_field_values from authenticated, anon;
+
+grant insert (ticket_id, project_id, field_id, field_type,
+              value_text, value_number, value_date, value_option)
+  on ticket_field_values to authenticated;
+
+grant update (ticket_id, project_id, field_id, field_type,
+              value_text, value_number, value_date, value_option)
+  on ticket_field_values to authenticated;
+
+-- Table-wide because Postgres has no column-level DELETE, and AC3 needs it: clearing a custom
+-- field DELETES the row rather than storing a null, because tfv_one_value_matching_type makes
+-- a row of nulls unrepresentable.
+grant delete on ticket_field_values to authenticated;
+
+-- project_field_options (SPRIN-92).
+revoke insert, update, delete on project_field_options from authenticated, anon;
+
+grant insert (project_id, field_id, slug, label, position)
+  on project_field_options to authenticated;
+
+-- UPDATE on `label` ALONE is what makes AC3 a DATABASE property rather than a convention: a
+-- patch touching `slug` earns 42501 before any policy is consulted, so no value row can be
+-- orphaned by a rename. `position` is insertable but not updatable — there is no reorder
+-- surface, so a writable position would be machinery with no caller.
+grant update (label) on project_field_options to authenticated;
+
+-- Table-wide DELETE, so options_owner_delete is the ONLY thing in front of it. That is why
+-- rls.integration.test.ts asserts a stranger's delete removes zero rows, rather than only
+-- asserting the owner's own delete works.
+grant delete on project_field_options to authenticated;
 
 -- THE TABLE WAS BORN WITH FULL CRUD FOR BOTH APP ROLES. Measured from pg_default_acl (not
 -- information_schema, whose grant views return zero rows under a read-only role and read

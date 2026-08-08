@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { useBlockFlow, useDeleteFlow } from '@/lib/ticket-actions'
 import { useTicketCommit } from '@/lib/ticket-commit'
 import { useDeliverables } from '@/lib/ticket-deliverables'
-import type { ProjectField, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { statusName } from '@/lib/project-statuses'
 import type { SprintsPhase } from './ProjectShell'
@@ -38,6 +38,8 @@ export function TicketDetailDialog({
   hasSprints,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
   onRetryFields,
   onOpenChange,
   onUpdated,
@@ -81,6 +83,21 @@ export function TicketDetailDialog({
    *  constraint stated as an architecture, not a preference. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** REQUIRED (SPRIN-92 task 11, fix round 2) — not optional, threaded straight through to the
+   *  sidebar and on to `TicketCustomFields`, which is also required (fix round 1). A reviewer
+   *  probe found the fix-round-1 asymmetry (required at the two leaves, optional-with-coalesce
+   *  at their direct callers) left the hole reachable one level up: `<TicketDetailDialog
+   *  optionsPhase="loaded" />` with no `options` at all typechecked clean and rendered an
+   *  ENABLED select with only the blank choice. Required here closes it — and costs nothing:
+   *  this component is measured UNCHANGED at 10/10 with the `?` removed, mirroring
+   *  `optionsPhase` immediately below. */
+  options: ProjectFieldOption[]
+  /** REQUIRED (SPRIN-92 task 10's fix round 2). A plain pass-through, so this costs nothing either way —
+   *  this component is measured UNCHANGED at 10/10 with the type made required, `?` removed. See
+   *  `TicketCustomFields`'s docblock for why a required prop replaced the fix-round-1 default:
+   *  it converts an unplugged wire into a compile error here and at `TicketDetailSidebar`,
+   *  instead of a silently-'loaded' select three hops down. */
+  optionsPhase: ReadPhase
   /** The shell's retry, for the definitions read the shell owns. */
   onRetryFields?: () => void
   onOpenChange: (open: boolean) => void
@@ -195,6 +212,8 @@ export function TicketDetailDialog({
             hasSprints={hasSprints}
             fields={fields}
             fieldsPhase={fieldsPhase}
+            options={options}
+            optionsPhase={optionsPhase}
             onRetryFields={onRetryFields}
           />
         </div>

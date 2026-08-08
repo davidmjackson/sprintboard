@@ -6,9 +6,15 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 import { SettingsTab } from './SettingsTab'
 import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
-import type { Project, ProjectField, ProjectStatus } from '@/lib/domain'
+import type { Project, ProjectField, ProjectFieldOption, ProjectStatus } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
 import { createProjectField, renameProjectField } from '@/lib/project-fields'
+import {
+  countTicketsHoldingOption,
+  createProjectFieldOption,
+  deleteProjectFieldOption,
+  renameProjectFieldOption,
+} from '@/lib/project-field-options'
 
 // SPRIN-91. Mocked because the tests below drive the custom-field add and rename forms through
 // this tab, and the real writes reach PostgREST. `useTaggedRead` is not involved here, so an
@@ -18,6 +24,17 @@ vi.mock('@/lib/project-fields', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-fields')>()),
   createProjectField: vi.fn(),
   renameProjectField: vi.fn(),
+}))
+
+// SPRIN-92 task 9, fix round 1: the same reasoning one table over. A `select` field's row now
+// mounts the REAL `CustomFieldOptions` when this tab renders the real `CustomFieldSettings`,
+// so its writes need mocking here too or an unmocked one reaches the live database.
+vi.mock('@/lib/project-field-options', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-field-options')>()),
+  createProjectFieldOption: vi.fn(),
+  renameProjectFieldOption: vi.fn(),
+  deleteProjectFieldOption: vi.fn(),
+  countTicketsHoldingOption: vi.fn(),
 }))
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
@@ -94,8 +111,13 @@ function renderTab(
     statusesPhase?: ReadPhase
     fields?: ProjectField[]
     fieldsPhase?: ReadPhase
+    options?: ProjectFieldOption[]
+    optionsPhase?: ReadPhase
     onFieldCreated?: (field: ProjectField) => void
     onFieldUpdated?: (field: ProjectField) => void
+    onOptionCreated?: (option: ProjectFieldOption) => void
+    onOptionUpdated?: (option: ProjectFieldOption) => void
+    onOptionDeleted?: (fieldId: string, slug: string) => void
     onRetry?: () => void
   } = {},
 ) {
@@ -109,6 +131,10 @@ function renderTab(
     // a harness silently testing a state the real shell never produces.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-92 task 9, fix round 1. Same reasoning as `fields`/`fieldsPhase` above, one table
+    // over — defaulted to a loaded empty list rather than left off.
+    options: [],
+    optionsPhase: 'loaded',
     // SPRIN-91, and the docblock above applies to these with more force than to `fields`.
     // The cast is `as unknown as ProjectShellContext`, so omitting them COMPILES and hands
     // `CustomFieldSettings` `undefined` for its two write callbacks — which throws only when a
@@ -120,6 +146,12 @@ function renderTab(
     // write tests at the end of this file are what actually close that.
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
+    // SPRIN-92 task 9, fix round 1 (Important): the identical swap risk one table over —
+    // `onOptionCreated`/`onOptionUpdated` are stubs by default; the write tests further down
+    // pass their own and assert them.
+    onOptionCreated: vi.fn(),
+    onOptionUpdated: vi.fn(),
+    onOptionDeleted: vi.fn(),
     onRetry: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
@@ -492,5 +524,140 @@ describe('SettingsTab custom fields', () => {
 
     // The mirror of the add test: the renamed row goes to UPDATE, and create stays untouched.
     expect(onFieldCreated).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * SPRIN-92 task 9, fix round 1 (Important). The exact mirror of `describe('SettingsTab custom
+ * fields', ...)`'s own write tests above, one table over — and needed for the identical reason
+ * those were added: `onOptionCreated`/`onOptionUpdated`/`onOptionDeleted` are stubbed
+ * present-but-unasserted by `renderTab`'s defaults, which makes the SettingsTab → CustomFieldSettings
+ * seam for OPTIONS look covered when nothing here actually drives a write across it.
+ *
+ * `CustomFieldSettings.test.tsx` closes the seam BELOW this one — from `CustomFieldSettings`'s
+ * own top-level props down to the real, mounted `CustomFieldOptions` — but it renders
+ * `CustomFieldSettings` directly and never renders `SettingsTab`, so it cannot see a swap at
+ * THIS boundary (`<CustomFieldSettings onOptionCreated={onOptionCreated} ... />` in
+ * `SettingsTab.tsx`). Verified by mutation: swapping those two props there is type-clean,
+ * lint-clean, and left every test in the suite — 1217 of them — green.
+ */
+describe('SettingsTab custom field options (SPRIN-92 task 9, fix round 1)', () => {
+  const SELECT_FIELD = {
+    id: 'f1',
+    project_id: 'p1',
+    slug: 'urgency',
+    name: 'Priority tier',
+    type: 'select',
+    created_at: '2026-08-07T10:00:00Z',
+  } as unknown as ProjectField
+
+  const LOW_OPTION: ProjectFieldOption = {
+    project_id: 'p1',
+    field_id: 'f1',
+    slug: 'low',
+    label: 'Low',
+    position: 1,
+  }
+  const HIGH_OPTION: ProjectFieldOption = {
+    project_id: 'p1',
+    field_id: 'f1',
+    slug: 'high',
+    label: 'High',
+    position: 2,
+  }
+
+  beforeEach(() => {
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+    vi.mocked(createProjectFieldOption).mockReset()
+    vi.mocked(renameProjectFieldOption).mockReset()
+    vi.mocked(deleteProjectFieldOption).mockReset()
+    vi.mocked(countTicketsHoldingOption).mockReset()
+  })
+
+  /**
+   * The seam one level ABOVE the callbacks: `SettingsTab` reads TWO independent read phases off
+   * the outlet context and must hand each to the prop it belongs to. Crossing them
+   * (`optionsPhase={fieldsPhase}`) is type-clean — both are `ReadPhase` — lint-clean, and
+   * survived the whole suite, because every other fixture in this file leaves both phases
+   * `'loaded'` and nothing there can tell one from the other.
+   *
+   * So this test needs a state where the two DISAGREE, and only one such state is renderable:
+   * fields loaded, options failed. The mirror (fields failed, options loaded) proves nothing —
+   * `CustomFieldBody` short-circuits to `LoadFailure` before the options notice is reached.
+   *
+   * The equivalent cross in the OTHER direction (`phase={optionsPhase}`) is already caught, by
+   * "shows a failed fields read as a failure" above: that test leaves `optionsPhase` loaded, so
+   * the crossed `phase` would render the list instead of the failure.
+   *
+   * This is the sixth instance of the class this branch has now paid for, and the second time
+   * the hole sat one level ABOVE where it had been closed — `CustomFieldSettings.test.tsx`
+   * kills the identical cross between its own props, and could not see this one.
+   */
+  it('takes the options notice from optionsPhase, never from fieldsPhase', () => {
+    renderTab({
+      fields: [SELECT_FIELD],
+      fieldsPhase: 'loaded',
+      options: [],
+      optionsPhase: 'failed',
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/^Could not load field options\.$/)
+    // The FIELD list is still on screen: a failed OPTIONS read is not a failed fields read.
+    expect(screen.getByText('Priority tier')).toBeInTheDocument()
+    // And the editor is withheld, so the failure cannot impersonate "no options yet".
+    expect(screen.queryByRole('button', { name: 'Add option' })).not.toBeInTheDocument()
+  })
+
+  it('adds, renames and removes an option through the tab, and never crosses the callbacks', async () => {
+    const u = userEvent.setup()
+    const created: ProjectFieldOption = {
+      project_id: 'p1',
+      field_id: 'f1',
+      slug: 'medium',
+      label: 'Medium',
+      position: 3,
+    }
+    const renamedLow: ProjectFieldOption = { ...LOW_OPTION, label: 'Very low' }
+    vi.mocked(createProjectFieldOption).mockResolvedValue({ ok: true, value: created })
+    vi.mocked(renameProjectFieldOption).mockResolvedValue({ ok: true, value: renamedLow })
+    vi.mocked(countTicketsHoldingOption).mockResolvedValue(0)
+    vi.mocked(deleteProjectFieldOption).mockResolvedValue({ ok: true, value: undefined })
+    const onOptionCreated = vi.fn()
+    const onOptionUpdated = vi.fn()
+    const onOptionDeleted = vi.fn()
+    renderTab({
+      fields: [SELECT_FIELD],
+      options: [LOW_OPTION, HIGH_OPTION],
+      onOptionCreated,
+      onOptionUpdated,
+      onOptionDeleted,
+    })
+    const row = screen.getByText('Priority tier').closest('li')!
+
+    // ADD
+    await u.type(within(row).getByRole('textbox', { name: 'Option label' }), 'Medium')
+    await u.click(within(row).getByRole('button', { name: 'Add option' }))
+    await waitFor(() => expect(onOptionCreated).toHaveBeenCalledWith(created))
+    expect(onOptionUpdated).not.toHaveBeenCalled()
+    expect(onOptionDeleted).not.toHaveBeenCalled()
+
+    // RENAME
+    await u.click(within(row).getByRole('button', { name: /edit .*low/i }))
+    const input = within(row).getByRole('textbox', { name: /low/i })
+    await u.clear(input)
+    await u.type(input, 'Very low{Enter}')
+    await waitFor(() => expect(onOptionUpdated).toHaveBeenCalledWith(renamedLow))
+    // The add above is the only create so far — a swap would have routed it through update too.
+    expect(onOptionCreated).toHaveBeenCalledTimes(1)
+    expect(onOptionDeleted).not.toHaveBeenCalled()
+
+    // REMOVE
+    await u.click(within(row).getByRole('button', { name: 'Remove High' }))
+    const dialog = await screen.findByRole('alertdialog')
+    await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
+    await waitFor(() => expect(onOptionDeleted).toHaveBeenCalledWith('f1', HIGH_OPTION.slug))
+    // Neither create nor update grew — a swap onto either would have.
+    expect(onOptionCreated).toHaveBeenCalledTimes(1)
+    expect(onOptionUpdated).toHaveBeenCalledTimes(1)
   })
 })

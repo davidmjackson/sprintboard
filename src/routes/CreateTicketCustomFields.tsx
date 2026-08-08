@@ -1,7 +1,8 @@
 import type { Control } from 'react-hook-form'
 
-import type { CustomFieldType, ProjectField } from '@/lib/domain'
+import type { CustomFieldType, ProjectField, ProjectFieldOption } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
+import { optionsForField } from '@/lib/project-field-options'
 import type { CreateTicketValues } from '@/lib/ticket-schemas'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -12,10 +13,21 @@ import { selectClass } from './form-primitives'
  * What a create-form control needs: today's typed value and a setter, nothing else. No
  * commit-on-blur and no per-field error plumbing — react-hook-form and `FormMessage` already
  * own validation display, and nothing is written to the database until Create is pressed.
+ *
+ * `options`/`optionsReady` are consumed by `select` alone — the other four entries destructure
+ * neither, which costs nothing, mirroring `TicketCustomFields.tsx`'s identical `ControlProps`.
  */
 type CreateControlProps = {
   value: string
   onChange: (value: string) => void
+  /** This field's own options (already filtered from the project's full list), in
+   *  `(position, slug)` order. */
+  options: readonly ProjectFieldOption[]
+  /** Whether `options` is trustworthy — `optionsPhase === 'loaded'`. `false` covers BOTH
+   *  `'loading'` and `'failed'` deliberately: an empty list from a failed read and an empty
+   *  list from a field with genuinely no options are the same value arriving for opposite
+   *  reasons, and only this flag tells them apart. Same reasoning as `TicketCustomFields.tsx`. */
+  optionsReady: boolean
 }
 
 /**
@@ -31,13 +43,17 @@ type CreateControlProps = {
  * form submits, so every control here is a plain, always-editable input instead, matching every
  * built-in field `CreateTicketDialog` already renders (`summary`, `description`, …).
  *
- * **`select` renders a disabled control rather than nothing.** SPRIN-91's add-field form offers
- * all five types today, so rendering no control for `select` would be a field the user just
- * created and could not find on the create dialog. It stays disabled because
- * `project_field_options` does not exist until story 5 (SPRIN-92) ships it — until
- * `tfv_option_fk` lands, a free-text editor here would let someone type a value that constraint
- * then refuses, and a disabled control cannot produce a value, so it contributes nothing to the
- * write. That is the correct behaviour, not a gap.
+ * **`select` is a real `<select>` (SPRIN-92), populated from the project's `project_field_options`
+ * rows for this field.** It carries a blank `—` choice FIRST, always — every custom field is
+ * optional in this epic. Picking blank commits `''`, which `parseFieldValues`'s `textDraft`
+ * already treats as CLEAR for every string-valued type (`select` included) when the form
+ * submits — no `select`-specific branch needed at `onSubmit`. The value committed for a real
+ * choice is the option's `slug`, never its `label`: `tfv_option_fk` is keyed on the slug.
+ *
+ * **Disabled whenever `optionsReady` is false**, i.e. whenever `optionsPhase` is not `'loaded'`
+ * — the same rule and the same reason as `TicketCustomFields.tsx`'s `select`: an empty options
+ * list from a still-loading or failed read and an empty list from a field that genuinely has no
+ * options are the same value arriving for opposite reasons.
  *
  * **`number` passes no `min`.** `min={0}` on `CreateTicketDialog`'s own `storyPoints` field is
  * the ESTIMATION rule, a property of story points rather than of arithmetic — SPRIN-88 made the
@@ -63,8 +79,18 @@ const CREATE_CONTROLS = {
     <Input type="date" value={p.value} onChange={(e) => p.onChange(e.target.value)} />
   ),
   select: (p: CreateControlProps) => (
-    <select className={selectClass} value={p.value} disabled>
-      <option value={p.value}>{p.value || '—'}</option>
+    <select
+      className={selectClass}
+      value={p.value}
+      disabled={!p.optionsReady}
+      onChange={(e) => p.onChange(e.target.value)}
+    >
+      <option value="">—</option>
+      {p.options.map((o) => (
+        <option key={o.slug} value={o.slug}>
+          {o.label}
+        </option>
+      ))}
     </select>
   ),
 } as const satisfies Record<CustomFieldType, (p: CreateControlProps) => React.ReactElement>
@@ -84,9 +110,15 @@ const CREATE_CONTROLS = {
 function CreateTicketCustomFieldRow({
   control,
   field,
+  options,
+  optionsReady,
 }: {
   control: Control<CreateTicketValues>
   field: ProjectField
+  /** This field's own slice of the project's options — already filtered by `optionsForField`
+   *  in `CreateTicketCustomFields`, so every OTHER control ignores it for free. */
+  options: readonly ProjectFieldOption[]
+  optionsReady: boolean
 }) {
   // Bound to a local, then called. `CREATE_CONTROLS[field.type](props)` is a call through a
   // computed member, which `project-type-immutability.test.ts` check 1 forbids anywhere under
@@ -103,6 +135,8 @@ function CreateTicketCustomFieldRow({
           <FormLabel>{field.name}</FormLabel>
           <FormControl>
             {render({
+              options,
+              optionsReady,
               // `?? ''` is load-bearing WHEREVER a value can go from defined to absent:
               // `form.reset()` restores `custom` to the form's default, at which point this
               // path has no value, and a bare `value={rhf.value}` flips the input from
@@ -159,10 +193,32 @@ export function CreateTicketCustomFields({
   control,
   fields = [],
   fieldsPhase = 'loaded',
+  options,
+  optionsPhase,
 }: {
   control: Control<CreateTicketValues>
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** REQUIRED (fix round 1), not defaulted to `[]` — unlike `fields` above. A reviewer probe
+   *  rendered this component with `optionsPhase="loaded"` and NO `options` prop at all: it
+   *  typechecked clean against the old `options = []` default and rendered an ENABLED select
+   *  offering only the blank choice, telling the user a `select` field has no options when in
+   *  truth none were ever passed in — the exact silent-wrong-answer shape this story has now
+   *  fought four times. `TicketCustomFields.tsx`'s own `options` prop gets the identical fix in
+   *  the same commit, since this was a story-wide hole inherited from that file, not a
+   *  divergence introduced here. A dropped `options` wire is now a COMPILE error at every call
+   *  site instead. */
+  options: ProjectFieldOption[]
+  /** REQUIRED, not defaulted — unlike every other prop above. `TicketCustomFields.tsx`'s own
+   *  `optionsPhase` docblock records why: fix round 1 of task 10 gave the sidebar equivalent a
+   *  `'loading'` default on the belief that a required prop would cost a cyclomatic point this
+   *  component could not afford, and that belief was measured WRONG in fix round 2 — a default
+   *  parameter COSTS a point in this project's eslint config, so removing one only ever lowers
+   *  the count. This component ships required from its first commit rather than repeating that
+   *  two-round detour: a dropped or crossed `optionsPhase` wire is a COMPILE error at every call
+   *  site (`CreateTicketDialog`, and every test that renders this component directly) instead of
+   *  a passing test suite hiding a runtime silent-wrong-answer. */
+  optionsPhase: ReadPhase
 }): React.ReactElement | null {
   if (fieldsPhase === 'loaded' && fields.length === 0) return null
 
@@ -181,7 +237,13 @@ export function CreateTicketCustomFields({
   return (
     <>
       {fields.map((field) => (
-        <CreateTicketCustomFieldRow key={field.id} control={control} field={field} />
+        <CreateTicketCustomFieldRow
+          key={field.id}
+          control={control}
+          field={field}
+          options={optionsForField(options, field.id)}
+          optionsReady={optionsPhase === 'loaded'}
+        />
       ))}
     </>
   )

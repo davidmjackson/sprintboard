@@ -10,7 +10,13 @@ import {
   ticketFieldValueRows,
 } from '@/lib/ticket-field-values'
 import { CreateTicketSchema, type CreateTicketValues } from '@/lib/ticket-schemas'
-import { TICKET_TYPES, TICKET_TYPE_LABELS, type ProjectField, type Ticket } from '@/lib/domain'
+import {
+  TICKET_TYPES,
+  TICKET_TYPE_LABELS,
+  type ProjectField,
+  type ProjectFieldOption,
+  type Ticket,
+} from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -61,11 +67,25 @@ export function CreateTicketDialog({
   onCreated,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
 }: {
   projectId: string
   onCreated?: (ticket: Ticket) => void
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** REQUIRED (fix round 2) — not optional, no `?? []` coalesce. Fix round 1 made `options`
+   *  required at `CreateTicketCustomFields` alone and kept it optional-with-a-coalesce here. A
+   *  reviewer probe found that asymmetry left the hole reachable one level up:
+   *  `<CreateTicketDialog optionsPhase="loaded" />` with no `options` at all typechecked clean
+   *  and rendered an ENABLED select with only the blank choice — the coalesce hid the hole at
+   *  the leaf's caller, not at the leaf itself, and the real external callers are here.
+   *  Required, mirroring `optionsPhase` below and `TicketDetailDialog`'s identical fix. */
+  options: ProjectFieldOption[]
+  /** REQUIRED, not defaulted. A plain pass-through, so this costs nothing either way — see
+   *  `CreateTicketCustomFields`'s own docblock for why a required prop is shipped from this
+   *  story's first commit rather than added in a later fix round. */
+  optionsPhase: ReadPhase
 }) {
   const form = useForm<CreateTicketValues>({
     resolver: zodResolver(CreateTicketSchema),
@@ -236,7 +256,15 @@ export function CreateTicketDialog({
         )}
       />
 
-      <CreateTicketCustomFields control={form.control} fields={fields} fieldsPhase={fieldsPhase} />
+      <CreateTicketCustomFields
+        control={form.control}
+        fields={fields}
+        fieldsPhase={fieldsPhase}
+        // `options` is REQUIRED on both `CreateTicketCustomFields` and THIS component (fix
+        // round 2) — a straight pass-through, no coalesce.
+        options={options}
+        optionsPhase={optionsPhase}
+      />
     </CreateDialog>
   )
 }

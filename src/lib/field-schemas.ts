@@ -73,3 +73,29 @@ export const RenameFieldSchema = z.object({ name })
 
 export type AddFieldValues = z.input<typeof AddFieldSchema>
 export type RenameFieldValues = z.input<typeof RenameFieldSchema>
+
+/**
+ * The option add/rename rules. The 40-character cap and the trim mirror
+ * `pfo_label_nonempty` (`btrim(label) <> '' and length(label) <= 40`), so a label this
+ * schema accepts is one the database accepts.
+ *
+ * The `slugForName` refine is on ADD only, exactly as `addName` is — an add derives a
+ * slug and a rename never does, so refusing an underivable label on rename would be a
+ * constraint the database does not have.
+ */
+const optionLabel = z
+  .string()
+  .trim()
+  .min(1, 'Give the option a label')
+  .max(40, 'Keep the label to 40 characters or fewer')
+
+const addOptionLabel = optionLabel.refine(
+  (value) => slugForName(value) !== null,
+  'Include at least one character from a–z or 0–9 in the label',
+)
+
+export const AddOptionSchema = z.object({ label: addOptionLabel })
+export const RenameOptionSchema = z.object({ label: optionLabel })
+
+export type AddOptionValues = z.input<typeof AddOptionSchema>
+export type RenameOptionValues = z.input<typeof RenameOptionSchema>

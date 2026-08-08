@@ -59,6 +59,13 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     // SPRIN-90. Shape parity with `ProjectShell`'s real context; the backlog reads neither.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-92 task 9. Same shape-parity reasoning as `fields`/`fieldsPhase` above — the
+    // backlog reads neither.
+    options: [],
+    optionsPhase: 'loaded',
+    onOptionCreated: vi.fn(),
+    onOptionUpdated: vi.fn(),
+    onOptionDeleted: vi.fn(),
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
     onStatusCreated: vi.fn(),

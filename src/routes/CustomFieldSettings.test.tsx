@@ -4,10 +4,16 @@ import userEvent from '@testing-library/user-event'
 import type { z } from 'zod'
 
 import { CustomFieldSettings } from './CustomFieldSettings'
-import type { ProjectField } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption } from '@/lib/domain'
 import { CUSTOM_FIELD_TYPES, CUSTOM_FIELD_TYPE_LABELS } from '@/lib/domain'
 import { AddFieldSchema, RenameFieldSchema } from '@/lib/field-schemas'
 import { createProjectField, renameProjectField } from '@/lib/project-fields'
+import {
+  countTicketsHoldingOption,
+  createProjectFieldOption,
+  deleteProjectFieldOption,
+  renameProjectFieldOption,
+} from '@/lib/project-field-options'
 import type { ReadPhase } from '@/lib/project-reads'
 
 // Spread the real module: only the two network-touching writes are mocked. `listProjectFields`
@@ -21,8 +27,25 @@ vi.mock('@/lib/project-fields', async (orig) => ({
   renameProjectField: vi.fn(),
 }))
 
+// SPRIN-92 task 9: a `select` field now mounts the REAL `CustomFieldOptions` beneath its row,
+// which imports these writes itself. Unmocked, a click this file never makes today could still
+// reach the live database the moment a later test does — the identical ~90-requests-per-run
+// hole SPRIN-90's review measured, one module over. Mirrors `CustomFieldOptions.test.tsx`'s own
+// mock exactly.
+vi.mock('@/lib/project-field-options', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-field-options')>()),
+  createProjectFieldOption: vi.fn(),
+  renameProjectFieldOption: vi.fn(),
+  countTicketsHoldingOption: vi.fn(),
+  deleteProjectFieldOption: vi.fn(),
+}))
+
 const mockCreate = vi.mocked(createProjectField)
 const mockRename = vi.mocked(renameProjectField)
+const mockCreateOption = vi.mocked(createProjectFieldOption)
+const mockRenameOption = vi.mocked(renameProjectFieldOption)
+const mockDeleteOption = vi.mocked(deleteProjectFieldOption)
+const mockCountOption = vi.mocked(countTicketsHoldingOption)
 
 /**
  * Fixtures chosen so **no slug is the lowercased name** and **no type is the form's default**.
@@ -50,19 +73,51 @@ const CUSTOMER_REF = field()
 const PRIORITY = field({ id: 'f2', slug: 'tier', name: 'Priority level', type: 'number' })
 const FIELDS = [CUSTOMER_REF, PRIORITY]
 
+/**
+ * A `select` field, and an ordinary (non-`select`) sibling — SPRIN-92 task 9's own fixtures,
+ * named to match the brief's illustrative test. Slugs deliberately are NOT the lowercased name,
+ * the same SPRIN-87 confound the rest of this file already guards against.
+ */
+const SELECT_FIELD = field({ id: 'f3', slug: 'urgency', name: 'Priority tier', type: 'select' })
+const TEXT_FIELD = field({ id: 'f4', slug: 'billing_note', name: 'Billing note', type: 'text' })
+
+const LOW_OPTION: ProjectFieldOption = {
+  project_id: 'p1',
+  field_id: SELECT_FIELD.id,
+  slug: 'low',
+  label: 'Low',
+  position: 1,
+}
+const HIGH_OPTION: ProjectFieldOption = {
+  project_id: 'p1',
+  field_id: SELECT_FIELD.id,
+  slug: 'high',
+  label: 'High',
+  position: 2,
+}
+const OPTIONS = [LOW_OPTION, HIGH_OPTION]
+
 function renderSettings(
   props: {
     fields?: ProjectField[]
     phase?: ReadPhase
+    options?: ProjectFieldOption[]
+    optionsPhase?: ReadPhase
     onCreated?: (f: ProjectField) => void
     onUpdated?: (f: ProjectField) => void
     onRetry?: () => void
+    onOptionCreated?: (option: ProjectFieldOption) => void
+    onOptionUpdated?: (option: ProjectFieldOption) => void
+    onOptionDeleted?: (fieldId: string, slug: string) => void
   } = {},
 ) {
   const handlers = {
     onCreated: vi.fn(),
     onUpdated: vi.fn(),
     onRetry: vi.fn(),
+    onOptionCreated: vi.fn(),
+    onOptionUpdated: vi.fn(),
+    onOptionDeleted: vi.fn(),
     ...props,
   }
   const { container } = render(
@@ -70,9 +125,14 @@ function renderSettings(
       projectId="p1"
       fields={props.fields ?? FIELDS}
       phase={props.phase ?? 'loaded'}
+      options={props.options ?? []}
+      optionsPhase={props.optionsPhase ?? 'loaded'}
       onRetry={handlers.onRetry}
       onCreated={handlers.onCreated}
       onUpdated={handlers.onUpdated}
+      onOptionCreated={handlers.onOptionCreated}
+      onOptionUpdated={handlers.onOptionUpdated}
+      onOptionDeleted={handlers.onOptionDeleted}
     />,
   )
   return { ...handlers, container }
@@ -129,6 +189,10 @@ const TOO_LONG = 'F'.repeat(41)
 beforeEach(() => {
   mockCreate.mockReset()
   mockRename.mockReset()
+  mockCreateOption.mockReset()
+  mockRenameOption.mockReset()
+  mockDeleteOption.mockReset()
+  mockCountOption.mockReset()
 })
 
 describe('CustomFieldSettings', () => {
@@ -584,6 +648,184 @@ describe('CustomFieldSettings', () => {
       const empty = screen.getByText('No custom fields yet.')
       expect(empty).toBeVisible()
       expect(empty).not.toHaveAttribute('aria-hidden')
+    })
+  })
+
+  /**
+   * SPRIN-92 task 9: wiring the options editor in for `select` fields, and gating it on its OWN
+   * phase — a requirement carried forward from Task 7's review rather than written in the task
+   * brief. `CustomFieldOptions` takes no `phase` prop, so left ungated it renders its empty
+   * state ("No options yet.") on a FAILED read exactly as readily as on a genuinely empty one —
+   * the S4.6 defect one surface over. `CustomFieldBody`'s own gate above is the precedent this
+   * mirrors: failure first, then loading, then the loaded content.
+   */
+  describe("a select field's options (SPRIN-92 task 9)", () => {
+    it('renders the options editor for a select field and NOT for the others', () => {
+      renderSettings({ fields: [SELECT_FIELD, TEXT_FIELD] })
+
+      const rows = screen.getAllByRole('listitem')
+      expect(rows).toHaveLength(2)
+      expect(within(rows[0]!).getByRole('button', { name: 'Add option' })).toBeInTheDocument()
+      expect(within(rows[1]!).queryByRole('button', { name: 'Add option' })).not.toBeInTheDocument()
+    })
+
+    // The requirement itself: a FAILED options read must not be able to impersonate "this field
+    // genuinely has no options yet". Both sentences are asserted, and the absence check goes
+    // through a raw DOM query as well as `queryByRole` — `queryByRole` EXCLUDES `aria-hidden`
+    // subtrees, so it would report "absent" for text that is merely hidden rather than gone.
+    // The notice is SECTION-level (fix round 1, Minor), not inside the row's own `<li>` — so
+    // this asserts it exists on screen at all, and separately that the ROW itself stays silent.
+    it('shows an honest failure for a select field’s options, never the empty state, when that read failed', () => {
+      const { container } = renderSettings({
+        fields: [SELECT_FIELD],
+        options: [],
+        optionsPhase: 'failed',
+      })
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/^Could not load field options\.$/)
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible()
+      const row = rowFor('Priority tier')
+      expect(within(row).queryByRole('alert')).toBeNull()
+      expect(within(row).queryByText('No options yet.')).toBeNull()
+      expect(container.textContent).not.toContain('No options yet.')
+      expect(within(row).queryByRole('button', { name: 'Add option' })).not.toBeInTheDocument()
+    })
+
+    /**
+     * MINOR 1's own positive proof: with TWO `select` fields and one failed options read, the
+     * notice must appear exactly ONCE — not once per row. Before the fix, this failed with two
+     * `role="alert"` elements and two `Retry` buttons, both wired to the identical `onRetry`.
+     */
+    it('renders the options-failure notice exactly ONCE for the whole section, even with multiple select fields', () => {
+      const SECOND_SELECT_FIELD = field({
+        id: 'f5',
+        slug: 'impact',
+        name: 'Impact tier',
+        type: 'select',
+      })
+      renderSettings({
+        fields: [SELECT_FIELD, SECOND_SELECT_FIELD, TEXT_FIELD],
+        options: [],
+        optionsPhase: 'failed',
+      })
+
+      expect(screen.getAllByRole('alert')).toHaveLength(1)
+      expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1)
+    })
+
+    // The notice is gated on there being a select field to explain at all — a project with none
+    // has nothing here for "Could not load field options." to be about.
+    it('shows no options-failure notice when the project has no select field', () => {
+      renderSettings({ fields: [TEXT_FIELD], options: [], optionsPhase: 'failed' })
+
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    })
+
+    it('shows a loading state for a select field’s options, never the empty state, while that read is in flight', () => {
+      const { container } = renderSettings({
+        fields: [SELECT_FIELD],
+        options: [],
+        optionsPhase: 'loading',
+      })
+
+      const row = rowFor('Priority tier')
+      expect(within(row).queryByText('No options yet.')).toBeNull()
+      expect(container.textContent).not.toContain('No options yet.')
+      expect(within(row).queryByRole('button', { name: 'Add option' })).not.toBeInTheDocument()
+    })
+
+    /**
+     * The POSITIVE CONTROL for the two tests above: without this, "never renders 'No options
+     * yet.'" could be true because the sentence is unreachable from here at all, rather than
+     * because the phase gate is doing its job.
+     */
+    it('shows the empty state once a select field’s options read has genuinely loaded empty', () => {
+      renderSettings({ fields: [SELECT_FIELD], options: [], optionsPhase: 'loaded' })
+
+      const row = rowFor('Priority tier')
+      const empty = within(row).getByText('No options yet.')
+      expect(empty).toBeVisible()
+      expect(empty).not.toHaveAttribute('aria-hidden')
+    })
+
+    it('lists a loaded select field’s own options, scoped to its row', () => {
+      renderSettings({ fields: [SELECT_FIELD, TEXT_FIELD], options: OPTIONS })
+
+      const row = rowFor('Priority tier')
+      expect(within(row).getByText('Low')).toBeVisible()
+      expect(within(row).getByText('High')).toBeVisible()
+      expect(within(rowFor('Billing note')).queryByText('Low')).toBeNull()
+    })
+
+    /**
+     * FIX ROUND 1 (Important). Every test above drives `CustomFieldOptions` through props this
+     * FILE hands it directly (`renderSettings`'s `onOptionCreated`/`onOptionUpdated`/
+     * `onOptionDeleted` spies land straight on `<CustomFieldSettings>`), so none of them ever
+     * exercise the WIRING between that top-level prop and the real `CustomFieldOptions`
+     * component several layers below it (`CustomFieldBody` → `CustomFieldList` →
+     * `CustomFieldRow` → `FieldOptionsGate`, which renames the props to `onCreated`/`onUpdated`/
+     * `onDeleted` at its own JSX call to `CustomFieldOptions`). Swapping either pair at ANY of
+     * those hops — most concretely `<FieldOptionsGate onCreated={onOptionUpdated}
+     * onUpdated={onOptionCreated} .../>` in `CustomFieldRow`, or the mirror swap inside
+     * `FieldOptionsGate`'s own render of `CustomFieldOptions` — is type-clean (identical
+     * signatures), lint-clean, and was invisible to every test above and to all 1216 tests in
+     * the suite: the props are PRESENT, which is what made the seam look covered when it was
+     * not. Exactly the SPRIN-88 class of defect, one file over.
+     *
+     * This test drives a REAL add, a REAL rename and a REAL remove through the actually
+     * MOUNTED `CustomFieldOptions`, and asserts not only that the matching top-level spy fired
+     * with the right row, but that its SIBLING spy did not fire at all — asserting one alone
+     * would still pass on a swap, since the swapped call lands on some spy, just the wrong one.
+     */
+    it('threads a real add, rename and remove down to the matching top-level callback, never the sibling one', async () => {
+      const u = userEvent.setup()
+      const created: ProjectFieldOption = {
+        project_id: 'p1',
+        field_id: SELECT_FIELD.id,
+        slug: 'medium',
+        label: 'Medium',
+        position: 3,
+      }
+      const renamedLow: ProjectFieldOption = { ...LOW_OPTION, label: 'Very low' }
+      mockCreateOption.mockResolvedValue({ ok: true, value: created })
+      mockRenameOption.mockResolvedValue({ ok: true, value: renamedLow })
+      mockCountOption.mockResolvedValue(0)
+      mockDeleteOption.mockResolvedValue({ ok: true, value: undefined })
+      const { onOptionCreated, onOptionUpdated, onOptionDeleted } = renderSettings({
+        fields: [SELECT_FIELD, TEXT_FIELD],
+        options: OPTIONS,
+      })
+      const row = rowFor('Priority tier')
+
+      // ADD — through the real form, not a stub.
+      await u.type(within(row).getByRole('textbox', { name: 'Option label' }), 'Medium')
+      await u.click(within(row).getByRole('button', { name: 'Add option' }))
+      await waitFor(() => expect(onOptionCreated).toHaveBeenCalledWith(created))
+      expect(onOptionUpdated).not.toHaveBeenCalled()
+      expect(onOptionDeleted).not.toHaveBeenCalled()
+
+      // RENAME — the pre-existing 'Low' option, through `EditableText`.
+      await u.click(within(row).getByRole('button', { name: /edit .*low/i }))
+      const input = within(row).getByRole('textbox', { name: /low/i })
+      await u.clear(input)
+      await u.type(input, 'Very low{Enter}')
+      await waitFor(() => expect(onOptionUpdated).toHaveBeenCalledWith(renamedLow))
+      // The add above is the ONLY create so far — a swap would have routed IT through update
+      // too, inflating this count.
+      expect(onOptionCreated).toHaveBeenCalledTimes(1)
+      expect(onOptionDeleted).not.toHaveBeenCalled()
+
+      // REMOVE — the 'High' option, through the count-gated confirm dialog.
+      await u.click(within(row).getByRole('button', { name: 'Remove High' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
+      await waitFor(() =>
+        expect(onOptionDeleted).toHaveBeenCalledWith(SELECT_FIELD.id, HIGH_OPTION.slug),
+      )
+      // Neither create nor update grew — a swap onto either would have.
+      expect(onOptionCreated).toHaveBeenCalledTimes(1)
+      expect(onOptionUpdated).toHaveBeenCalledTimes(1)
     })
   })
 })

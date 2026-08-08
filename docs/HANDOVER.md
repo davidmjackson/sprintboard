@@ -52,6 +52,128 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 62 — the unread review, read and acted on (branch `sprin-92-single-select-fields`)
+
+The adversarial review session 61 left running was recovered from `journal.jsonl` and written up
+as **`docs/sprin-92-review-findings.md`**, which is now committed. **Read its header before
+trusting any of it:** four of five lenses journaled, the fifth (`wiring-and-seams`, 68 mutations)
+was reconstructed from its transcript, and **the Verify and Synthesise phases never ran** — so
+there is no KILLED list and not one finding was adversarially verified. Mutation counts were
+12/9/13/14/54; no lens reported zero.
+
+**All eleven findings are fixed.** Every behavioural one was confirmed the way this project asks
+for — plant the mutation, watch the suite, restore — and each new test was checked to be the
+*only* thing that kills its mutation:
+
+| # | Fix | Mutation that now dies |
+|---|---|---|
+| 2 | `SettingsTab.test.tsx` | `optionsPhase={fieldsPhase}` — sixth instance of the class, second time one level ABOVE where it was closed |
+| 3 | `CustomFieldOptions.test.tsx` | crossing `countTicketsHoldingOption`'s arguments (found by 4 of 5 lenses) |
+| 4 | `ProjectShell.test.tsx` | either option reducer keyed on `slug` alone |
+| 5 | both ticket-field test files | dropping the `optionsForField` slice at either `<select>` site |
+| 6 | `project-field-options.ts` | narrowing the create's `.select()` — now **TS2739 at compile time**, which the `as ProjectFieldOption` cast had been suppressing |
+| 11 | `CustomFieldOptions.test.tsx` | `key={option.slug}` → `key={fieldId}`, caught through React's own duplicate-key error |
+
+**Finding #9 was right about the hole and WRONG about its extent, and that is worth recording.**
+It said the schema doc was missing `project_field_options`' grant block while "every sibling
+table's block is present". `ticket_field_values` had no block either — SPRIN-88 recorded its
+policies here without its privileges. **Both blocks were added.** A rebuild from the doc had been
+producing two tables with the full default CRUD grant for `authenticated`, which is not a smaller
+schema but a different one: `slug` patchable, AC3 demoted from a database property back to a
+convention. An unverified finding's *reasoning* is a hypothesis even when its *conclusion* holds.
+
+**Finding #1 was the Tier-1 one and the migration file had already claimed it was covered.**
+`sprin-92-project-field-options.sql` says of `options_owner_delete` "…and why a live test proves
+it". No such test existed: all 8 references to the table in `rls.integration.test.ts` used client
+`a`, so the table shipped with complete AC coverage and **empty isolation coverage** while all
+three siblings carry B-side assertions. Five tests were added — B-select/insert/update/delete plus
+anon — all on ROW COUNTS rather than `error === null`, because RLS filters rather than raising.
+It matters most here: this is the only one of the four tables holding a table-wide `grant delete`,
+and that delete cascades into ticket data through `tfv_option_fk`.
+
+⚠ **Those five are LIVE tests and CANNOT run locally** (placeholder Supabase URL → `ENOTFOUND`).
+They are unverified until CI runs them on the PR. Treat a green local `test:unit` as saying
+nothing about them.
+
+Local gate after the fixes: **68 files / 1251 tests** (`test:unit`), 75 collected by `npm test`,
+tripwire gap still **7**; lint and typecheck clean. `renameProjectFieldOption` now counts its own
+affected rows instead of leaning on `.single()`'s incidental zero-row error, which closes the
+third instance of that class this file recorded — the entry is struck from the SPRIN-75 list below.
+
+### Session 61 — SPRIN-92 BUILT AND PUSHED, NOT MERGED (branch `sprin-92-single-select-fields`, `79137b3`)
+
+**Read this before touching anything.** 21 commits, pushed, `verify` has **never run** — CI only
+fires on a pull request and there is no PR yet. Local `test:unit` is 68 files / 1244 tests, lint and
+typecheck clean. The tripwire gap held at **7** throughout.
+
+**THE DATABASE IS AHEAD OF `main`.** Migration D (`docs/migrations/sprin-92-project-field-options.sql`)
+was hand-applied 2026-08-08 and verified from the catalogue: `project_field_options` live, RLS on,
+four `options_owner_*` policies all using `(select auth.uid())`, exactly six column grants (INSERT on
+five columns, UPDATE on `label` alone), plus `tfv_option_fk` on `ticket_field_values`. **If this
+branch is abandoned the table must be DROPPED BY HAND** — nothing else will do it. Same shape as
+session 57.
+
+**Advisors moved 14 → 16 performance lints**, both new ones `unindexed_foreign_keys` INFOs
+(`pfo_field_fk`, `tfv_option_fk`), accepted with no index — adding one is a further migration and
+David's call. Security unchanged at 1 WARN. **No new `auth_rls_initplan`** — still 8.
+**A prediction in the spec and plan was WRONG and is corrected in the migration file:** fk index
+coverage needs the fk columns to be a **prefix of an index**, not merely to share a leading column.
+`pfo_field_fk (field_id, project_id)` is flagged despite the PK `(field_id, slug)` leading with
+`field_id`.
+
+**ONE DEFECT CLASS ACCOUNTED FOR FIVE OF THE SIX FINDINGS.** A wire or guard that could be dropped,
+crossed or defaulted with the entire suite green:
+1. an untested `.trim()` (found by deleting it — nothing went red);
+2. a **vacuous** live RLS test asserting `error === null`, where RLS FILTERS rather than raising, so
+   a zero-row update looked like success — **CI would not have caught this either**;
+3. six prop pass-throughs pinned by nothing;
+4. two **same-signature callbacks that could be SWAPPED** with 1216 tests green, type-clean and
+   lint-clean — found only because a reviewer invented that mutation unprompted;
+5. a required-prop fix that closed the hole at the leaves and left it open one level up, proven by a
+   probe that compiled clean and rendered an enabled empty select.
+**It is now closed by construction, not vigilance**: `options` and `optionsPhase` are REQUIRED (no
+defaults) at every component in both chains, so an unplugged wire is a `TS2741` compile error.
+Removing those defaults also *lowered* complexity — a default parameter costs a cyclomatic point
+here — taking `TicketCustomFields` 6→5, `CreateTicketCustomFields` 8→7 and restoring
+`TicketDetailSidebar` from 10 back to **9**.
+
+**Three times an implementer corrected a premise I handed it**, which is why the deviation-reporting
+rule earns its keep: the plan told one to put `ALTER TABLE` in the schema doc (a guard forbids it);
+plan test code violated `noUncheckedIndexedAccess` twice; and **twice** a dispatch claimed an earlier
+task had already threaded `options`/`optionsPhase` to a dialog when it had not — Task 9 stopped at
+the Outlet context. Unchecked, the controls would have passed every test and received no data in the
+running app.
+
+**A reviewer was also wrong once, and the implementer disproved it by mutation** rather than
+argument: the claim that one test closed both wiring hops was false — with the second test skipped
+and the swap applied, the whole suite ran green. Compare the mutation, never the verdict.
+
+**Lint headroom, re-measure rather than recall:** `ProjectShell` and `TicketDetailDialog` are at
+cyclomatic **10/10**, zero headroom. `TicketDetailSidebar` is back to 9. Measure with
+`npx eslint <file> --rule '{"complexity":["error",1]}'`.
+
+**Still open on this branch:** an adversarial ultracode review (5 lenses + skeptic verification) was
+**still running when this session ended, and its report was never read.** It is pinned to SHA
+`79137b3` (one commit before this handover commit, which touched only this file — so its findings
+still apply). Recover it from disk before opening the PR:
+
+```
+Run ID:  wf_ffa450d8-7f8
+Journal: ~/.claude/projects/-var-www-sprintboard/0219f420-4e14-4634-bdf8-f02c1e60e382/subagents/workflows/wf_ffa450d8-7f8/journal.jsonl
+Script:  ~/.claude/projects/-var-www-sprintboard/0219f420-4e14-4634-bdf8-f02c1e60e382/workflows/scripts/sprin-92-adversarial-review-wf_ffa450d8-7f8.js
+```
+
+Read `journal.jsonl` for each agent's actual return value — **do not assume a cached or empty result
+means there was nothing to find.** The final agent is labelled `synthesise` and produces five
+sections; read section 3, "KILLED BUT WORTH A SECOND LOOK", not only the survivors, because majority
+vote has discarded a correct finding on this project before. Also check each finder's
+`mutationsPlanted` count: **a lens reporting zero established nothing**, however confident its
+conclusion reads. No whole-branch or security pass has been
+accepted yet. **`TicketDetailSidebar` and `TicketDetailDialog` still lack an independent hop test for
+the options list**; compile-time requiredness partly compensates. And `renameProjectFieldOption`
+leans on `.single()`'s incidental zero-row error rather than an explicit row count — a **third**
+instance of the class this file already records for `renameProjectStatus`.
+
 ### Session 60 — housekeeping: SPRIN-57 closed, the advisor baseline corrected
 
 **No feature work.** Two items, both from reading the board against this file.
@@ -588,6 +710,12 @@ Engineering items with no story yet. Each is a candidate for one.
   the `projects → project_statuses` RI cascade? The migration records this **unresolved**. If
   reachable it is rare, non-corrupting and retryable (`40P01`). The lock's mutual exclusion is
   **untested** — a single transaction has no second session to contend with. Deserves its own story.
+- **Four untested guards in the option-delete confirm dialog** (`CustomFieldOptions.tsx`), left
+  deliberately by session 62 as the review's own "Deferrable" tier: the count reset on close
+  (`:248`), the `if (deleting) return` that ignores Escape mid-delete (`:243`), the `setError(null)`
+  ordering (`:364`), and the confirm staying disabled while the count is in flight (`:280`). Each
+  is a correct guard with no test that fails without it. The first two need a close-and-reopen
+  driven through the real dialog, which is why they were not free.
 - **`lg:grid-cols-4` in `BoardTab` is a fixed column count** under a status list users can now
   grow — a fifth status wraps. Deferred three times; needs a layout story.
 - **Nothing pins `listProjectStatuses`'s no-arg `.select()`, and SPRIN-86 gave that a
@@ -688,6 +816,25 @@ Engineering items with no story yet. Each is a candidate for one.
   than this file's own convention elsewhere (the duplicate-name and slug-format tests both pin
   the name, because `message` is the only channel PostgREST exposes for constraint identity).
   Dropping the check still reddens them, so they are not vacuous — just less specific.
+
+## Owed to SPRIN-75, added by SPRIN-92 (session 61)
+
+- **`project_field_options` is born with TRUNCATE granted to BOTH roles**, and TRUNCATE bypasses RLS.
+  Not reachable through PostgREST, so defence-in-depth rather than a live hole — but
+  `revoke truncate on project_field_options from authenticated, anon;` is one line and would keep the
+  new table out of the sweep. Same note SPRIN-88 recorded for `ticket_field_values`.
+- **The `options_owner_*` policies read `project_id` and nothing else**, so `field_id` and `slug` are
+  fk-governed *including across tenants*. Re-audit before narrowing those composite fks during the
+  membership rewrite — that narrowing is exactly what the **wrong** version of the SPRIN-88 finding
+  would license.
+- **`deleteProjectFieldOption` filters on `(field_id, slug)` and leans on the policy's USING clause** —
+  a fresh instance of the SPRIN-64 class. Correct today; under a membership model where read is
+  broader than write, a viewer-role delete would not be caught here.
+- ~~**`renameProjectFieldOption` relies on `.single()`'s INCIDENTAL zero-row error**~~ — **FIXED in
+  session 62.** It now reads the returned row and reports `'stale'` when there is none, matching
+  `deleteProjectFieldOption` ten lines below it. **`renameProjectStatus` still has the defect**, so
+  the class is down to one recorded instance rather than gone; settle that one before SPRIN-75
+  rewrites these policies.
 
 ## Owed to SPRIN-75, found by the SPRIN-88 security review (session 58)
 

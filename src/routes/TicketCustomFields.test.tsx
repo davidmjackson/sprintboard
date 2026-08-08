@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { TicketCustomFields } from './TicketCustomFields'
-import type { ProjectField, Ticket, TicketFieldValue } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption, Ticket, TicketFieldValue } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import {
   clearTicketFieldValue,
@@ -70,6 +70,12 @@ const NUMBER = field({ id: 'f-2c7', slug: 'tier', name: 'Priority level', type: 
 const DATE = field({ id: 'f-7e5', slug: 'target', name: 'Go live', type: 'date' })
 const SELECT = field({ id: 'f-1d8', slug: 'band', name: 'Colour', type: 'select' })
 
+/** A SECOND `select` field, deliberately kept separate from `SELECT` above. It exists only
+ *  for the dedicated select-behaviour describe block below, so those tests never share a
+ *  fixture with the AC1 "one control per type" tests and cannot be made to pass by accident
+ *  if one block's options list leaked into the other. */
+const RISK = field({ id: 'f-r1k', slug: 'risk', name: 'Risk', type: 'select' })
+
 function value(overrides: Partial<TicketFieldValue> = {}): TicketFieldValue {
   return {
     ticket_id: 't1',
@@ -84,10 +90,26 @@ function value(overrides: Partial<TicketFieldValue> = {}): TicketFieldValue {
   } as TicketFieldValue
 }
 
+/** One `SELECT`-field option. `field_id` defaults to `SELECT.id`, never to `RISK.id` below —
+ *  the two select fixtures exist precisely so a fixture is never accidentally shared between
+ *  the AC1 "renders a control for every type" tests and the dedicated select-behaviour ones. */
+function option(overrides: Partial<ProjectFieldOption> = {}): ProjectFieldOption {
+  return {
+    project_id: 'p1',
+    field_id: SELECT.id,
+    slug: 'red',
+    label: 'Red',
+    position: 1,
+    ...overrides,
+  } as ProjectFieldOption
+}
+
 function renderFields(
   props: {
     fields?: ProjectField[]
     fieldsPhase?: ReadPhase
+    options?: ProjectFieldOption[]
+    optionsPhase?: ReadPhase
     onRetryFields?: () => void
   } = {},
 ) {
@@ -96,7 +118,49 @@ function renderFields(
       ticket={TICKET}
       fields={props.fields ?? [TEXT]}
       fieldsPhase={props.fieldsPhase ?? 'loaded'}
+      // `options` is REQUIRED on `TicketCustomFields` (fix round 1) — this helper is the one
+      // place supplying a convenience `[]` default for the many callers below that never touch
+      // a `select` field, mirroring `optionsPhase`'s own `?? 'loading'` immediately below.
+      options={props.options ?? []}
+      // `optionsPhase` is REQUIRED on `TicketCustomFields` (fix round 2) — this helper is the
+      // one place that keeps supplying a convenience default for the many callers below that
+      // never touch a `select` field, matching `fieldsPhase`'s own `?? 'loaded'` immediately
+      // above. `'loading'` (not `'loaded'`) is the SAFE default here: it fails closed, so a
+      // caller that forgets `optionsPhase` gets a disabled select rather than a silently
+      // trusted empty one.
+      optionsPhase={props.optionsPhase ?? 'loading'}
       onRetryFields={props.onRetryFields ?? vi.fn()}
+    />,
+  )
+}
+
+const LOW = { project_id: 'p1', field_id: RISK.id, slug: 'low', label: 'Low', position: 1 }
+const HIGH = { project_id: 'p1', field_id: RISK.id, slug: 'high', label: 'High', position: 2 }
+const OPTIONS = [LOW, HIGH] satisfies ProjectFieldOption[]
+const LOW_VALUE = value({ field_id: RISK.id, field_type: 'select', value_option: 'low' })
+
+/** Renders a single field row, seeding `listTicketFieldValues` with `value` (or nothing). The
+ *  dedicated helper for the select-behaviour describe block below — `renderFields` above stays
+ *  as the AC1/AC2/AC3 suites' own helper, unchanged, so this file's existing coverage is never
+ *  put at risk by a helper change made for one new block. */
+function renderRow(props: {
+  field: ProjectField
+  options?: ProjectFieldOption[]
+  optionsPhase?: ReadPhase
+  value?: TicketFieldValue
+}) {
+  mockList.mockResolvedValue(props.value ? [props.value] : [])
+  return render(
+    <TicketCustomFields
+      ticket={TICKET}
+      fields={[props.field]}
+      fieldsPhase="loaded"
+      options={props.options ?? []}
+      // Same convenience default as `renderFields` above, for the same reason — every call
+      // site in the select-behaviour block below passes `optionsPhase` explicitly anyway, so
+      // this is never actually relied on today, but it keeps the helper's contract honest.
+      optionsPhase={props.optionsPhase ?? 'loading'}
+      onRetryFields={vi.fn()}
     />,
   )
 }
@@ -159,15 +223,18 @@ describe('AC1 — each custom field renders a control labelled with its name', (
     mockList.mockResolvedValue([
       value({ field_id: 'f-1d8', field_type: 'select', value_option: 'red' }),
     ])
-    renderFields({ fields: [SELECT] })
+    renderFields({ fields: [SELECT], options: [option()], optionsPhase: 'loaded' })
 
     expect(await screen.findByRole('combobox', { name: 'Colour' })).toHaveValue('red')
   })
 
-  it('renders select DISABLED, because story 5 owns its options', async () => {
-    // Rendering nothing for `select` would be a field a user created and could not find:
-    // SPRIN-91's add form offers all five types today. Disabled is the honest state — there is
-    // no legal value to offer until `project_field_options` exists.
+  it('renders select DISABLED while the caller passes no options-read wiring at all (SPRIN-92)', async () => {
+    // `renderFields` forwards NO `options`/`optionsPhase` here, matching a dialog rendered
+    // without that wiring — standalone, or an older test. `TicketCustomFields` DEFAULTS
+    // `optionsPhase` to `'loading'` (fix round 1) precisely so THIS is the outcome: unknown
+    // means disabled, never a confident "no options" the read never actually vouched for. See
+    // the `optionsPhase` describe block below for the full disabled/enabled matrix once the
+    // phase is supplied explicitly.
     renderFields({ fields: [SELECT] })
 
     expect(await screen.findByRole('combobox', { name: 'Colour' })).toBeDisabled()
@@ -342,7 +409,14 @@ describe('AC6 — a project with no custom fields renders nothing', () => {
     // Mutating the default to 'loading' left 1094 tests green, and the consequence is exactly
     // what the docblock warns of: a dialog rendered without field wiring shows a "Loading…"
     // line that never resolves, because no read is ever issued for an empty field list.
-    const { container } = render(<TicketCustomFields ticket={TICKET} />)
+    // `optionsPhase` is REQUIRED (fix round 2) and `options` is REQUIRED (fix round 1), so both
+    // must be passed here regardless of value — but BOTH are INERT to this test: `fields`
+    // defaults to `[]` too, and the empty-fields early return happens before either is ever
+    // read, so this pins only `fieldsPhase`'s own default, exactly as the comment above already
+    // claims. `[]` is the honest value for `options`, not a compiler-silencing placeholder.
+    const { container } = render(
+      <TicketCustomFields ticket={TICKET} options={[]} optionsPhase="loaded" />,
+    )
 
     expect(container).toBeEmptyDOMElement()
     expect(screen.queryByText('Loading…')).not.toBeInTheDocument()
@@ -559,5 +633,102 @@ describe('each field keeps its own error region', () => {
     const group = (await screen.findByText('Priority level')).closest('label')
     expect(group).not.toBeNull()
     expect(within(group as HTMLElement).getByRole('alert')).toHaveTextContent(/could not save/i)
+  })
+})
+
+/**
+ * SPRIN-92 task 10 — the four behaviours the `select` control must get right, on `RISK`
+ * rather than `SELECT` (see that fixture's own docblock for why the two are kept apart).
+ */
+describe('the select control offers real options (SPRIN-92)', () => {
+  it('offers a blank choice FIRST, then the options in order', async () => {
+    renderRow({ field: RISK, options: OPTIONS, optionsPhase: 'loaded' })
+
+    const select = await screen.findByRole('combobox', { name: /risk/i })
+    const opts = within(select).getAllByRole('option')
+    expect(opts[0]).toHaveValue('')
+    expect(opts.map((o) => o.textContent)).toEqual(['—', 'Low', 'High'])
+  })
+
+  /**
+   * The `optionsForField` SLICE, and it needs the list-level helper: every other test in this
+   * block uses `renderRow`, which hands one field a pre-filtered list, so dropping the slice
+   * (`options={options}` in the map) is invisible to all of them — the row is handed the same
+   * array either way. With TWO select fields carrying options, it is not.
+   *
+   * Verified by mutation: dropping the slice put all four options in both controls, and this is
+   * the only test in the file that noticed.
+   */
+  it('gives each select field ONLY its own options, never the whole project’s', async () => {
+    renderFields({
+      fields: [SELECT, RISK],
+      options: [option(), option({ slug: 'blue', label: 'Blue', position: 2 }), LOW, HIGH],
+      optionsPhase: 'loaded',
+    })
+
+    const colour = await screen.findByRole('combobox', { name: 'Colour' })
+    const risk = screen.getByRole('combobox', { name: 'Risk' })
+    expect(
+      within(colour)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Red', 'Blue'])
+    expect(
+      within(risk)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['—', 'Low', 'High'])
+  })
+
+  it('CLEARS rather than writing an empty string when the blank choice is picked', async () => {
+    const user = userEvent.setup()
+    renderRow({ field: RISK, options: OPTIONS, optionsPhase: 'loaded', value: LOW_VALUE })
+
+    const select = await screen.findByRole('combobox', { name: /risk/i })
+    expect(select).toHaveValue('low')
+    await user.selectOptions(select, '')
+
+    await waitFor(() => expect(mockClear).toHaveBeenCalledWith('t1', RISK.id))
+    expect(mockSet).not.toHaveBeenCalled()
+  })
+
+  it('writes the option SLUG, not its label', async () => {
+    const user = userEvent.setup()
+    renderRow({ field: RISK, options: OPTIONS, optionsPhase: 'loaded' })
+
+    const select = await screen.findByRole('combobox', { name: /risk/i })
+    await user.selectOptions(select, 'low')
+
+    await waitFor(() =>
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ fieldId: RISK.id, fieldType: 'select', value: 'low' }),
+      ),
+    )
+  })
+
+  it('is DISABLED while the options read has not loaded', async () => {
+    renderRow({ field: RISK, options: [], optionsPhase: 'loading' })
+
+    expect(await screen.findByRole('combobox', { name: /risk/i })).toBeDisabled()
+  })
+
+  it('is DISABLED when the options read FAILED — an empty list is not "no options"', async () => {
+    renderRow({ field: RISK, options: [], optionsPhase: 'failed' })
+
+    expect(await screen.findByRole('combobox', { name: /risk/i })).toBeDisabled()
+  })
+
+  it('is ENABLED with only the blank choice when the field genuinely has no options', async () => {
+    renderRow({ field: RISK, options: [], optionsPhase: 'loaded' })
+
+    const select = await screen.findByRole('combobox', { name: /risk/i })
+    expect(select).toBeEnabled()
+    expect(within(select).getAllByRole('option')).toHaveLength(1)
+  })
+
+  it('leaves the other four types unchanged', async () => {
+    renderRow({ field: TEXT, options: [], optionsPhase: 'failed' })
+
+    expect(await screen.findByRole('button', { name: /customer ref/i })).toBeEnabled()
   })
 })

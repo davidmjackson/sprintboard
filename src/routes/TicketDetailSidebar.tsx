@@ -4,6 +4,7 @@ import {
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
   type ProjectField,
+  type ProjectFieldOption,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -34,6 +35,8 @@ export function TicketDetailSidebar({
   hasSprints,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
   onRetryFields,
 }: {
   ticket: Ticket
@@ -62,6 +65,26 @@ export function TicketDetailSidebar({
    *  budget. Adding `= []` at either stop is what would redden the gate. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** REQUIRED (fix round 2) — not optional, no `?? []` coalesce. Fix round 1 made `options`
+   *  required at `TicketCustomFields` alone and kept it optional-with-a-coalesce here, on the
+   *  reasoning that this component had no cyclomatic budget to cascade `?` removal further up
+   *  through `TicketDetailDialog` (10/10, capped). A reviewer probe showed that reasoning solved
+   *  the wrong half: `<TicketDetailSidebar optionsPhase="loaded" />` with no `options` at all
+   *  still typechecked clean and rendered an ENABLED select offering only the blank choice — the
+   *  coalesce hid the hole at the LEAF's caller, but the hole was still open one level up, here,
+   *  where the real external callers are. A required prop with no default costs NOTHING
+   *  (measured: this component is still 9/10 without the coalesce and 10/10 with it — the same
+   *  number either way, since a plain type change is not a branch), so making it required here
+   *  closes the hole for the cost the coalesce was already paying. `TicketDetailDialog`'s own
+   *  `options` is now required too (same fix round), so its forward here is a straight
+   *  pass-through with no coalesce needed. */
+  options: ProjectFieldOption[]
+  /** REQUIRED (fix round 2), not optional — a plain pass-through with no destructuring
+   *  default either way, so this costs nothing regardless: this component is measured
+   *  UNCHANGED at 9/10 with the type made required, `?` removed. `TicketCustomFields` no
+   *  longer defaults it, so a caller of THIS component that forgets to pass it now gets a
+   *  compile error here rather than a silently-'loaded' select three hops down. */
+  optionsPhase: ReadPhase
   /** The SHELL's retry. The definitions read belongs to the shell, so a failure of it cannot
    *  be fixed by anything this dialog owns. */
   onRetryFields?: () => void
@@ -237,6 +260,10 @@ export function TicketDetailSidebar({
         ticket={ticket}
         fields={fields}
         fieldsPhase={fieldsPhase}
+        // `options` is REQUIRED on both `TicketCustomFields` and THIS component (fix round 2) —
+        // a straight pass-through, no coalesce.
+        options={options}
+        optionsPhase={optionsPhase}
         onRetryFields={onRetryFields}
       />
 

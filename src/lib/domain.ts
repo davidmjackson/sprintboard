@@ -317,6 +317,15 @@ export type AssertProjectStatusUpdateColumns = Expect<
  *  adding `slug` or `type` back is a one-word edit, and `Assignable<>` would not notice it. */
 export type AssertProjectFieldUpdateColumns = Expect<Exact<keyof ProjectFieldUpdate, 'name'>>
 
+/** Same reasoning again for `project_field_options`, where the grant is narrower in the same
+ *  way: `label` and nothing else. Re-adding `slug` to the `Pick` would compile silently
+ *  without this — `slug` is the primary-key half `tfv_option_fk` keys value rows on, so a
+ *  movable slug would undo "renaming an option rewrites no value rows" the same way a movable
+ *  field slug would undo it for `project_fields`. */
+export type AssertProjectFieldOptionUpdateColumns = Expect<
+  Exact<keyof ProjectFieldOptionUpdate, 'label'>
+>
+
 /* ------------------------------------------------------------------ *
  * Row types, with the text columns narrowed to the domain unions.
  * ------------------------------------------------------------------ */
@@ -360,6 +369,32 @@ export type ProjectStatus = Omit<Tables<'project_statuses'>, 'category'> & {
 export type ProjectField = Omit<Tables<'project_fields'>, 'type'> & {
   type: CustomFieldType
 }
+
+/**
+ * One choosable value of a `select` custom field (SPRIN-92). The definition is
+ * `ProjectField`; the ticket's stored value is `TicketFieldValue.value_option`.
+ *
+ * No narrowing wrapper is needed — unlike `ProjectField.type`, every column here is a
+ * plain scalar with no client-side union to keep honest.
+ */
+export type ProjectFieldOption = Tables<'project_field_options'>
+
+/**
+ * The UPDATE shape, mirroring a column-level GRANT exactly as `ProjectFieldUpdate` does.
+ * `authenticated` holds UPDATE on `label` alone, so `.update({ slug })` must be a COMPILE
+ * error rather than a runtime 42501 discovered only against the live database.
+ *
+ * `Pick<TablesUpdate<'project_field_options'>, 'label'>` rather than the hand-written
+ * literal `{ label: string }` it started as — the same move `ProjectStatusUpdate` and
+ * `ProjectFieldUpdate` make, and for the same reason: a `Pick` off the generated type tracks
+ * the column's real nullability and stays honest if the column's type ever changes, where a
+ * hand-written literal silently drifts. `AssertProjectFieldOptionUpdateColumns` below pins the
+ * key set with `Exact<>`, because `Assignable<>` would be vacuous here — a wider `Pick` of the
+ * same table is still assignable to the generated update type, so only `Exact<>` turns
+ * re-adding `slug` into a compile error instead of a silent re-widening of the grant's
+ * client-side mirror.
+ */
+export type ProjectFieldOptionUpdate = Pick<TablesUpdate<'project_field_options'>, 'label'>
 
 /**
  * One ticket's value for one custom field (SPRIN-88). The definition is `ProjectField`.
