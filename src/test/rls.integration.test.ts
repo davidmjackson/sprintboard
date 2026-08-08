@@ -2885,12 +2885,20 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         })
         expect(seeded.error).toBeNull()
 
+        // `.select()` on the update, so the assertion below is a ROW COUNT rather than
+        // trusting `error: null` alone. RLS FILTERS an UPDATE that matches no row instead
+        // of raising, so an update that touched ZERO rows would also return `error: null`
+        // — and a rename that did nothing trivially leaves `value_option` unchanged too,
+        // which would make this test pass having proven nothing.
         const renamed = await a
           .from('project_field_options')
           .update({ label: 'Lowest' })
           .eq('field_id', fieldId)
           .eq('slug', 'low')
+          .select('label')
         expect(renamed.error).toBeNull()
+        expect(renamed.data).toHaveLength(1)
+        expect(renamed.data?.[0]?.label).toBe('Lowest')
 
         // Read the value BACK — the point of AC3 is that no value row was rewritten.
         const { data } = await a
@@ -2969,8 +2977,10 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // Assert the COUNT, not the absence of an error — RLS filters rather than raising, so
       // a cross-tenant or already-gone row comes back as a successful ZERO-row operation
       // too, and that would be indistinguishable from a real cascade if only `error` were
-      // checked.
-      const { count } = await a
+      // checked. Read through adminClient(), which bypasses RLS entirely, so a row HIDDEN
+      // by a broken SELECT policy cannot be mistaken for a row actually CLEARED by the
+      // cascade — the same reasoning the SPRIN-88 cascade test beside this one applies.
+      const { count } = await adminClient()
         .from('ticket_field_values')
         .select('*', { head: true, count: 'exact' })
         .eq('ticket_id', ticketId)
