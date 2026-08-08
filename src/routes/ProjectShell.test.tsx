@@ -1440,6 +1440,75 @@ describe('ProjectShell', () => {
     expect(field.name).toBe('Customer ref')
   })
 
+  /**
+   * SPRIN-92 task 10, fix round 1. The SIBLING pair to the two `fields`/`fieldsPhase` tests
+   * immediately above, one prop-family over — a re-review measured that dropping
+   * `options={options}`, dropping `optionsPhase={optionsPhase}`, or CROSSING it for
+   * `fieldsPhase` at ANY of the three hops (`ProjectShell` → `TicketDetailDialog` →
+   * `TicketDetailSidebar`) left all 1227 tests green. Rendered through the REAL composition —
+   * not a direct `TicketDetailDialog` render — so a drop or cross at any one of the three call
+   * sites breaks THIS SAME test; there is no third hop-specific fixture needed because nothing
+   * downstream of `ProjectShell` has a test file of its own for `TicketDetailSidebar`.
+   *
+   * This one pins the LIST: `options` must reach the control with its real content, not a
+   * dropped `[]`.
+   */
+  it('renders the project field options in the detail dialog select (real wiring)', async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-r1k',
+      project_id: 'p1',
+      slug: 'risk',
+      name: 'Risk',
+      type: 'select',
+      created_at: '2026-08-08T10:00:00Z',
+    } as unknown as ProjectField
+    const low = {
+      project_id: 'p1',
+      field_id: 'f-r1k',
+      slug: 'low',
+      label: 'Low',
+      position: 1,
+    } as ProjectFieldOption
+    mockListFields.mockResolvedValue([field])
+    mockListOptions.mockResolvedValue([low])
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    const select = await screen.findByRole('combobox', { name: 'Risk' })
+    expect(within(select).getByRole('option', { name: 'Low' })).toBeInTheDocument()
+  })
+
+  /**
+   * The `optionsPhase` half of the same pair. `optionsPhase` DEFAULTS to `'loaded'` (unlike
+   * `fieldsPhase`, which the sibling test above pins the same way) — so an unplugged or
+   * crossed wire here fails OPEN, not closed: the select renders ENABLED, offering only the
+   * blank `—` choice, which tells the user this field genuinely has no options rather than
+   * showing anything is wrong. `listProjectFieldOptions` never resolves for the whole test,
+   * which is the only state that can be told apart from that default.
+   */
+  it('keeps the select control disabled until the options read settles (real wiring)', async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-r1k',
+      project_id: 'p1',
+      slug: 'risk',
+      name: 'Risk',
+      type: 'select',
+      created_at: '2026-08-08T10:00:00Z',
+    } as unknown as ProjectField
+    mockListFields.mockResolvedValue([field])
+    mockListOptions.mockReturnValue(new Promise(() => {}) as never)
+    mockList.mockResolvedValue([ticketA])
+
+    renderShell('/projects/p1/backlog')
+    await u.click(await screen.findByRole('button', { name: /Alpha summary/i }))
+
+    expect(await screen.findByRole('combobox', { name: 'Risk' })).toBeDisabled()
+  })
+
   it("retries the definitions read from the section's own failure state (real wiring)", async () => {
     // `onRetryFields` is the SHELL's retry, threaded three hops down, because the definitions
     // read belongs to the shell and no state the dialog owns can refetch it. Unwired it

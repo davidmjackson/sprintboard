@@ -219,15 +219,13 @@ describe('AC1 — each custom field renders a control labelled with its name', (
   it('renders select DISABLED while the caller passes no options-read wiring at all (SPRIN-92)', async () => {
     // `renderFields` forwards NO `options`/`optionsPhase` here, matching a dialog rendered
     // without that wiring — standalone, or an older test. `TicketCustomFields` DEFAULTS
-    // `optionsPhase` to `'loaded'`, same as `fieldsPhase`, so this is really pinning that the
-    // dedicated select tests below are what changed the DEFAULT-rendered outcome from "always
-    // disabled" (the story 3 placeholder) to "enabled with the blank choice alone", not this
-    // test alone — see the `optionsPhase` describe block for the disabled/enabled matrix.
+    // `optionsPhase` to `'loading'` (fix round 1) precisely so THIS is the outcome: unknown
+    // means disabled, never a confident "no options" the read never actually vouched for. See
+    // the `optionsPhase` describe block below for the full disabled/enabled matrix once the
+    // phase is supplied explicitly.
     renderFields({ fields: [SELECT] })
 
-    const select = await screen.findByRole('combobox', { name: 'Colour' })
-    expect(select).toBeEnabled()
-    expect(within(select).getAllByRole('option')).toHaveLength(1)
+    expect(await screen.findByRole('combobox', { name: 'Colour' })).toBeDisabled()
   })
 })
 

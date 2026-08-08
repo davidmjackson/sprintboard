@@ -6,6 +6,7 @@ import { TicketDetailDialog } from './TicketDetailDialog'
 import {
   DEFAULT_PROJECT_STATUSES,
   type ProjectField,
+  type ProjectFieldOption,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -560,6 +561,52 @@ describe('TicketDetailDialog', () => {
 
     expect(screen.getByText('Loading…')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Customer ref' })).not.toBeInTheDocument()
+  })
+
+  it('forwards options and optionsPhase, so the select control waits for the options read', async () => {
+    // SPRIN-92 task 10, fix round 1. The DIALOG hop for `options`/`optionsPhase`, the sibling
+    // of `fieldsPhase` immediately above and found the same way: a re-review measured that
+    // dropping `options={options}`, dropping `optionsPhase={optionsPhase}`, or CROSSING
+    // `optionsPhase` for `fieldsPhase` at this component (or at `TicketDetailSidebar`, which
+    // has no test file of its own and is rendered inside this same tree) left all 1227 tests
+    // green.
+    //
+    // Unlike `fieldsPhase`, `optionsPhase` DEFAULTS to `'loaded'` — so an unplugged wire fails
+    // OPEN: the select would render ENABLED, offering only the blank choice, rather than
+    // anything visibly wrong. The field IS `select` and options ARE supplied; the phase is NOT
+    // resolved, so a select rendered enabled here can only mean the phase was defaulted away
+    // or crossed with `fieldsPhase` (which DOES resolve, since `fields` is supplied loaded).
+    const field = {
+      id: 'f-r1k',
+      project_id: 'p1',
+      slug: 'risk',
+      name: 'Risk',
+      type: 'select',
+      created_at: '2026-08-08T10:00:00Z',
+    } as unknown as ProjectField
+    const low = {
+      project_id: 'p1',
+      field_id: 'f-r1k',
+      slug: 'low',
+      label: 'Low',
+      position: 1,
+    } as ProjectFieldOption
+
+    render(
+      <TicketDetailDialog
+        ticket={base}
+        currentUser={user}
+        fields={[field]}
+        fieldsPhase="loaded"
+        options={[low]}
+        optionsPhase="loading"
+        onOpenChange={() => {}}
+        onUpdated={() => {}}
+        onDeleted={() => {}}
+      />,
+    )
+
+    expect(await screen.findByRole('combobox', { name: 'Risk' })).toBeDisabled()
   })
 
   it('returns focus to the field trigger button after commit (Enter) and after cancel (Escape)', async () => {

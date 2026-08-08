@@ -329,7 +329,7 @@ export function TicketCustomFields({
   fields = [],
   fieldsPhase = 'loaded',
   options = [],
-  optionsPhase = 'loaded',
+  optionsPhase = 'loading',
   onRetryFields = () => {},
 }: {
   ticket: Ticket
@@ -338,10 +338,32 @@ export function TicketCustomFields({
   /** The project's `select`-field options (SPRIN-92 task 10), forwarded straight through the
    *  dialog and the sidebar with no default at either stop — the same division as `fields`
    *  above, for the same reason: a destructuring default costs a cyclomatic point neither
-   *  `TicketDetailSidebar` (9 of 10) nor `TicketDetailDialog` (10 of 10) can pay. Defaulting to
-   *  `'loaded'`, not `'loading'`, matches `fieldsPhase`'s own default and the same argument:
-   *  it describes a dialog rendered WITHOUT options wiring — standalone, or in a test — where
-   *  "this project has no options" is the honest read, not an indefinite spinner. */
+   *  `TicketDetailSidebar` (9 of 10) nor `TicketDetailDialog` (10 of 10) can pay.
+   *
+   *  **`optionsPhase` DEFAULTS TO `'loading'`, deliberately the OPPOSITE of `fieldsPhase`'s own
+   *  default (fix round 1, SPRIN-92 task 10) — and that asymmetry is the point, not an
+   *  inconsistency.** `fieldsPhase = 'loaded'` is safe because an unwired `fields` defaults to
+   *  `[]` too, and an empty definitions list renders NOTHING — the empty case is inert. There
+   *  is no equivalent inert case for `optionsPhase`: an empty `options` list under a `'loaded'`
+   *  phase is indistinguishable, to the rendered control, from "this select field genuinely has
+   *  no options" — which is exactly the ambiguity `optionsReady` exists to resolve everywhere
+   *  else in this file. Defaulting the phase to its OWN trusting value would defeat that,
+   *  silently, for every unwired render: the select would come up ENABLED, offering only the
+   *  blank `—` choice, which reads as a confident "nothing to pick" rather than "we don't know
+   *  yet". `'loading'` fails CLOSED instead — disabled — matching `sprintsPhase`'s own default
+   *  a few props over in `TicketDetailDialog`, and the same argument: unknown means disabled.
+   *
+   *  A REQUIRED prop (no default at all) was considered and is the objectively stronger fix —
+   *  it would turn an unplugged wire into a compile error instead of a runtime one. Rejected
+   *  for THIS fix round on blast radius: every intermediate hop in this epic (`fields`,
+   *  `hasSprints`, and now `options`) is deliberately optional-and-undefaulted precisely so a
+   *  destructuring default is never needed at `TicketDetailSidebar` (9/10) or
+   *  `TicketDetailDialog` (10/10), which cannot pay for one; making `options` required here
+   *  would force it to stop being optional at both of those ceiling-bound components too, and
+   *  would also force every existing test in this repo that renders `TicketDetailDialog`,
+   *  `TicketDetailSidebar` or `TicketCustomFields` without touching a `select` field (the large
+   *  majority) to start passing it regardless. That is a proportionate change for a story that
+   *  makes `options` universally load-bearing, not for a one-default fix round. */
   options?: ProjectFieldOption[]
   optionsPhase?: ReadPhase
   /** The SHELL's retry. Only reachable when the definitions read failed — see the body. */
