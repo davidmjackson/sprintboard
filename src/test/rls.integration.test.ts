@@ -2056,6 +2056,35 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .single()
       if (other.error) throw new Error(`Fixture: could not seed B's field: ${other.error.message}`)
       fieldInB = other.data.id
+
+      /**
+       * SPRIN-92 ADDED A FOREIGN KEY UNDER THIS BLOCK, and these two rows are what keeps it
+       * satisfied. `tfv_option_fk (field_id, value_option) references project_field_options
+       * (field_id, slug)` did not exist when these tests were written, so `value_option: 'red'`
+       * named nothing and Postgres had no opinion about it. It does now: both the AC4 select
+       * case and the `select` upsert case (`'red'` then `'blue'`) earn 23503 without these.
+       *
+       * This block's fields hang off `projectA` and go when it does, and `pfo_field_fk`
+       * cascades these options away with the field — so there is nothing extra to tear down.
+       *
+       * The failure was invisible until this branch's first CI run: these are live tests, they
+       * cannot run locally against a placeholder Supabase URL, and `verify` only fires on a
+       * pull request. A migration that adds a constraint can invalidate a fixture written for
+       * the schema before it, and nothing local will say so.
+       */
+      const options = await a.from('project_field_options').insert([
+        { project_id: projectA, field_id: fieldOf.select!, slug: 'red', label: 'Red', position: 1 },
+        {
+          project_id: projectA,
+          field_id: fieldOf.select!,
+          slug: 'blue',
+          label: 'Blue',
+          position: 2,
+        },
+      ])
+      if (options.error) {
+        throw new Error(`Fixture: could not seed SPRIN-88 select options: ${options.error.message}`)
+      }
     })
 
     // ---- AC4: the value must be in the column its type calls for ----
