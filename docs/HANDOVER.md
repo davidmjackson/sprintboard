@@ -20,11 +20,10 @@ the security boundary, deliberately last)**.
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
 
-**Epic SPRIN-71 is designed and stories 1–4 have shipped.** The design is
+**Epic SPRIN-71 is designed and stories 1–5 have shipped.** The design is
 `docs/superpowers/specs/2026-08-05-sprin-71-custom-fields-design.md` — six stories, three
-migrations, all additive. Read it before planning any of them. **Both remaining stories (5 and 6)
-depend only on story 3, which is done, so either can be taken next.** SPRIN-92 is the intended
-order because it is the one with a migration.
+migrations, all additive. Read it before planning any of them. **Only story 6 (SPRIN-93) is
+left.**
 
 **The design says story 2 needs no migration. It was wrong**, and the story overrode it: the
 INSERT grant story 1 revoked is a migration, and widening a privilege with no file recording it
@@ -40,8 +39,13 @@ answer:
 | 2 — add and rename a custom field | SPRIN-91 | **Done** | B (grants), applied |
 | 3 — values on the ticket detail sidebar | SPRIN-88 | **Done** | C, applied |
 | 4 — values on the create-ticket dialog | SPRIN-89 | **Done** | — (none needed, verified) |
-| 5 — single-select fields | **SPRIN-92 ← NEXT** | To Do | D |
-| 6 — delete a field, with its value count | SPRIN-93 | To Do | grants |
+| 5 — single-select fields | SPRIN-92 | **Done** | D, applied |
+| 6 — delete a field, with its value count | **SPRIN-93 ← NEXT** | To Do | grants |
+
+**Epic SPRIN-71 is five of six.** Only story 6 remains, and it is the DELETE-grant one — the
+widening `rls.integration.test.ts` already pins `project_fields` against, so a test goes red
+first. After it, the epic closes and the order moves to **SPRIN-74** (sprint cadence), then
+**SPRIN-75 (RLS) LAST**.
 
 **The migration letters have shifted by one.** The design calls `ticket_field_values` "migration
 B" and `project_field_options` "migration C"; SPRIN-91's grant file took the name
@@ -52,7 +56,31 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
-### Session 62 — the unread review, read and acted on (branch `sprin-92-single-select-fields`)
+### Session 62 — SPRIN-92 reviewed, fixed and **MERGED** (PR #100, `532a5ec`)
+
+**Merged 2026-08-08.** `verify` green on the PR's own head (`43eec91`) and again on the merge
+commit itself: **75 test files, 0 skipped**, so the live suites really ran. `e2e` also passed.
+`main` and the database now agree — migration D is no longer ahead of `main`, and the
+drop-it-by-hand warning from session 61 is discharged.
+
+**TWO THINGS ONLY CI COULD SEE, and this is the session's real lesson.** The branch had been red
+for three sessions and every local signal said otherwise:
+
+1. **`format:check` failed on six files — FOUR of them already dirty before this session started**
+   (measured at `e54e302`). Twenty-three commits ran a local loop of `lint` + `typecheck` +
+   `test:unit`. None of those three includes the formatter, and `verify` only fires on a pull
+   request. A local subset that omits one step of the real gate reports green for a red branch.
+2. **Two SPRIN-88 live tests, broken by THIS story's own migration.** `tfv_option_fk` retroactively
+   re-judged fixtures written before it existed: they inserted `value_option: 'red'`/`'blue'`,
+   slugs that named no option row, and earned `23503`. Fixed by seeding two options in that
+   block's `beforeAll`. **A migration that ADDS a constraint invalidates every fixture written
+   against the schema before it** — and the live suites cannot run locally at all here
+   (placeholder Supabase URL → `ENOTFOUND`, which fails hard rather than skipping), so nothing
+   local can say so. The migration had been hand-applied three sessions earlier. **Next time: grep
+   the live suites for values the new constraint now judges, in the same commit as the migration,
+   and open a draft PR early — it is the only thing that runs the full gate.**
+
+### Session 62 (detail) — the unread review, read and acted on
 
 The adversarial review session 61 left running was recovered from `journal.jsonl` and written up
 as **`docs/sprin-92-review-findings.md`**, which is now committed. **Read its header before
