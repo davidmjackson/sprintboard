@@ -78,9 +78,14 @@ export function SettingsTab() {
     statusesPhase,
     fields,
     fieldsPhase,
+    options,
+    optionsPhase,
     onRetry,
     onFieldCreated,
     onFieldUpdated,
+    onOptionCreated,
+    onOptionUpdated,
+    onOptionDeleted,
     onStatusCreated,
     onStatusUpdated,
     onStatusDeleted,
@@ -114,9 +119,14 @@ export function SettingsTab() {
         projectId={project.id}
         fields={fields}
         phase={fieldsPhase}
+        options={options}
+        optionsPhase={optionsPhase}
         onRetry={onRetry}
         onCreated={onFieldCreated}
         onUpdated={onFieldUpdated}
+        onOptionCreated={onOptionCreated}
+        onOptionUpdated={onOptionUpdated}
+        onOptionDeleted={onOptionDeleted}
       />
     </div>
   )

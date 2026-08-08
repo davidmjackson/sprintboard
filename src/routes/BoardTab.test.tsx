@@ -79,6 +79,12 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     // a different shell from the real one.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-92 task 9. Same shape-parity reasoning as `fields`/`fieldsPhase` above.
+    options: [],
+    optionsPhase: 'loaded',
+    onOptionCreated: vi.fn(),
+    onOptionUpdated: vi.fn(),
+    onOptionDeleted: vi.fn(),
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
     onStatusCreated: vi.fn(),

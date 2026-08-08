@@ -6,6 +6,7 @@ import {
   hasSprints,
   type Project,
   type ProjectField,
+  type ProjectFieldOption,
   type ProjectStatus,
   type Sprint,
   type Ticket,
@@ -16,6 +17,7 @@ import { listTickets } from '@/lib/tickets'
 import { listSprints } from '@/lib/sprints'
 import { doneSlugs, listProjectStatuses, removeStatus } from '@/lib/project-statuses'
 import { listProjectFields } from '@/lib/project-fields'
+import { listProjectFieldOptions } from '@/lib/project-field-options'
 import { useAuth } from '@/lib/auth-context'
 import { CrashFallback, ErrorBoundary } from './ErrorBoundary'
 import { ProjectShellHeader } from './ProjectShellHeader'
@@ -64,6 +66,30 @@ export type ProjectShellContext = {
    *  story 3's detail sidebar and story 2's settings form need the same rows. */
   fields: ProjectField[]
   fieldsPhase: ReadPhase
+  /** The project's `select`-field options, across every `select` field it has (SPRIN-92 task
+   *  9). `[]` while loading AND when the read failed — always read `optionsPhase` before
+   *  treating an empty list as "this field has no options", which is the COMMON case, exactly
+   *  as with `fields` above: most fields are not `select`, and a `select` field starts with
+   *  none. Shared from the shell for the same reason as `fields` — `CustomFieldOptions` renders
+   *  one field's slice per `select` row, so a per-field fetch would multiply reads with the
+   *  number of `select` fields on the project. `CustomFieldOptions` itself takes no phase prop
+   *  (a Task 7 decision), so the CALLER — `CustomFieldSettings` — is where a failed read must
+   *  be told apart from a genuinely empty list; see that component's own gate. */
+  options: ProjectFieldOption[]
+  optionsPhase: ReadPhase
+  /** An option was added to a `select` field from the Settings tab (SPRIN-92 task 9). Appended,
+   *  mirroring `onFieldCreated` — `createProjectFieldOption` derives `position` as
+   *  `max(position)+1` from the rows it is handed, so the end of the list (for that field) is
+   *  where the database itself would put it. */
+  onOptionCreated: (option: ProjectFieldOption) => void
+  /** An option was renamed (SPRIN-92 task 9). Replaces one row by its key, `(field_id, slug)` —
+   *  there is no surrogate id on this table — mirroring `onFieldUpdated`. A rename never
+   *  touches `slug`, so no other row's identity is affected. */
+  onOptionUpdated: (option: ProjectFieldOption) => void
+  /** An option was deleted (SPRIN-92 task 9). Removes it from the shared list by the same
+   *  `(field_id, slug)` key — the value rows it gated go with it via `tfv_option_fk`'s cascade,
+   *  which is the database's job, not this reducer's. */
+  onOptionDeleted: (fieldId: string, slug: string) => void
   /** A custom field was added from the Settings tab (SPRIN-91). Appended, and appending is
    *  the CORRECT order rather than a convenient one: `listProjectFields` sorts by
    *  `(created_at, slug)` and a row created just now carries the newest `created_at`, so the
@@ -147,20 +173,24 @@ export function ProjectShell() {
   const [reloadNonce, setReloadNonce] = useState(0)
   const onRetry = () => setReloadNonce((n) => n + 1)
 
-  // Four reads, one implementation. `listTickets`/`listSprints`/`listProjectStatuses`/
-  // `listProjectFields` are module-level functions, so the references are stable and the
-  // effects do not re-run every render. All four share `reloadNonce`, so Retry covers all
-  // four.
+  // Five reads, one implementation. `listTickets`/`listSprints`/`listProjectStatuses`/
+  // `listProjectFields`/`listProjectFieldOptions` are module-level functions, so the
+  // references are stable and the effects do not re-run every render. All five share
+  // `reloadNonce`, so Retry covers all five.
   //
   // The fourth (SPRIN-90) was added while this component sat at exactly 10 of 10 cyclomatic.
   // It costs ZERO points, measured rather than assumed: `useTaggedRead` is a hook CALL, not
   // a branch, and so is the destructure below. That is why this epic needed no
   // `StatusSettings`-style split story before it could begin — a conditional here would have
-  // been unaffordable, but a read is not.
+  // been unaffordable, but a read is not. The FIFTH (SPRIN-92 task 9) is the same call again,
+  // for the same reason: still zero cyclomatic points, still measured with
+  // `npx eslint src/routes/ProjectShell.tsx --rule '{"complexity":["error",1]}'` rather than
+  // assumed from the fourth's precedent.
   const ticketRead = useTaggedRead(activeProjectId, reloadNonce, listTickets)
   const sprintRead = useTaggedRead(activeProjectId, reloadNonce, listSprints)
   const statusRead = useTaggedRead(activeProjectId, reloadNonce, listProjectStatuses)
   const fieldRead = useTaggedRead(activeProjectId, reloadNonce, listProjectFields)
+  const optionRead = useTaggedRead(activeProjectId, reloadNonce, listProjectFieldOptions)
 
   if (loading) {
     return (
@@ -176,6 +206,7 @@ export function ProjectShell() {
   const { phase: sprintsPhase, items: sprints } = sprintRead
   const { phase: statusesPhase, items: statuses } = statusRead
   const { phase: fieldsPhase, items: fields } = fieldRead
+  const { phase: optionsPhase, items: options } = optionRead
 
   const selected = selectedId ? (tickets.find((t) => t.id === selectedId) ?? null) : null
 
@@ -274,6 +305,27 @@ export function ProjectShell() {
   const onFieldUpdated = (updated: ProjectField) =>
     fieldRead.patch(project.id, (fs) => fs.map((f) => (f.id === updated.id ? updated : f)))
 
+  // The three option reducers (SPRIN-92 task 9), local mutations for the same reason as every
+  // other one here — and costing ZERO cyclomatic points for the same reason `onFieldCreated`/
+  // `onFieldUpdated` do: these are `const` arrow declarations, not branches written INLINE in
+  // `ProjectShell` itself. `project_field_options` has no surrogate id, so every reducer keys
+  // on `(field_id, slug)` rather than `id` — the same substitution `onStatusUpdated` would need
+  // if `project_statuses` ever dropped its own surrogate key.
+  const onOptionCreated = (option: ProjectFieldOption) =>
+    optionRead.patch(project.id, (os) => [...os, option])
+
+  const onOptionUpdated = (updated: ProjectFieldOption) =>
+    optionRead.patch(project.id, (os) =>
+      os.map((o) =>
+        o.field_id === updated.field_id && o.slug === updated.slug ? updated : o,
+      ),
+    )
+
+  const onOptionDeleted = (fieldId: string, slug: string) =>
+    optionRead.patch(project.id, (os) =>
+      os.filter((o) => !(o.field_id === fieldId && o.slug === slug)),
+    )
+
   const currentUser = { id: user!.id, email: user!.email ?? '' }
 
   return (
@@ -323,6 +375,11 @@ export function ProjectShell() {
                 statusesPhase,
                 fields,
                 fieldsPhase,
+                options,
+                optionsPhase,
+                onOptionCreated,
+                onOptionUpdated,
+                onOptionDeleted,
                 onFieldCreated,
                 onFieldUpdated,
                 onStatusCreated,

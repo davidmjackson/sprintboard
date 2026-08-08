@@ -132,6 +132,12 @@ function ctxWith(
     // SPRIN-90. Shape parity with `ProjectShell`'s real context; the board reads neither.
     fields: [],
     fieldsPhase: 'loaded',
+    // SPRIN-92 task 9. Same shape-parity reasoning as `fields`/`fieldsPhase` above.
+    options: [],
+    optionsPhase: 'loaded',
+    onOptionCreated: vi.fn(),
+    onOptionUpdated: vi.fn(),
+    onOptionDeleted: vi.fn(),
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
     onStatusCreated: vi.fn(),

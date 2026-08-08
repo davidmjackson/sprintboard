@@ -2,11 +2,17 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 
-import { CUSTOM_FIELD_TYPES, CUSTOM_FIELD_TYPE_LABELS, type ProjectField } from '@/lib/domain'
+import {
+  CUSTOM_FIELD_TYPES,
+  CUSTOM_FIELD_TYPE_LABELS,
+  type ProjectField,
+  type ProjectFieldOption,
+} from '@/lib/domain'
 import { createProjectField, renameProjectField } from '@/lib/project-fields'
 import { AddFieldSchema, RenameFieldSchema, type AddFieldValues } from '@/lib/field-schemas'
 import type { ReadPhase } from '@/lib/project-reads'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import {
   Form,
   FormControl,
@@ -15,6 +21,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { CustomFieldOptions } from './CustomFieldOptions'
 import { GENERIC_CREATE_ERROR } from './CreateDialog'
 import { EditableText } from './EditableText'
 import { FormRootError, selectClass, SubmitButton } from './form-primitives'
@@ -155,7 +162,68 @@ function AddFieldForm({
 }
 
 /**
- * One custom field: its name, editable in place, and its type.
+ * Gates a `select` field's options editor on `optionsPhase` — its OWN phase, not the field
+ * list's `phase` above. Carried forward from Task 7's review rather than stated in this task's
+ * brief: `CustomFieldOptions` takes no `phase` prop of its own (a deliberate Task 7 decision —
+ * a single component rendering both a project's whole field set AND per-field options would
+ * conflate two independent reads), so left ungated here it would render its own empty state
+ * ("No options yet.") on a FAILED read exactly as readily as on a field that genuinely has
+ * none — the identical S4.6 defect `CustomFieldBody` above already guards against for the field
+ * list itself, one surface over. Same order of outcomes for the same reason: failure first
+ * (an already-known failure must not be masked by a spinner, because nothing retries a
+ * `loading` phase on its own), then loading, then the loaded content.
+ *
+ * There is deliberately no dedicated resource in `LoadFailure`'s closed union for this state —
+ * adding one would touch a file this task does not otherwise change, so the failure notice is
+ * written out locally instead, in the same shape (`role="alert"` plus a `Retry` button wired to
+ * the shell's own `onRetry`, which reloads all five of the shell's reads together).
+ */
+function FieldOptionsGate({
+  field,
+  options,
+  phase,
+  onRetry,
+  onCreated,
+  onUpdated,
+  onDeleted,
+}: {
+  field: ProjectField
+  options: readonly ProjectFieldOption[]
+  phase: ReadPhase
+  onRetry: () => void
+  onCreated: (option: ProjectFieldOption) => void
+  onUpdated: (option: ProjectFieldOption) => void
+  onDeleted: (fieldId: string, slug: string) => void
+}) {
+  if (phase === 'failed') {
+    return (
+      <div className="flex items-center gap-3">
+        <p role="alert" className="text-destructive text-xs">
+          Could not load this field&rsquo;s options.
+        </p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+  if (phase !== 'loaded') {
+    return <p className="text-muted-foreground text-xs">Loading options…</p>
+  }
+  return (
+    <CustomFieldOptions
+      field={field}
+      options={options}
+      onCreated={onCreated}
+      onUpdated={onUpdated}
+      onDeleted={onDeleted}
+    />
+  )
+}
+
+/**
+ * One custom field: its name, editable in place, and its type — plus, for a `select` field, the
+ * options editor beneath the name (SPRIN-92 task 9).
  *
  * The rename call lives HERE rather than in the parent for the same reason `StatusRow`'s does:
  * with several rows on screen, a page-level banner would not say WHICH name was refused. The
@@ -173,13 +241,30 @@ function AddFieldForm({
  * was never sent), and skip the request when the TRIMMED name is unchanged (`EditableText`
  * compares the raw draft, so `'Ship by '` reaches this function and is a no-op the database
  * would also see as one).
+ *
+ * **`options` is the WHOLE PROJECT's options, unfiltered**, exactly as `CustomFieldSettings`
+ * receives the whole project's fields — `CustomFieldOptions` filters and sorts to this one
+ * field internally (`optionsForField`), so a per-row fetch or pre-filter here would either
+ * multiply reads or duplicate that filtering logic.
  */
 function CustomFieldRow({
   field,
+  options,
+  optionsPhase,
   onUpdated,
+  onRetryOptions,
+  onOptionCreated,
+  onOptionUpdated,
+  onOptionDeleted,
 }: {
   field: ProjectField
+  options: readonly ProjectFieldOption[]
+  optionsPhase: ReadPhase
   onUpdated: (field: ProjectField) => void
+  onRetryOptions: () => void
+  onOptionCreated: (option: ProjectFieldOption) => void
+  onOptionUpdated: (option: ProjectFieldOption) => void
+  onOptionDeleted: (fieldId: string, slug: string) => void
 }) {
   const [error, setError] = useState<string | null>(null)
 
@@ -206,22 +291,35 @@ function CustomFieldRow({
   }
 
   return (
-    <li className="flex items-center gap-3 px-3 py-2 text-sm">
-      <div className="min-w-0 flex-1">
-        <EditableText
-          value={field.name}
-          ariaLabel={`name of ${field.name}`}
-          onCommit={(next) => void rename(next)}
-        />
-        {error ? (
-          <p role="alert" className="text-destructive text-xs">
-            {error}
-          </p>
-        ) : null}
+    <li className="flex flex-col gap-2 px-3 py-2 text-sm">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <EditableText
+            value={field.name}
+            ariaLabel={`name of ${field.name}`}
+            onCommit={(next) => void rename(next)}
+          />
+          {error ? (
+            <p role="alert" className="text-destructive text-xs">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <span className="text-muted-foreground shrink-0 text-xs">
+          {CUSTOM_FIELD_TYPE_LABELS[field.type]}
+        </span>
       </div>
-      <span className="text-muted-foreground shrink-0 text-xs">
-        {CUSTOM_FIELD_TYPE_LABELS[field.type]}
-      </span>
+      {field.type === 'select' ? (
+        <FieldOptionsGate
+          field={field}
+          options={options}
+          phase={optionsPhase}
+          onRetry={onRetryOptions}
+          onCreated={onOptionCreated}
+          onUpdated={onOptionUpdated}
+          onDeleted={onOptionDeleted}
+        />
+      ) : null}
     </li>
   )
 }
@@ -243,16 +341,26 @@ export function CustomFieldSettings({
   projectId,
   fields,
   phase,
+  options,
+  optionsPhase,
   onRetry,
   onCreated,
   onUpdated,
+  onOptionCreated,
+  onOptionUpdated,
+  onOptionDeleted,
 }: {
   projectId: string
   fields: readonly ProjectField[]
   phase: ReadPhase
+  options: readonly ProjectFieldOption[]
+  optionsPhase: ReadPhase
   onRetry: () => void
   onCreated: (field: ProjectField) => void
   onUpdated: (field: ProjectField) => void
+  onOptionCreated: (option: ProjectFieldOption) => void
+  onOptionUpdated: (option: ProjectFieldOption) => void
+  onOptionDeleted: (fieldId: string, slug: string) => void
 }) {
   return (
     <section className="flex flex-col gap-3" aria-labelledby="custom-fields-heading">
@@ -269,9 +377,14 @@ export function CustomFieldSettings({
         projectId={projectId}
         fields={fields}
         phase={phase}
+        options={options}
+        optionsPhase={optionsPhase}
         onRetry={onRetry}
         onCreated={onCreated}
         onUpdated={onUpdated}
+        onOptionCreated={onOptionCreated}
+        onOptionUpdated={onOptionUpdated}
+        onOptionDeleted={onOptionDeleted}
       />
     </section>
   )
@@ -307,23 +420,42 @@ function CustomFieldBody({
   projectId,
   fields,
   phase,
+  options,
+  optionsPhase,
   onRetry,
   onCreated,
   onUpdated,
+  onOptionCreated,
+  onOptionUpdated,
+  onOptionDeleted,
 }: {
   projectId: string
   fields: readonly ProjectField[]
   phase: ReadPhase
+  options: readonly ProjectFieldOption[]
+  optionsPhase: ReadPhase
   onRetry: () => void
   onCreated: (field: ProjectField) => void
   onUpdated: (field: ProjectField) => void
+  onOptionCreated: (option: ProjectFieldOption) => void
+  onOptionUpdated: (option: ProjectFieldOption) => void
+  onOptionDeleted: (fieldId: string, slug: string) => void
 }) {
   if (phase === 'failed') return <LoadFailure resource="custom fields" onRetry={onRetry} />
   if (phase !== 'loaded') return <p className="text-muted-foreground text-sm">Loading…</p>
 
   return (
     <>
-      <CustomFieldList fields={fields} onUpdated={onUpdated} />
+      <CustomFieldList
+        fields={fields}
+        options={options}
+        optionsPhase={optionsPhase}
+        onUpdated={onUpdated}
+        onRetryOptions={onRetry}
+        onOptionCreated={onOptionCreated}
+        onOptionUpdated={onOptionUpdated}
+        onOptionDeleted={onOptionDeleted}
+      />
       <AddFieldForm projectId={projectId} existing={fields} onCreated={onCreated} />
     </>
   )
@@ -346,10 +478,22 @@ function CustomFieldBody({
  */
 function CustomFieldList({
   fields,
+  options,
+  optionsPhase,
   onUpdated,
+  onRetryOptions,
+  onOptionCreated,
+  onOptionUpdated,
+  onOptionDeleted,
 }: {
   fields: readonly ProjectField[]
+  options: readonly ProjectFieldOption[]
+  optionsPhase: ReadPhase
   onUpdated: (field: ProjectField) => void
+  onRetryOptions: () => void
+  onOptionCreated: (option: ProjectFieldOption) => void
+  onOptionUpdated: (option: ProjectFieldOption) => void
+  onOptionDeleted: (fieldId: string, slug: string) => void
 }) {
   if (fields.length === 0) {
     return (
@@ -362,7 +506,17 @@ function CustomFieldList({
   return (
     <ul className="divide-border divide-y rounded-lg border">
       {fields.map((field) => (
-        <CustomFieldRow key={field.id} field={field} onUpdated={onUpdated} />
+        <CustomFieldRow
+          key={field.id}
+          field={field}
+          options={options}
+          optionsPhase={optionsPhase}
+          onUpdated={onUpdated}
+          onRetryOptions={onRetryOptions}
+          onOptionCreated={onOptionCreated}
+          onOptionUpdated={onOptionUpdated}
+          onOptionDeleted={onOptionDeleted}
+        />
       ))}
     </ul>
   )

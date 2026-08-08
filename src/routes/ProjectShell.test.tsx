@@ -10,10 +10,17 @@ import { SprintsTab } from './SprintsTab'
 import { SettingsTab } from './SettingsTab'
 import type { ProjectsContext } from './AppLayout'
 import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
-import type { ProjectField, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
 import { createTicket, deleteTicket, listTickets, updateTicket } from '@/lib/tickets'
 import { completeSprint, createSprint, listSprints, startSprint } from '@/lib/sprints'
 import { listProjectFields } from '@/lib/project-fields'
+import {
+  countTicketsHoldingOption,
+  createProjectFieldOption,
+  deleteProjectFieldOption,
+  listProjectFieldOptions,
+  renameProjectFieldOption,
+} from '@/lib/project-field-options'
 import {
   clearTicketFieldValue,
   listTicketFieldValues,
@@ -77,6 +84,20 @@ vi.mock('@/lib/project-fields', async (orig) => ({
   createProjectField: vi.fn(),
   renameProjectField: vi.fn(),
 }))
+// SPRIN-92 task 9's fourth-of-four read, mocked for the identical reason as `listProjectFields`
+// immediately above: without this, the real `listProjectFieldOptions` runs in every test in
+// this file and issues a live PostgREST request the moment `useTaggedRead` fires — invisible,
+// because the rejection is caught rather than thrown. The `CustomFieldOptions` writes it sits
+// beside are mocked too, since the real Settings tab mounts its add-option form for any
+// `select` field a fixture here carries.
+vi.mock('@/lib/project-field-options', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-field-options')>()),
+  listProjectFieldOptions: vi.fn(),
+  createProjectFieldOption: vi.fn(),
+  renameProjectFieldOption: vi.fn(),
+  deleteProjectFieldOption: vi.fn(),
+  countTicketsHoldingOption: vi.fn(),
+}))
 // SPRIN-88's per-TICKET read, and the same argument one layer down. It only fires when the
 // project has custom fields, so today it is reachable from exactly one test below — but the
 // moment a fixture here grows a field, an unmocked `listTicketFieldValues` would issue a live
@@ -105,6 +126,7 @@ const mockDelete = vi.mocked(deleteTicket)
 const mockListSprints = vi.mocked(listSprints)
 const mockListStatuses = vi.mocked(listProjectStatuses)
 const mockListFields = vi.mocked(listProjectFields)
+const mockListOptions = vi.mocked(listProjectFieldOptions)
 const mockListValues = vi.mocked(listTicketFieldValues)
 const mockSetValue = vi.mocked(setTicketFieldValue)
 beforeEach(() => {
@@ -112,6 +134,7 @@ beforeEach(() => {
   mockSetValue.mockReset().mockResolvedValue({ ok: true })
   vi.mocked(clearTicketFieldValue).mockReset().mockResolvedValue({ ok: true })
   mockListFields.mockReset().mockResolvedValue([])
+  mockListOptions.mockReset().mockResolvedValue([])
   mockList.mockReset().mockResolvedValue([])
   vi.mocked(createTicket).mockReset()
   mockDelete.mockReset()
@@ -125,6 +148,10 @@ beforeEach(() => {
   vi.mocked(renameProjectStatus).mockReset()
   vi.mocked(reorderProjectStatuses).mockReset()
   vi.mocked(deleteProjectStatus).mockReset()
+  vi.mocked(createProjectFieldOption).mockReset()
+  vi.mocked(renameProjectFieldOption).mockReset()
+  vi.mocked(deleteProjectFieldOption).mockReset()
+  vi.mocked(countTicketsHoldingOption).mockReset()
   // Real StatusSettings now renders through this on every visit to the Settings tab (AC2), so
   // every test that reaches it needs a default — not just the ones about deleting. A REAL,
   // successful fetch of all-zero counts, not an empty map: since the fix for the "unknown
@@ -283,6 +310,68 @@ function FieldContextProbe() {
   )
 }
 
+/** The rows `OptionContextProbe`'s write buttons hand back to the shell (SPRIN-92 task 9),
+ *  mirroring `PROBE_CREATED_FIELD`/`PROBE_RENAMED_FIELD` one table over. `field_id` is fixed to
+ *  `'f1'` — the id `OPTION` below also carries — so the update/delete buttons act on the SAME
+ *  option `OPTION` seeds, not a different row that would pass by accident. */
+const PROBE_CREATED_OPTION: ProjectFieldOption = {
+  project_id: 'p1',
+  field_id: 'f1',
+  slug: 'high',
+  label: 'High',
+  position: 2,
+}
+const PROBE_UPDATED_OPTION: ProjectFieldOption = {
+  project_id: 'p1',
+  field_id: 'f1',
+  slug: 'low',
+  label: 'Low priority',
+  position: 1,
+}
+
+/**
+ * SPRIN-92 task 9's fourth read. Reads `options`/`optionsPhase` straight off the context, for
+ * the identical reason `FieldContextProbe` exists one table over: driving the real Settings tab
+ * cannot distinguish what the SHELL published from what the tab computed.
+ */
+function OptionContextProbe() {
+  const {
+    options,
+    optionsPhase,
+    statusesPhase,
+    onRetry,
+    onOptionCreated,
+    onOptionUpdated,
+    onOptionDeleted,
+  } = useOutletContext<ProjectShellContext>()
+  return (
+    <div>
+      <p>options phase: {optionsPhase}</p>
+      <p>statuses phase: {statusesPhase}</p>
+      <ul aria-label="probe options">
+        {options.map((o) => (
+          <li key={`${o.field_id}:${o.slug}`}>
+            <span>{o.label}</span>
+            <span>{o.slug}</span>
+          </li>
+        ))}
+      </ul>
+      <button type="button" onClick={onRetry}>
+        probe retry
+      </button>
+      <button type="button" onClick={() => onOptionCreated(PROBE_CREATED_OPTION)}>
+        probe create option
+      </button>
+      <button type="button" onClick={() => onOptionUpdated(PROBE_UPDATED_OPTION)}>
+        probe rename option
+      </button>
+      <button type="button" onClick={() => onOptionDeleted('f1', 'low')}>
+        probe delete option
+      </button>
+    </div>
+  )
+}
+
 function SprintContextProbe() {
   const { sprints, sprintsPhase } = useOutletContext<ProjectShellContext>()
   return (
@@ -364,6 +453,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="probe" element={<SprintContextProbe />} />
             <Route path="ticket-probe" element={<TicketContextProbe />} />
             <Route path="field-probe" element={<FieldContextProbe />} />
+            <Route path="option-probe" element={<OptionContextProbe />} />
             <Route path="crash" element={<CrashProbe />} />
             <Route path="crash-flaky" element={<FlakyCrashProbe />} />
           </Route>
@@ -945,6 +1035,147 @@ describe('ProjectShell', () => {
 
       expect(await screen.findByText('Customer ref')).toBeVisible()
       expect(screen.getByText('fields phase: loaded')).toBeVisible()
+    })
+  })
+
+  /**
+   * SPRIN-92 task 9's fourth-of-four read, pinned at the SHELL boundary exactly as SPRIN-90's
+   * `fields` read was — see that describe block's own docblock for the four type-valid,
+   * lint-clean mutations that survived the suite before this class of test existed
+   * (`fieldsPhase` sourced from another read, the published list forced empty, the read pinned
+   * to nonce 0, the read given `undefined` for the project id). This is the test that stops the
+   * options read going the same way, and the reason it matters here specifically: `CustomFieldOptions`
+   * takes no `phase` prop of its own, so an unwired options read renders "No options yet." — a
+   * confident, wrong answer — rather than failing loudly anywhere a unit test would see it.
+   *
+   * `CustomFieldSettings.test.tsx` covers the tab/component → `CustomFieldOptions` seam. It
+   * cannot see this one: it hands the props in itself, so it passes just as well when the shell
+   * forwards nothing.
+   */
+  describe("the project's custom field options (SPRIN-92 task 9)", () => {
+    const SELECT_FIELD = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'urgency',
+      name: 'Priority tier',
+      type: 'select',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+
+    const OPTION: ProjectFieldOption = {
+      project_id: 'p1',
+      field_id: 'f1',
+      slug: 'low',
+      label: 'Low',
+      position: 1,
+    }
+
+    it("loads the project's custom field options itself, scoped to the project id", async () => {
+      renderShell('/projects/p1/option-probe')
+      await waitFor(() => expect(mockListOptions).toHaveBeenCalledWith('p1'))
+      expect(mockListOptions).toHaveBeenCalledTimes(1)
+    })
+
+    it('publishes the loaded options on the outlet context', async () => {
+      mockListOptions.mockResolvedValue([OPTION])
+      renderShell('/projects/p1/option-probe')
+
+      expect(await screen.findByText('Low')).toBeVisible()
+      expect(screen.getByText('options phase: loaded')).toBeVisible()
+    })
+
+    // The one that matters most, mirroring the fields block's own reasoning: statuses resolve,
+    // options reject, so the two phases must disagree. An `optionsPhase` derived from another
+    // read reads `loaded` here and would let `CustomFieldOptions` render its empty state over a
+    // failed read — S4.6's defect on the surface this task exists to close.
+    it("publishes 'failed' for a rejected options read even while statuses load fine", async () => {
+      mockListStatuses.mockResolvedValue(SEEDED_STATUSES)
+      mockListOptions.mockRejectedValue(new Error('offline'))
+      renderShell('/projects/p1/option-probe')
+
+      expect(await screen.findByText('options phase: failed')).toBeVisible()
+      expect(screen.getByText('statuses phase: loaded')).toBeVisible()
+    })
+
+    it('appends a created option to the published list', async () => {
+      const user = userEvent.setup()
+      mockListOptions.mockResolvedValue([OPTION])
+      renderShell('/projects/p1/option-probe')
+      expect(await screen.findByText('Low')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe create option' }))
+
+      expect(await screen.findByText('High')).toBeVisible()
+      // …and the existing one is still there — a reducer that REPLACED the list instead of
+      // appending would pass the assertion above alone.
+      expect(screen.getByText('Low')).toBeVisible()
+      const list = within(screen.getByRole('list', { name: 'probe options' }))
+      expect(list.getAllByRole('listitem')).toHaveLength(2)
+    })
+
+    it('replaces an updated option by (field_id, slug), leaving others untouched', async () => {
+      const user = userEvent.setup()
+      mockListOptions.mockResolvedValue([
+        OPTION,
+        { project_id: 'p1', field_id: 'f1', slug: 'high', label: 'High', position: 2 },
+      ])
+      renderShell('/projects/p1/option-probe')
+      expect(await screen.findByText('Low')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe rename option' }))
+
+      expect(await screen.findByText('Low priority')).toBeVisible()
+      // The OLD label is gone — a reducer that appended instead of replacing would leave both.
+      expect(screen.queryByText('Low')).not.toBeInTheDocument()
+      // The sibling option, keyed on a DIFFERENT slug, is unaffected.
+      expect(screen.getByText('High')).toBeVisible()
+      const list = within(screen.getByRole('list', { name: 'probe options' }))
+      expect(list.getAllByRole('listitem')).toHaveLength(2)
+    })
+
+    it('removes a deleted option by (field_id, slug)', async () => {
+      const user = userEvent.setup()
+      mockListOptions.mockResolvedValue([
+        OPTION,
+        { project_id: 'p1', field_id: 'f1', slug: 'high', label: 'High', position: 2 },
+      ])
+      renderShell('/projects/p1/option-probe')
+      expect(await screen.findByText('Low')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe delete option' }))
+
+      await waitFor(() => expect(screen.queryByText('Low')).not.toBeInTheDocument())
+      // The sibling option survives — a reducer that cleared the whole list would pass the
+      // assertion above alone.
+      expect(screen.getByText('High')).toBeVisible()
+    })
+
+    it('re-runs the options read on Retry, so one nonce still drives all four', async () => {
+      mockListOptions.mockRejectedValueOnce(new Error('offline')).mockResolvedValue([OPTION])
+      renderShell('/projects/p1/option-probe')
+
+      expect(await screen.findByText('options phase: failed')).toBeVisible()
+
+      await userEvent.click(screen.getByRole('button', { name: 'probe retry' }))
+
+      expect(await screen.findByText('Low')).toBeVisible()
+      expect(screen.getByText('options phase: loaded')).toBeVisible()
+    })
+
+    // THE ONE FROM THE TASK BRIEF, driven through the REAL Settings tab rather than the probe —
+    // the seam a probe cannot see by construction, because a probe reads the context directly.
+    // This is the test that proves the fourth read actually reaches the rendered screen through
+    // `SettingsTab` → `CustomFieldSettings` → `CustomFieldOptions`, not merely the context.
+    it('reads the project field options and passes them to the settings tab (real wiring)', async () => {
+      const user = userEvent.setup()
+      mockListFields.mockResolvedValue([SELECT_FIELD])
+      mockListOptions.mockResolvedValue([OPTION])
+      renderShell('/projects/p1')
+
+      await user.click(screen.getByRole('link', { name: 'Settings' }))
+
+      await waitFor(() => expect(mockListOptions).toHaveBeenCalledWith('p1'))
+      expect(await screen.findByText('Low')).toBeInTheDocument()
     })
   })
 
