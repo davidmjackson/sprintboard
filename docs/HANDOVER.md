@@ -105,7 +105,22 @@ cyclomatic **10/10**, zero headroom. `TicketDetailSidebar` is back to 9. Measure
 `npx eslint <file> --rule '{"complexity":["error",1]}'`.
 
 **Still open on this branch:** an adversarial ultracode review (5 lenses + skeptic verification) was
-running at session end — read its report before merging. No whole-branch or security pass has been
+**still running when this session ended, and its report was never read.** It is pinned to SHA
+`79137b3` (one commit before this handover commit, which touched only this file — so its findings
+still apply). Recover it from disk before opening the PR:
+
+```
+Run ID:  wf_ffa450d8-7f8
+Journal: ~/.claude/projects/-var-www-sprintboard/0219f420-4e14-4634-bdf8-f02c1e60e382/subagents/workflows/wf_ffa450d8-7f8/journal.jsonl
+Script:  ~/.claude/projects/-var-www-sprintboard/0219f420-4e14-4634-bdf8-f02c1e60e382/workflows/scripts/sprin-92-adversarial-review-wf_ffa450d8-7f8.js
+```
+
+Read `journal.jsonl` for each agent's actual return value — **do not assume a cached or empty result
+means there was nothing to find.** The final agent is labelled `synthesise` and produces five
+sections; read section 3, "KILLED BUT WORTH A SECOND LOOK", not only the survivors, because majority
+vote has discarded a correct finding on this project before. Also check each finder's
+`mutationsPlanted` count: **a lens reporting zero established nothing**, however confident its
+conclusion reads. No whole-branch or security pass has been
 accepted yet. **`TicketDetailSidebar` and `TicketDetailDialog` still lack an independent hop test for
 the options list**; compile-time requiredness partly compensates. And `renameProjectFieldOption`
 leans on `.single()`'s incidental zero-row error rather than an explicit row count — a **third**
