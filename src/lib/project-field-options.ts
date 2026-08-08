@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import type { ProjectFieldOption } from './domain'
+import { uniqueSlugForName } from './project-statuses'
 
 /**
  * The columns this module reads, NAMED — not a bare `.select()`.
@@ -43,4 +44,81 @@ export function optionsForField(
   fieldId: string,
 ): ProjectFieldOption[] {
   return options.filter((o) => o.field_id === fieldId)
+}
+
+/**
+ * Writes return a tagged result rather than throwing, matching `createProjectField` and
+ * `createProjectStatus`: a refusal the user can act on is an expected outcome, not an
+ * exception.
+ */
+export type OptionWriteResult<T> = { ok: true; value: T } | { ok: false; error: OptionWriteError }
+
+type OptionWriteError = 'stale' | 'unknown'
+
+/** Postgres `unique_violation`. */
+const UNIQUE_VIOLATION = '23505'
+
+/**
+ * The one unique constraint reachable from here, and why its remedy is `'stale'`.
+ *
+ * The slug is de-duplicated against a list the caller holds and nothing refetches, so a
+ * 23505 on the primary key means exactly one thing: that list was older than the database.
+ * Retrying the same submit reproduces it forever — the label was never the problem — so
+ * reloading is the only remedy, which is what `'stale'` means everywhere in this codebase.
+ *
+ * An ALLOW-LIST on purpose. A 23505 naming a constraint added by a later story collapses to
+ * `'unknown'` and generic retry copy, rather than a confident sentence telling the user to
+ * reload for something a reload will not fix. Matching on the message is the only channel
+ * PostgREST exposes: `code` is 23505, `details` and `hint` are null, and the constraint name
+ * appears inside `message` alone — untranslated, because it comes from the catalog.
+ */
+const STALE_CONSTRAINT = 'project_field_options_pkey'
+
+function writeError(error: { code?: string; message?: string } | null): OptionWriteError {
+  if (!error || error.code !== UNIQUE_VIOLATION) return 'unknown'
+  return (error.message ?? '').includes(STALE_CONSTRAINT) ? 'stale' : 'unknown'
+}
+
+/**
+ * Add an option to a `select` field (AC1).
+ *
+ * ONE object parameter, not four positional ones: T4 caps parameters at 4, and an object is
+ * this repo's idiom for a write's inputs.
+ *
+ * `existing` must be the options of THIS field only — pass `optionsForField(...)`. Handing it
+ * the whole project's options would de-duplicate the slug against other fields' slugs, which
+ * the primary key `(field_id, slug)` does not require, and would waste `low_2` on a field
+ * that has no `low`.
+ *
+ * No legal slug means NO REQUEST AT ALL. Sending one would earn a check-constraint violation
+ * naming `slug` — a column the user has never seen and cannot correct. `AddOptionSchema`
+ * refuses these at the form edge where the message can explain itself; this is the backstop
+ * for every other caller.
+ */
+export async function createProjectFieldOption(input: {
+  projectId: string
+  fieldId: string
+  label: string
+  existing: readonly ProjectFieldOption[]
+}): Promise<OptionWriteResult<ProjectFieldOption>> {
+  const label = input.label.trim()
+  const slug = uniqueSlugForName(
+    label,
+    input.existing.map((o) => o.slug),
+  )
+  if (slug === null) return { ok: false, error: 'unknown' }
+
+  const position = input.existing.reduce((max, o) => Math.max(max, o.position), 0) + 1
+
+  const { data, error } = await supabase
+    .from('project_field_options')
+    // EXACTLY these five keys. `authenticated` holds INSERT on these columns alone, so any
+    // extra key is a 42501. The test asserts the payload EXACTLY for that reason —
+    // `objectContaining` would pass with an extra key present.
+    .insert({ project_id: input.projectId, field_id: input.fieldId, slug, label, position })
+    .select(OPTION_COLUMNS)
+    .single()
+
+  if (error) return { ok: false, error: writeError(error) }
+  return { ok: true, value: data as ProjectFieldOption }
 }
