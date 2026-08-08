@@ -53,14 +53,20 @@ async function openDialog(
   }> = {},
 ) {
   const user = userEvent.setup()
-  // `optionsPhase` is REQUIRED on `CreateTicketDialog` (SPRIN-92 task 11, shipped required from
-  // the first commit). This helper is the one place supplying a convenience default for the
-  // many callers below that never touch a `select` field — placed AFTER the spread so it wins
-  // over whatever (or nothing) `props.optionsPhase` set, mirroring `fieldsPhase`'s implicit
-  // `undefined` default. `'loaded'` is the neutral, harmless value here: none of these callers
-  // sets `fields` to a `select`-typed field without also setting `optionsPhase` explicitly.
+  // `options` and `optionsPhase` are both REQUIRED on `CreateTicketDialog` (`options` since fix
+  // round 2 — no `?? []` coalesce here either, matching the leaf). This helper is the one place
+  // supplying convenience defaults for the many callers below that never touch a `select`
+  // field — placed AFTER the spread so they win over whatever (or nothing) `props` set,
+  // mirroring `fieldsPhase`'s implicit `undefined` default. `[]`/`'loaded'` are the neutral,
+  // harmless values here: none of these callers sets `fields` to a `select`-typed field without
+  // also setting `options`/`optionsPhase` explicitly.
   render(
-    <CreateTicketDialog projectId="p1" {...props} optionsPhase={props.optionsPhase ?? 'loaded'} />,
+    <CreateTicketDialog
+      projectId="p1"
+      {...props}
+      options={props.options ?? []}
+      optionsPhase={props.optionsPhase ?? 'loaded'}
+    />,
   )
   await user.click(screen.getByRole('button', { name: 'New ticket' }))
   await screen.findByRole('dialog')
@@ -198,7 +204,14 @@ describe('CreateTicketDialog', () => {
     )
     const onCreated = vi.fn()
     const user = userEvent.setup()
-    render(<CreateTicketDialog projectId="p1" onCreated={onCreated} optionsPhase="loaded" />)
+    render(
+      <CreateTicketDialog
+        projectId="p1"
+        onCreated={onCreated}
+        options={[]}
+        optionsPhase="loaded"
+      />,
+    )
 
     await user.click(screen.getByRole('button', { name: 'New ticket' }))
     await screen.findByRole('dialog')

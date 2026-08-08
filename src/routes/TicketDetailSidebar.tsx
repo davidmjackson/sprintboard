@@ -65,12 +65,20 @@ export function TicketDetailSidebar({
    *  budget. Adding `= []` at either stop is what would redden the gate. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 10), staying OPTIONAL here — this
-   *  component sits at 9/10 cyclomatic with no headroom to cascade `options` required up through
-   *  `TicketDetailDialog` (10/10, capped) too. `TicketCustomFields`'s own `options` is now
-   *  REQUIRED (fix round 1), so the JSX call below coalesces to `[]` at the one point this
-   *  optional value actually reaches it. */
-  options?: ProjectFieldOption[]
+  /** REQUIRED (fix round 2) — not optional, no `?? []` coalesce. Fix round 1 made `options`
+   *  required at `TicketCustomFields` alone and kept it optional-with-a-coalesce here, on the
+   *  reasoning that this component had no cyclomatic budget to cascade `?` removal further up
+   *  through `TicketDetailDialog` (10/10, capped). A reviewer probe showed that reasoning solved
+   *  the wrong half: `<TicketDetailSidebar optionsPhase="loaded" />` with no `options` at all
+   *  still typechecked clean and rendered an ENABLED select offering only the blank choice — the
+   *  coalesce hid the hole at the LEAF's caller, but the hole was still open one level up, here,
+   *  where the real external callers are. A required prop with no default costs NOTHING
+   *  (measured: this component is still 9/10 without the coalesce and 10/10 with it — the same
+   *  number either way, since a plain type change is not a branch), so making it required here
+   *  closes the hole for the cost the coalesce was already paying. `TicketDetailDialog`'s own
+   *  `options` is now required too (same fix round), so its forward here is a straight
+   *  pass-through with no coalesce needed. */
+  options: ProjectFieldOption[]
   /** REQUIRED (fix round 2), not optional — a plain pass-through with no destructuring
    *  default either way, so this costs nothing regardless: this component is measured
    *  UNCHANGED at 9/10 with the type made required, `?` removed. `TicketCustomFields` no
@@ -252,13 +260,9 @@ export function TicketDetailSidebar({
         ticket={ticket}
         fields={fields}
         fieldsPhase={fieldsPhase}
-        // `options` is REQUIRED on `TicketCustomFields` (fix round 1), but stays OPTIONAL here —
-        // this component sits at 9/10 cyclomatic with nothing left to spend on removing the `?`
-        // and cascading it up through `TicketDetailDialog` too (10/10, capped). `?? []` is the
-        // one-point coalesce that satisfies the leaf's required type without widening this
-        // component's own contract; it costs the identical point a destructuring default would
-        // have, just paid here instead of at the leaf.
-        options={options ?? []}
+        // `options` is REQUIRED on both `TicketCustomFields` and THIS component (fix round 2) —
+        // a straight pass-through, no coalesce.
+        options={options}
         optionsPhase={optionsPhase}
         onRetryFields={onRetryFields}
       />

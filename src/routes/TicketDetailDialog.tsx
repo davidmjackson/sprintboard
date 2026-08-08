@@ -83,11 +83,17 @@ export function TicketDetailDialog({
    *  constraint stated as an architecture, not a preference. */
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
-  /** The project's `select`-field options (SPRIN-92 task 10). Threaded straight through to
-   *  the sidebar and on to `TicketCustomFields`, which owns the `[]` default. */
-  options?: ProjectFieldOption[]
-  /** REQUIRED (fix round 2). A plain pass-through, so this costs nothing either way — this
-   *  component is measured UNCHANGED at 10/10 with the type made required, `?` removed. See
+  /** REQUIRED (SPRIN-92 task 11, fix round 2) — not optional, threaded straight through to the
+   *  sidebar and on to `TicketCustomFields`, which is also required (fix round 1). A reviewer
+   *  probe found the fix-round-1 asymmetry (required at the two leaves, optional-with-coalesce
+   *  at their direct callers) left the hole reachable one level up: `<TicketDetailDialog
+   *  optionsPhase="loaded" />` with no `options` at all typechecked clean and rendered an
+   *  ENABLED select with only the blank choice. Required here closes it — and costs nothing:
+   *  this component is measured UNCHANGED at 10/10 with the `?` removed, mirroring
+   *  `optionsPhase` immediately below. */
+  options: ProjectFieldOption[]
+  /** REQUIRED (SPRIN-92 task 10's fix round 2). A plain pass-through, so this costs nothing either way —
+   *  this component is measured UNCHANGED at 10/10 with the type made required, `?` removed. See
    *  `TicketCustomFields`'s docblock for why a required prop replaced the fix-round-1 default:
    *  it converts an unplugged wire into a compile error here and at `TicketDetailSidebar`,
    *  instead of a silently-'loaded' select three hops down. */

@@ -138,6 +138,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -158,6 +159,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={null}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -177,6 +179,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -206,6 +209,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -228,6 +232,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -246,6 +251,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -261,6 +267,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -302,6 +309,7 @@ describe('TicketDetailDialog', () => {
         <TicketDetailDialog
           ticket={t}
           currentUser={user}
+          options={[]}
           optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
@@ -358,6 +366,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
@@ -382,6 +391,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={onOpenChange}
         onUpdated={() => {}}
@@ -403,6 +413,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -424,6 +435,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={ticketB}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -452,6 +464,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -469,6 +482,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={null}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -495,6 +509,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -531,6 +546,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -569,6 +585,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         fields={[field]}
         fieldsPhase="loading"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -631,6 +648,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -667,6 +685,7 @@ describe('TicketDetailDialog', () => {
         key={base.id}
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -687,6 +706,7 @@ describe('TicketDetailDialog', () => {
         key={ticketB.id}
         ticket={ticketB}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -725,6 +745,7 @@ describe('TicketDetailDialog', () => {
           key={t.id}
           ticket={t}
           currentUser={user}
+          options={[]}
           optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
@@ -777,6 +798,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -819,6 +841,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -845,6 +868,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -861,6 +885,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -884,6 +909,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -909,6 +935,7 @@ describe('TicketDetailDialog', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -933,6 +960,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -953,6 +981,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -992,6 +1021,7 @@ describe('TicketDetailDialog', () => {
           currentUser={user}
           statuses={[]}
           statusesPhase={phase}
+          options={[]}
           optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={() => {}}
@@ -1015,6 +1045,7 @@ describe('TicketDetailDialog', () => {
         ticket={base}
         currentUser={user}
         statuses={SEEDED_STATUSES}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1033,6 +1064,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={[]}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1049,6 +1081,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1072,6 +1105,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1091,6 +1125,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1109,6 +1144,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={FIVE_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1127,6 +1163,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1147,6 +1184,7 @@ describe('TicketDetailDialog', () => {
         currentUser={user}
         statuses={SEEDED_STATUSES}
         statusesPhase="loaded"
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -1174,6 +1212,7 @@ describe('TicketDetailDialog', () => {
           currentUser={user}
           statuses={SEEDED_STATUSES}
           statusesPhase="loaded"
+          options={[]}
           optionsPhase="loaded"
           onOpenChange={() => {}}
           onUpdated={(next) => {
@@ -1219,6 +1258,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1238,6 +1278,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1258,6 +1299,7 @@ describe('TicketDetailDialog — delete', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1289,6 +1331,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1306,6 +1349,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1330,6 +1374,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -1362,6 +1407,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -1382,6 +1428,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1404,6 +1451,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -1428,6 +1476,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={blockedTicket}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
@@ -1447,6 +1496,7 @@ describe('TicketDetailDialog — block/unblock', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1473,6 +1523,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof TicketDetailDia
     <TicketDetailDialog
       ticket={epicTicket}
       currentUser={user}
+      options={[]}
       optionsPhase="loaded"
       onOpenChange={() => {}}
       onUpdated={() => {}}
@@ -1495,6 +1546,7 @@ describe('TicketDetailDialog — epic fields', () => {
       <TicketDetailDialog
         ticket={base}
         currentUser={user}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={() => {}}
@@ -1622,6 +1674,7 @@ describe('TicketDetailDialog — epic fields', () => {
         ticket={epicWithOne}
         currentUser={user}
         epics={[]}
+        options={[]}
         optionsPhase="loaded"
         onOpenChange={() => {}}
         onUpdated={onUpdated}
