@@ -47,6 +47,32 @@ import { FormRootError, SubmitButton } from './form-primitives'
 const STALE_OPTIONS =
   'This list of options is out of date — refresh the page and try adding it again.'
 
+/** The `error` tag `deleteProjectFieldOption` can resolve with, read off its own return type
+ *  rather than re-declared here — `OptionWriteError` is a private alias in
+ *  `project-field-options.ts`, and duplicating its literal union would drift the moment a tag
+ *  is added there. Mirrors `StatusRow`'s `DeleteStatusError`. */
+type DeleteOptionError = Extract<
+  Awaited<ReturnType<typeof deleteProjectFieldOption>>,
+  { ok: false }
+>['error']
+
+/**
+ * What each `deleteProjectFieldOption` refusal means in words, keyed by tag rather than
+ * collapsed to one generic sentence — mirroring `StatusRow`'s `DELETE_FAILURE_COPY`, this
+ * project's precedent.
+ *
+ * **`'stale'` IS reachable here**, unlike the rename path above: `deleteProjectFieldOption`
+ * returns it on its explicit zero-row check, and a zero-row delete is a real production
+ * outcome — another tab already deleted this option (or it never existed). Retrying the same
+ * delete reproduces the zero-row result forever; only reloading shows the current list, so
+ * that is what the sentence has to say. Telling that user to "try again" (the generic copy)
+ * would be telling them to repeat an action that fails identically every time.
+ */
+const DELETE_FAILURE_COPY: Record<DeleteOptionError, string> = {
+  stale: 'This option no longer exists — refresh the page to see the current list.',
+  unknown: GENERIC_CREATE_ERROR,
+}
+
 /**
  * Sort by `(position, slug)`, mirroring `listProjectFieldOptions`'s own `.order()` calls.
  *
@@ -140,21 +166,6 @@ function AddOptionForm({
 }
 
 /**
- * One option: its label, editable in place. Mirrors `CustomFieldRow`'s rename shape.
- *
- * The rename call lives HERE rather than in the parent for the same reason `CustomFieldRow`'s
- * does: with several rows on screen, a page-level banner would not say WHICH label was
- * refused. The row owns its own `role="alert"` region and nothing else on this surface
- * reports a rename.
- *
- * **There is deliberately no `'stale'` branch here**, unlike the add form. A rename sends
- * `label` alone — `authenticated` holds UPDATE on `label` alone, and the slug is untouched by
- * construction — so it cannot reach `project_field_options_pkey`, the only constraint that
- * produces the `'stale'` tag, and there is no label-uniqueness constraint for it to reach
- * instead. Both write-result tags are therefore undiagnosed on this path, and generic retry
- * copy is the honest fallback (identical reasoning to `CustomFieldRow`'s own rename).
- */
-/**
  * How many tickets hold this option, at the point the confirm dialog owns it.
  *
  * THREE shapes, not `number | null` — mirroring `useTicketCounts` and SPRIN-80's
@@ -215,7 +226,7 @@ function OptionDeleteDialog({
     const result = await deleteProjectFieldOption(fieldId, option.slug)
     setDeleting(false)
     if (!result.ok) {
-      setError(GENERIC_CREATE_ERROR)
+      setError(DELETE_FAILURE_COPY[result.error])
       return
     }
     onDeleted(fieldId, option.slug)
@@ -313,6 +324,21 @@ function OptionDeleteControl({
   )
 }
 
+/**
+ * One option: its label, editable in place. Mirrors `CustomFieldRow`'s rename shape.
+ *
+ * The rename call lives HERE rather than in the parent for the same reason `CustomFieldRow`'s
+ * does: with several rows on screen, a page-level banner would not say WHICH label was
+ * refused. The row owns its own `role="alert"` region and nothing else on this surface
+ * reports a rename.
+ *
+ * **There is deliberately no `'stale'` branch here**, unlike the add form. A rename sends
+ * `label` alone — `authenticated` holds UPDATE on `label` alone, and the slug is untouched by
+ * construction — so it cannot reach `project_field_options_pkey`, the only constraint that
+ * produces the `'stale'` tag, and there is no label-uniqueness constraint for it to reach
+ * instead. Both write-result tags are therefore undiagnosed on this path, and generic retry
+ * copy is the honest fallback (identical reasoning to `CustomFieldRow`'s own rename).
+ */
 function CustomFieldOptionRow({
   fieldId,
   option,

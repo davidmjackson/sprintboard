@@ -290,13 +290,20 @@ describe('CustomFieldOptions', () => {
   })
 
   describe('deleting an option', () => {
+    // Scoped to the DIALOG (`role="alertdialog"`), not the page, mirroring
+    // `StatusSettings.test.tsx`'s delete tests: it is safe to reach the confirm's contents via
+    // bare `screen` only because a single `AlertDialog` happens to be mounted at a time — that
+    // is not a property anything enforces, so every assertion inside the dialog is scoped with
+    // `within(dialog)` here just as it is there. The trigger button itself stays unscoped: it
+    // lives on the ROW, outside the dialog, and is what opens it in the first place.
     it('shows how many tickets hold the option before committing', async () => {
       const u = userEvent.setup()
       mockCount.mockResolvedValue(3)
       render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
-      expect(await screen.findByText(/3 tickets/i)).toBeInTheDocument()
+      const dialog = await screen.findByRole('alertdialog')
+      expect(await within(dialog).findByText(/3 tickets/i)).toBeInTheDocument()
       expect(mockDelete).not.toHaveBeenCalled()
     })
 
@@ -311,10 +318,11 @@ describe('CustomFieldOptions', () => {
       render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const dialog = await screen.findByRole('alertdialog')
 
       // Zero is what UNLOCKS a destructive action, so an unknown count must not read as zero.
-      expect(await screen.findByRole('alert')).toHaveTextContent(/could not check/i)
-      const confirm = screen.getByRole('button', { name: 'Remove option' })
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(/could not check/i)
+      const confirm = within(dialog).getByRole('button', { name: 'Remove option' })
       expect(confirm).toBeDisabled()
     })
 
@@ -328,10 +336,53 @@ describe('CustomFieldOptions', () => {
       )
 
       await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
-      await u.click(await screen.findByRole('button', { name: 'Remove option' }))
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
 
       expect(mockDelete).toHaveBeenCalledWith('f1', 'low')
       expect(onDeleted).toHaveBeenCalledWith('f1', 'low')
+    })
+
+    // `DELETE_FAILURE_COPY`'s two tags, each pinned to its OWN sentence with an anchored regex
+    // — `toHaveTextContent` with a bare string is a SUBSTRING match, so an unanchored assertion
+    // would stay green if the two messages were swapped. Mirrors
+    // `StatusSettings.test.tsx`'s `'stale'`/`'unknown'` delete-failure tests exactly.
+    it('explains a stale delete refusal in its own words, and does not hand the removal up', async () => {
+      const u = userEvent.setup()
+      mockCount.mockResolvedValue(0)
+      mockDelete.mockResolvedValue({ ok: false, error: 'stale' })
+      const onDeleted = vi.fn()
+      render(
+        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+      )
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        /^This option no longer exists — refresh the page to see the current list\.$/,
+      )
+      expect(onDeleted).not.toHaveBeenCalled()
+    })
+
+    it('shows the generic retry copy for a delete failure the user cannot correct', async () => {
+      const u = userEvent.setup()
+      mockCount.mockResolvedValue(0)
+      mockDelete.mockResolvedValue({ ok: false, error: 'unknown' })
+      const onDeleted = vi.fn()
+      render(
+        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+      )
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const dialog = await screen.findByRole('alertdialog')
+      await u.click(within(dialog).getByRole('button', { name: 'Remove option' }))
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        /^Something went wrong\. Please try again\.$/,
+      )
+      expect(onDeleted).not.toHaveBeenCalled()
     })
   })
 
