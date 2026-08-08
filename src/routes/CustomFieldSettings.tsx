@@ -162,44 +162,40 @@ function AddFieldForm({
 }
 
 /**
- * Gates a `select` field's options editor on `optionsPhase` — its OWN phase, not the field
- * list's `phase` above. Carried forward from Task 7's review rather than stated in this task's
- * brief: `CustomFieldOptions` takes no `phase` prop of its own (a deliberate Task 7 decision —
- * a single component rendering both a project's whole field set AND per-field options would
- * conflate two independent reads), so left ungated here it would render its own empty state
- * ("No options yet.") on a FAILED read exactly as readily as on a field that genuinely has
- * none — the identical S4.6 defect `CustomFieldBody` above already guards against for the field
- * list itself, one surface over. Same order of outcomes for the same reason: failure first
- * (an already-known failure must not be masked by a spinner, because nothing retries a
- * `loading` phase on its own), then loading, then the loaded content.
+ * The options-failure/loading notice for the WHOLE section — rendered at most once, never once
+ * per `select` field row (fix round 1, Minor: an earlier draft rendered this from inside each
+ * row's own gate). With N `select` fields and one failed read, a per-row notice would be N
+ * identical `role="alert"` announcements and N Retry buttons that all trigger the SAME
+ * shell-wide reload — a screen-reader user hearing the same failure N times. `LoadFailure`'s own
+ * docblock already warns about exactly this class of duplication; `CustomFieldList` renders this
+ * once, above the field list, only when the list actually contains a `select` field to explain.
  *
- * There is deliberately no dedicated resource in `LoadFailure`'s closed union for this state —
- * adding one would touch a file this task does not otherwise change, so the failure notice is
- * written out locally instead, in the same shape (`role="alert"` plus a `Retry` button wired to
- * the shell's own `onRetry`, which reloads all five of the shell's reads together).
+ * Carried forward from Task 7's review rather than stated in this task's brief:
+ * `CustomFieldOptions` takes no `phase` prop of its own (a deliberate Task 7 decision — a single
+ * component rendering both a project's whole field set AND per-field options would conflate two
+ * independent reads), so left ungated a `select` row would render `CustomFieldOptions`'s own
+ * empty state ("No options yet.") on a FAILED read exactly as readily as on a field that
+ * genuinely has none — the identical S4.6 defect `CustomFieldBody` already guards against for
+ * the field list itself, one surface over. Same order of outcomes for the same reason: failure
+ * first (an already-known failure must not be masked by a spinner, because nothing retries a
+ * `loading` phase on its own), then loading, then nothing further — the loaded content is each
+ * row's own concern, not this notice's.
+ *
+ * **Not `LoadFailure`.** The engineering reason, not a process one: `LoadFailure`'s `min-h-40`
+ * dashed box is sized to stand alone as a tab's whole content (see its own callers — `BoardTab`,
+ * `SprintsTab`) and is the wrong shape repeated inside a field list, where this notice sits
+ * beside ordinary rows rather than replacing the page. A compact, single-line notice in the same
+ * shape (`role="alert"` plus a `Retry` wired to the shell's own `onRetry`, which reloads all five
+ * of the shell's reads together) is the right size for its position; `LoadFailure`'s closed
+ * resource union is untouched either way, since this copy is a literal rather than a raw error
+ * string reaching the DOM.
  */
-function FieldOptionsGate({
-  field,
-  options,
-  phase,
-  onRetry,
-  onCreated,
-  onUpdated,
-  onDeleted,
-}: {
-  field: ProjectField
-  options: readonly ProjectFieldOption[]
-  phase: ReadPhase
-  onRetry: () => void
-  onCreated: (option: ProjectFieldOption) => void
-  onUpdated: (option: ProjectFieldOption) => void
-  onDeleted: (fieldId: string, slug: string) => void
-}) {
+function OptionsFailureNotice({ phase, onRetry }: { phase: ReadPhase; onRetry: () => void }) {
   if (phase === 'failed') {
     return (
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 px-3 py-2 text-sm">
         <p role="alert" className="text-destructive text-xs">
-          Could not load this field&rsquo;s options.
+          Could not load field options.
         </p>
         <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
@@ -208,17 +204,9 @@ function FieldOptionsGate({
     )
   }
   if (phase !== 'loaded') {
-    return <p className="text-muted-foreground text-xs">Loading options…</p>
+    return <p className="text-muted-foreground px-3 py-2 text-xs">Loading field options…</p>
   }
-  return (
-    <CustomFieldOptions
-      field={field}
-      options={options}
-      onCreated={onCreated}
-      onUpdated={onUpdated}
-      onDeleted={onDeleted}
-    />
-  )
+  return null
 }
 
 /**
@@ -246,13 +234,17 @@ function FieldOptionsGate({
  * receives the whole project's fields — `CustomFieldOptions` filters and sorts to this one
  * field internally (`optionsForField`), so a per-row fetch or pre-filter here would either
  * multiply reads or duplicate that filtering logic.
+ *
+ * **A `select` row renders the real editor only once `optionsPhase === 'loaded'`.** While
+ * loading or failed, it renders nothing of its own — `CustomFieldList` already rendered the ONE
+ * section-level `OptionsFailureNotice` that explains why, and a per-row echo of the same
+ * sentence is the duplication fix round 1 removed (see that notice's own docblock).
  */
 function CustomFieldRow({
   field,
   options,
   optionsPhase,
   onUpdated,
-  onRetryOptions,
   onOptionCreated,
   onOptionUpdated,
   onOptionDeleted,
@@ -261,7 +253,6 @@ function CustomFieldRow({
   options: readonly ProjectFieldOption[]
   optionsPhase: ReadPhase
   onUpdated: (field: ProjectField) => void
-  onRetryOptions: () => void
   onOptionCreated: (option: ProjectFieldOption) => void
   onOptionUpdated: (option: ProjectFieldOption) => void
   onOptionDeleted: (fieldId: string, slug: string) => void
@@ -309,12 +300,10 @@ function CustomFieldRow({
           {CUSTOM_FIELD_TYPE_LABELS[field.type]}
         </span>
       </div>
-      {field.type === 'select' ? (
-        <FieldOptionsGate
+      {field.type === 'select' && optionsPhase === 'loaded' ? (
+        <CustomFieldOptions
           field={field}
           options={options}
-          phase={optionsPhase}
-          onRetry={onRetryOptions}
           onCreated={onOptionCreated}
           onUpdated={onOptionUpdated}
           onDeleted={onOptionDeleted}
@@ -475,6 +464,11 @@ function CustomFieldBody({
  * than a composed name, so nothing here is exposed to the fusion at all. Recorded so the diff
  * does not read as an unexplained rewrite: reversing a decision because its premise changed is
  * the correct move, not churn.
+ *
+ * **`OptionsFailureNotice` renders here, ONCE, above the `<ul>`** — not once per `select` row
+ * (fix round 1, Minor). It is gated on `fields.some(select)` rather than shown unconditionally:
+ * a notice about field OPTIONS failing to load is confusing on a project with no `select` field
+ * to have options at all.
  */
 function CustomFieldList({
   fields,
@@ -503,21 +497,27 @@ function CustomFieldList({
     )
   }
 
+  const hasSelectField = fields.some((f) => f.type === 'select')
+
   return (
-    <ul className="divide-border divide-y rounded-lg border">
-      {fields.map((field) => (
-        <CustomFieldRow
-          key={field.id}
-          field={field}
-          options={options}
-          optionsPhase={optionsPhase}
-          onUpdated={onUpdated}
-          onRetryOptions={onRetryOptions}
-          onOptionCreated={onOptionCreated}
-          onOptionUpdated={onOptionUpdated}
-          onOptionDeleted={onOptionDeleted}
-        />
-      ))}
-    </ul>
+    <>
+      {hasSelectField ? (
+        <OptionsFailureNotice phase={optionsPhase} onRetry={onRetryOptions} />
+      ) : null}
+      <ul className="divide-border divide-y rounded-lg border">
+        {fields.map((field) => (
+          <CustomFieldRow
+            key={field.id}
+            field={field}
+            options={options}
+            optionsPhase={optionsPhase}
+            onUpdated={onUpdated}
+            onOptionCreated={onOptionCreated}
+            onOptionUpdated={onOptionUpdated}
+            onOptionDeleted={onOptionDeleted}
+          />
+        ))}
+      </ul>
+    </>
   )
 }
