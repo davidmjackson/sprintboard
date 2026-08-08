@@ -6,6 +6,7 @@ import {
   ticketListLabels,
   type Project,
   type ProjectField,
+  type ProjectFieldOption,
   type Ticket,
 } from '@/lib/domain'
 // Imported from the hook module, not from `./ProjectShell`. `ProjectShell` value-imports
@@ -32,6 +33,14 @@ type ProjectShellHeaderProps = {
    *  neither this component's consumer nor the dialog has one to spend. */
   fields: ProjectField[]
   fieldsPhase: ReadPhase
+  /** The project's `select`-field options (SPRIN-92 task 11), forwarded straight through to
+   *  the create dialog, which owns the `[]` default. */
+  options: ProjectFieldOption[]
+  /** REQUIRED, not defaulted — `ProjectShell` always supplies a real value (it is one of its
+   *  own five project reads), so a plain pass-through type costs nothing here either way. See
+   *  `CreateTicketCustomFields`'s own docblock for why this ships required from the first
+   *  commit. */
+  optionsPhase: ReadPhase
   /** Called with the created ticket so the shell can append it to its own list. */
   onTicketCreated: (ticket: Ticket) => void
 }
@@ -48,6 +57,8 @@ export function ProjectShellHeader({
   ticketsPhase,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
   onTicketCreated,
 }: ProjectShellHeaderProps) {
   // The nav link and the tab's own empty state must word this the same way, so the wording is
@@ -91,6 +102,8 @@ export function ProjectShellHeader({
             projectId={project.id}
             fields={fields}
             fieldsPhase={fieldsPhase}
+            options={options}
+            optionsPhase={optionsPhase}
             onCreated={onTicketCreated}
           />
         ) : null}

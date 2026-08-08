@@ -6,7 +6,7 @@ import { CreateTicketDialog } from './CreateTicketDialog'
 import { createTicket } from '@/lib/tickets'
 import * as ticketFieldValues from '@/lib/ticket-field-values'
 import { insertTicketFieldValues } from '@/lib/ticket-field-values'
-import type { ProjectField, Ticket } from '@/lib/domain'
+import type { ProjectField, ProjectFieldOption, Ticket } from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 
 vi.mock('@/lib/tickets', () => ({ createTicket: vi.fn() }))
@@ -38,16 +38,30 @@ function field(overrides: Partial<ProjectField> = {}): ProjectField {
 const TEXT = field()
 const NUMBER = field({ id: 'f-2c7', slug: 'tier', name: 'Priority level', type: 'number' })
 const DATE = field({ id: 'f-7e5', slug: 'target', name: 'Go live', type: 'date' })
+const RISK = field({ id: 'f-r1k', slug: 'risk', name: 'Risk', type: 'select' })
+const LOW = { project_id: 'p1', field_id: RISK.id, slug: 'low', label: 'Low', position: 1 }
+const HIGH = { project_id: 'p1', field_id: RISK.id, slug: 'high', label: 'High', position: 2 }
+const OPTIONS = [LOW, HIGH] satisfies ProjectFieldOption[]
 
 async function openDialog(
   props: Partial<{
     fields: ProjectField[]
     fieldsPhase: ReadPhase
+    options: ProjectFieldOption[]
+    optionsPhase: ReadPhase
     onCreated: (ticket: Ticket) => void
   }> = {},
 ) {
   const user = userEvent.setup()
-  render(<CreateTicketDialog projectId="p1" {...props} />)
+  // `optionsPhase` is REQUIRED on `CreateTicketDialog` (SPRIN-92 task 11, shipped required from
+  // the first commit). This helper is the one place supplying a convenience default for the
+  // many callers below that never touch a `select` field — placed AFTER the spread so it wins
+  // over whatever (or nothing) `props.optionsPhase` set, mirroring `fieldsPhase`'s implicit
+  // `undefined` default. `'loaded'` is the neutral, harmless value here: none of these callers
+  // sets `fields` to a `select`-typed field without also setting `optionsPhase` explicitly.
+  render(
+    <CreateTicketDialog projectId="p1" {...props} optionsPhase={props.optionsPhase ?? 'loaded'} />,
+  )
   await user.click(screen.getByRole('button', { name: 'New ticket' }))
   await screen.findByRole('dialog')
   return user
@@ -184,7 +198,7 @@ describe('CreateTicketDialog', () => {
     )
     const onCreated = vi.fn()
     const user = userEvent.setup()
-    render(<CreateTicketDialog projectId="p1" onCreated={onCreated} />)
+    render(<CreateTicketDialog projectId="p1" onCreated={onCreated} optionsPhase="loaded" />)
 
     await user.click(screen.getByRole('button', { name: 'New ticket' }))
     await screen.findByRole('dialog')
@@ -273,6 +287,77 @@ describe('CreateTicketDialog', () => {
     const rows = mockInsertValues.mock.calls[0]![0]
     expect(rows).toHaveLength(1)
     expect(rows[0]!.field_id).toBe(TEXT.id)
+  })
+
+  /**
+   * SPRIN-92 task 11 — the `select` control's write path, submit-level. The control-level
+   * behaviours (blank-first ordering, disabled-while-unloaded) are pinned in
+   * `CreateTicketCustomFields.test.tsx`; this file is where the SUBMIT actually happens, so the
+   * value-column write can be pinned end to end the way `NUMBER`'s -2.5 is above.
+   */
+  it('writes the option SLUG to value_option, never its label', async () => {
+    mockCreate.mockResolvedValue({
+      ok: true,
+      ticket: { id: 't1', project_id: 'p1', key: 'MP-12' } as never,
+    })
+    mockInsertValues.mockResolvedValue({ ok: true })
+    const user = await openDialog({ fields: [RISK], options: OPTIONS, optionsPhase: 'loaded' })
+
+    await user.type(screen.getByLabelText('Summary'), 'Wire the board')
+    await user.selectOptions(screen.getByLabelText('Risk'), 'low')
+    await user.click(screen.getByRole('button', { name: 'Create ticket' }))
+
+    await waitFor(() => expect(mockInsertValues).toHaveBeenCalledTimes(1))
+    expect(mockInsertValues).toHaveBeenCalledWith([
+      {
+        ticket_id: 't1',
+        project_id: 'p1',
+        field_id: RISK.id,
+        field_type: 'select',
+        value_option: 'low',
+        value_text: null,
+        value_number: null,
+        value_date: null,
+      },
+    ])
+  })
+
+  /**
+   * The blank choice must leave the field EMPTY in the submitted draft, never write `''` as an
+   * option value — `tfv_option_fk` would refuse it. Picks a real option first, then picks it
+   * back to blank, so this cannot pass merely because the field started empty.
+   */
+  it('writes no value row when the select is picked back to blank', async () => {
+    mockCreate.mockResolvedValue({
+      ok: true,
+      ticket: { id: 't1', project_id: 'p1', key: 'MP-12' } as never,
+    })
+    mockInsertValues.mockResolvedValue({ ok: true })
+    const user = await openDialog({ fields: [RISK], options: OPTIONS, optionsPhase: 'loaded' })
+
+    await user.type(screen.getByLabelText('Summary'), 'Wire the board')
+    await user.selectOptions(screen.getByLabelText('Risk'), 'low')
+    await user.selectOptions(screen.getByLabelText('Risk'), '')
+    await user.click(screen.getByRole('button', { name: 'Create ticket' }))
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled())
+    expect(mockInsertValues).toHaveBeenCalledWith([])
+  })
+
+  it("keeps the select control disabled until the shell's options read settles", async () => {
+    // `fieldsPhase` set explicitly (and to a DIFFERENT value than `optionsPhase`) so a mutation
+    // crossing the two props at this component's own pass-through to `CreateTicketCustomFields`
+    // reddens THIS test, not only the shell's four-hop "real wiring" sibling in
+    // `ProjectShell.test.tsx` — `fieldsPhase: 'loaded'` would otherwise render the select
+    // enabled if `optionsPhase` were silently fed `fieldsPhase`'s value instead of its own.
+    await openDialog({
+      fields: [RISK],
+      fieldsPhase: 'loaded',
+      options: [],
+      optionsPhase: 'loading',
+    })
+
+    expect(screen.getByLabelText('Risk')).toBeDisabled()
   })
 
   /**

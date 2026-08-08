@@ -316,9 +316,7 @@ export function ProjectShell() {
 
   const onOptionUpdated = (updated: ProjectFieldOption) =>
     optionRead.patch(project.id, (os) =>
-      os.map((o) =>
-        o.field_id === updated.field_id && o.slug === updated.slug ? updated : o,
-      ),
+      os.map((o) => (o.field_id === updated.field_id && o.slug === updated.slug ? updated : o)),
     )
 
   const onOptionDeleted = (fieldId: string, slug: string) =>
@@ -340,6 +338,11 @@ export function ProjectShell() {
         // Board and Backlog already carry the Retry for this same read.
         fields={fields}
         fieldsPhase={fieldsPhase}
+        // SPRIN-92 task 11. Same reasoning as `fields` immediately above: passed as VALUES,
+        // never a branch — this component (`ProjectShell`) is at 10 of 10 cyclomatic, so a read
+        // is affordable here but a conditional is not.
+        options={options}
+        optionsPhase={optionsPhase}
         // A new ticket always carries the highest number, so appending it keeps the number
         // order the board and backlog use — no refetch needed. That also avoids a
         // stale-response race: an unguarded refetch resolving after a project switch would

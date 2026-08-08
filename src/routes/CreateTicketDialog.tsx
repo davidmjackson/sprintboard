@@ -10,7 +10,13 @@ import {
   ticketFieldValueRows,
 } from '@/lib/ticket-field-values'
 import { CreateTicketSchema, type CreateTicketValues } from '@/lib/ticket-schemas'
-import { TICKET_TYPES, TICKET_TYPE_LABELS, type ProjectField, type Ticket } from '@/lib/domain'
+import {
+  TICKET_TYPES,
+  TICKET_TYPE_LABELS,
+  type ProjectField,
+  type ProjectFieldOption,
+  type Ticket,
+} from '@/lib/domain'
 import type { ReadPhase } from '@/lib/project-reads'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -61,11 +67,21 @@ export function CreateTicketDialog({
   onCreated,
   fields,
   fieldsPhase,
+  options,
+  optionsPhase,
 }: {
   projectId: string
   onCreated?: (ticket: Ticket) => void
   fields?: ProjectField[]
   fieldsPhase?: ReadPhase
+  /** The project's `select`-field options (SPRIN-92 task 11). Threaded straight through to
+   *  `CreateTicketCustomFields`, which owns the `[]` default — mirroring `fields` above and
+   *  `TicketDetailDialog`'s identical `options` pass-through. */
+  options?: ProjectFieldOption[]
+  /** REQUIRED, not defaulted. A plain pass-through, so this costs nothing either way — see
+   *  `CreateTicketCustomFields`'s own docblock for why a required prop is shipped from this
+   *  story's first commit rather than added in a later fix round. */
+  optionsPhase: ReadPhase
 }) {
   const form = useForm<CreateTicketValues>({
     resolver: zodResolver(CreateTicketSchema),
@@ -236,7 +252,13 @@ export function CreateTicketDialog({
         )}
       />
 
-      <CreateTicketCustomFields control={form.control} fields={fields} fieldsPhase={fieldsPhase} />
+      <CreateTicketCustomFields
+        control={form.control}
+        fields={fields}
+        fieldsPhase={fieldsPhase}
+        options={options}
+        optionsPhase={optionsPhase}
+      />
     </CreateDialog>
   )
 }

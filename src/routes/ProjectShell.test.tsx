@@ -1594,6 +1594,77 @@ describe('ProjectShell', () => {
     )
   })
 
+  /**
+   * SPRIN-92 task 11. THE SAME SEAM as the pair immediately above, one prop-family over — shell
+   * → header → dialog → `CreateTicketCustomFields`, four hops from the shell's own `options`
+   * read to the control. Rendered through the REAL composition, not a direct
+   * `CreateTicketDialog` render, so a dropped or crossed `options`/`optionsPhase` wire at ANY of
+   * the four call sites (`ProjectShell` → `ProjectShellHeader` → `CreateTicketDialog` →
+   * `CreateTicketCustomFields`) breaks THIS test — there is no hop-specific fixture needed
+   * because `ProjectShellHeader` has no test file of its own. Mirrors "renders the project field
+   * options in the detail dialog select (real wiring)" above, and exists for the identical
+   * reason: measured, dropping `options={options}` or `optionsPhase={optionsPhase}`, or crossing
+   * `optionsPhase` for `fieldsPhase`, at any of the four hops left the full suite green before
+   * this test existed.
+   *
+   * This one pins the LIST.
+   */
+  it("gives the create-ticket dialog the shell's own field options (real wiring)", async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-r1k',
+      project_id: 'p1',
+      slug: 'risk',
+      name: 'Risk',
+      type: 'select',
+      created_at: '2026-08-08T10:00:00Z',
+    } as unknown as ProjectField
+    const low = {
+      project_id: 'p1',
+      field_id: 'f-r1k',
+      slug: 'low',
+      label: 'Low',
+      position: 1,
+    } as ProjectFieldOption
+    mockListFields.mockResolvedValue([field])
+    mockListOptions.mockResolvedValue([low])
+
+    renderShell('/projects/p1')
+
+    await u.click(await screen.findByRole('button', { name: 'New ticket' }))
+
+    const select = await screen.findByRole('combobox', { name: 'Risk' })
+    expect(within(select).getByRole('option', { name: 'Low' })).toBeInTheDocument()
+  })
+
+  /**
+   * The `optionsPhase` half of the same pair. Unlike `fieldsPhase` above, `optionsPhase` has NO
+   * default anywhere in this chain (SPRIN-92 task 11 ships it required from its first commit) —
+   * so an unwired render is a COMPILE error, never a silently-'loaded' select. What this test
+   * can still observe is the READ actually reaching the control: `listProjectFieldOptions`
+   * never resolves for the whole test, which is the one state a required prop cannot rule out
+   * by itself — the wiring still has to carry the IN-FLIGHT phase down four hops correctly.
+   */
+  it('keeps the create dialog select disabled until the options read settles (real wiring)', async () => {
+    const u = userEvent.setup()
+    const field = {
+      id: 'f-r1k',
+      project_id: 'p1',
+      slug: 'risk',
+      name: 'Risk',
+      type: 'select',
+      created_at: '2026-08-08T10:00:00Z',
+    } as unknown as ProjectField
+    mockListFields.mockResolvedValue([field])
+    mockListOptions.mockReturnValue(new Promise(() => {}) as never)
+
+    renderShell('/projects/p1')
+
+    await u.click(await screen.findByRole('button', { name: 'New ticket' }))
+
+    expect(await screen.findByRole('combobox', { name: 'Risk' })).toBeDisabled()
+  })
+
   // THE SAME SEAM AGAIN, for SPRIN-82 AC3 — and this pair is the only place in the repo that
   // can see it. The rule spans four components: `ProjectShell` asks the predicate,
   // `TicketDetailDialog` forwards the answer, `TicketDetailSidebar` forwards it again, and
