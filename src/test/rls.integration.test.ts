@@ -2738,4 +2738,244 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(orphans.data).toEqual([])
     })
   })
+
+  /**
+   * SPRIN-92 — project_field_options (epic SPRIN-71, custom fields, story 5).
+   *
+   * Three properties, each owed to a specific migration mechanism rather than to
+   * convention:
+   *
+   *   AC2 — `tfv_option_fk (field_id, value_option) references project_field_options
+   *   (field_id, slug) on delete cascade` is what stops a select value naming an option
+   *   the field never defined. A positive control on the SAME field precedes the refusal,
+   *   because without one a blanket row-level refusal (a broken policy, a missing grant)
+   *   would be indistinguishable from the fk doing its job.
+   *
+   *   AC3 — the migration grants `authenticated` UPDATE on `label` ALONE. A rename must not
+   *   rewrite the stored `value_option`, and the slug must not be writable at all — the
+   *   latter is a column-privilege 42501, not an RLS refusal, because the caller owns the
+   *   row and `options_owner_update`'s USING and WITH CHECK both pass.
+   *
+   *   AC4 — the same fk is `on delete cascade`, so removing an option must clear every
+   *   ticket_field_values row holding it. RLS filters rather than raising, so the proof is
+   *   a row COUNT after the delete, never the absence of an error.
+   *
+   * Reuses `projectA`/`a` from the outer fixture rather than a throwaway project, matching
+   * the SPRIN-88 block beside it. Two tickets of its own are needed because AC2's negative
+   * case must not collide with the positive control on the (ticket_id, field_id) primary
+   * key, and AC4 gets its own OPTION (not the shared 'low' one) so it can destroy what it
+   * creates without making the other tests in this block depend on execution order.
+   */
+  describe('single-select field options (SPRIN-92)', () => {
+    let fieldId: string
+    let ticketId: string
+    let otherTicketId: string
+
+    beforeAll(async () => {
+      const field = await a
+        .from('project_fields')
+        .insert({
+          project_id: projectA,
+          slug: 'sprin92_priority',
+          name: 'SPRIN-92 priority',
+          type: 'select',
+        })
+        .select('id')
+        .single()
+      if (field.error) {
+        throw new Error(`Fixture: could not seed SPRIN-92 field: ${field.error.message}`)
+      }
+      fieldId = field.data.id
+
+      const option = await a.from('project_field_options').insert({
+        project_id: projectA,
+        field_id: fieldId,
+        slug: 'low',
+        label: 'Low',
+        position: 1,
+      })
+      if (option.error) {
+        throw new Error(`Fixture: could not seed SPRIN-92 option: ${option.error.message}`)
+      }
+
+      const t1 = await a
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'SPRIN-92 ticket 1' }))
+        .select('id')
+        .single()
+      if (t1.error) {
+        throw new Error(`Fixture: could not seed SPRIN-92 ticket 1: ${t1.error.message}`)
+      }
+      ticketId = t1.data.id
+
+      const t2 = await a
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: projectA, summary: 'SPRIN-92 ticket 2' }))
+        .select('id')
+        .single()
+      if (t2.error) {
+        throw new Error(`Fixture: could not seed SPRIN-92 ticket 2: ${t2.error.message}`)
+      }
+      otherTicketId = t2.data.id
+    })
+
+    afterAll(async () => {
+      // Deleting the tickets cascades away any ticket_field_values rows still attached to
+      // them. Deleting the field cascades away its options (pfo_field_fk) and any surviving
+      // value rows (tfv_field_fk / tfv_type_fk) — the same pair the SPRIN-88 block's own
+      // cascade test exercises directly. `authenticated` holds no DELETE on project_fields
+      // until story 6, so this goes through adminClient() rather than `a`.
+      await a.from('tickets').delete().eq('id', ticketId)
+      await a.from('tickets').delete().eq('id', otherTicketId)
+      await adminClient().from('project_fields').delete().eq('id', fieldId)
+    })
+
+    // ---- AC2: the fk refuses an off-list value ----
+
+    it('refuses a value_option that is not one of the field options', async () => {
+      // POSITIVE CONTROL FIRST, on the field's real option. Without a successful write
+      // against the SAME field, a blanket row-level refusal (a broken policy, a missing
+      // grant) would be indistinguishable from tfv_option_fk doing its job.
+      try {
+        const good = await a.from('ticket_field_values').insert({
+          ticket_id: ticketId,
+          project_id: projectA,
+          field_id: fieldId,
+          field_type: 'select',
+          value_option: 'low',
+        })
+        expect(good.error).toBeNull()
+
+        // A DIFFERENT ticket for the refusal, so the positive control's row cannot be what
+        // this insert collides with on the (ticket_id, field_id) primary key.
+        const bad = await a.from('ticket_field_values').insert({
+          ticket_id: otherTicketId,
+          project_id: projectA,
+          field_id: fieldId,
+          field_type: 'select',
+          value_option: 'not_an_option',
+        })
+        // 23503 is foreign_key_violation. The CONSTRAINT NAME too: tfv_type_fk and
+        // tfv_field_fk are also 23503 on this table, so the message is the only channel
+        // that says which one actually fired.
+        expect(bad.error?.code).toBe('23503')
+        expect(bad.error?.message).toMatch(/tfv_option_fk/)
+      } finally {
+        // In a `finally`, matching this file's own recorded lesson: an assertion above that
+        // throws would otherwise skip this and strand the positive control's row on the
+        // (ticket_id, field_id) primary key the next test needs free.
+        await a
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketId)
+          .eq('field_id', fieldId)
+      }
+    })
+
+    // ---- AC3: a label rename rewrites no value row, and the slug is not writable ----
+
+    it('renaming a label leaves the stored value_option untouched', async () => {
+      try {
+        const seeded = await a.from('ticket_field_values').insert({
+          ticket_id: ticketId,
+          project_id: projectA,
+          field_id: fieldId,
+          field_type: 'select',
+          value_option: 'low',
+        })
+        expect(seeded.error).toBeNull()
+
+        const renamed = await a
+          .from('project_field_options')
+          .update({ label: 'Lowest' })
+          .eq('field_id', fieldId)
+          .eq('slug', 'low')
+        expect(renamed.error).toBeNull()
+
+        // Read the value BACK — the point of AC3 is that no value row was rewritten.
+        const { data } = await a
+          .from('ticket_field_values')
+          .select('value_option')
+          .eq('ticket_id', ticketId)
+          .eq('field_id', fieldId)
+          .single()
+        expect(data?.value_option).toBe('low')
+      } finally {
+        await a
+          .from('ticket_field_values')
+          .delete()
+          .eq('ticket_id', ticketId)
+          .eq('field_id', fieldId)
+      }
+    })
+
+    it('the slug is not writable — 42501 from the column grant, not the policy', async () => {
+      // The caller OWNS this row, so `options_owner_update`'s USING and WITH CHECK both
+      // pass — the only thing left able to refuse this write is the missing column grant.
+      // The MESSAGE is asserted too, not just the code, because that is the only channel
+      // that tells a privilege refusal ("permission denied") apart from an RLS one
+      // ("violates row-level security policy"), matching the sibling project_fields tests
+      // in this file that make the same discrimination for their own column grants.
+      const { error } = await a
+        .from('project_field_options')
+        .update({ slug: 'renamed' })
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+      expect(error?.code).toBe('42501')
+      expect(error?.message).toMatch(/permission denied/)
+
+      // Positive control: the row is still there AT ITS ORIGINAL SLUG. A rename that
+      // silently succeeded despite the error above (or a policy filtering the update to
+      // zero rows while reporting no error at all) would leave no row at 'low' to find.
+      const { data } = await adminClient()
+        .from('project_field_options')
+        .select('slug')
+        .eq('field_id', fieldId)
+        .eq('slug', 'low')
+      expect(data).toHaveLength(1)
+    })
+
+    // ---- AC4: the cascade actually clears ----
+
+    it('deleting an option clears every value row holding it', async () => {
+      // A DEDICATED option, not the shared 'low' fixture one — this test destroys the row
+      // it creates, and the other tests in this block read/write 'low' independently of
+      // execution order.
+      const doomed = await a.from('project_field_options').insert({
+        project_id: projectA,
+        field_id: fieldId,
+        slug: 'critical',
+        label: 'Critical',
+        position: 2,
+      })
+      expect(doomed.error).toBeNull()
+
+      const seeded = await a.from('ticket_field_values').insert({
+        ticket_id: ticketId,
+        project_id: projectA,
+        field_id: fieldId,
+        field_type: 'select',
+        value_option: 'critical',
+      })
+      expect(seeded.error).toBeNull()
+
+      const removed = await a
+        .from('project_field_options')
+        .delete()
+        .eq('field_id', fieldId)
+        .eq('slug', 'critical')
+      expect(removed.error).toBeNull()
+
+      // Assert the COUNT, not the absence of an error — RLS filters rather than raising, so
+      // a cross-tenant or already-gone row comes back as a successful ZERO-row operation
+      // too, and that would be indistinguishable from a real cascade if only `error` were
+      // checked.
+      const { count } = await a
+        .from('ticket_field_values')
+        .select('*', { head: true, count: 'exact' })
+        .eq('ticket_id', ticketId)
+        .eq('field_id', fieldId)
+      expect(count).toBe(0)
+    })
+  })
 })
