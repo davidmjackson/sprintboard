@@ -288,6 +288,17 @@ create table ticket_field_values (
   constraint tfv_field_fk foreign key (field_id, project_id)
     references project_fields (id, project_id) on delete cascade,
 
+  -- SPRIN-92. AC2 and AC4 in one constraint: ON DELETE CASCADE clears a ticket's value
+  -- the moment the option it points at is deleted, rather than stranding it (the default
+  -- `no action` would refuse the option delete with 23503 instead). In the real,
+  -- hand-applied migration this arrived as a separate ALTER TABLE, because
+  -- project_field_options did not exist yet when THIS table was first created
+  -- (SPRIN-88) — it is written inline here, forward-referencing project_field_options
+  -- below, to represent final cumulative state, matching how tfv_ticket_fk above already
+  -- forward-references `tickets`, defined later in this same file.
+  constraint tfv_option_fk foreign key (field_id, value_option)
+    references project_field_options (field_id, slug) on delete cascade,
+
   -- Keeps the denormalised copy equal to the definition's. ON DELETE CASCADE matches
   -- tfv_field_fk deliberately: two fks to one table with different delete actions resolve in
   -- RI trigger name order, i.e. luck.
@@ -322,6 +333,39 @@ create table ticket_field_values (
 -- prefix rule rather than any query — project_id in those composite fks is a tenancy column,
 -- not a selectivity one.
 create index ticket_field_values_field_id_idx on ticket_field_values (field_id);
+
+-- ---------------------------------------------------------------------------
+-- project_field_options (SPRIN-92, epic SPRIN-71 story 5)
+--
+-- One option of one 'select' custom field. ADDITIVE: touches no existing table's shape
+-- except the one new fk below on ticket_field_values.
+--
+-- Carries `project_id`, departing from the epic design's §3.3, because every
+-- ProjectShell read is `useTaggedRead(projectId, nonce, fn)` and a list function must
+-- be `(projectId) => Promise<T[]>` — an embedded join or a second query fed by the
+-- fields list would both be the "new plumbing" the epic's own §4.4 forbids.
+--
+-- Full rationale (the grant argument, the advisor delta) lives in
+-- docs/migrations/sprin-92-project-field-options.sql.
+-- ---------------------------------------------------------------------------
+create table project_field_options (
+  project_id uuid not null,
+  field_id   uuid not null,
+  slug       text not null,
+  label      text not null,
+  position   int  not null,
+
+  -- Keyed on SLUG rather than a surrogate id, so renaming a LABEL rewrites no value
+  -- row. Same reasoning that keyed tickets_status_fk on (project_id, slug) in SPRIN-79.
+  primary key (field_id, slug),
+
+  constraint pfo_field_fk foreign key (field_id, project_id)
+    references project_fields (id, project_id) on delete cascade,
+
+  constraint pfo_slug_format check (slug ~ '^[a-z][a-z0-9_]{0,29}$'),
+  constraint pfo_label_nonempty check (btrim(label) <> '' and length(label) <= 40),
+  constraint pfo_position_positive check (position > 0)
+);
 
 -- At most one initial status per project. Same idiom as sprints_one_active_per_project,
 -- and the same limitation: it prevents two, not zero.
@@ -738,6 +782,7 @@ alter table project_counters  enable row level security;
 alter table project_statuses  enable row level security;
 alter table project_fields    enable row level security;
 alter table ticket_field_values enable row level security;
+alter table project_field_options enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
@@ -976,6 +1021,36 @@ create policy tfv_owner_delete on ticket_field_values
   for delete
   using (exists (select 1 from projects p
                  where p.id = ticket_field_values.project_id
+                   and p.owner_id = (select auth.uid())));
+
+-- project_field_options (SPRIN-92). Four policies, shaped exactly like tfv_owner_*: no
+-- TO clause, `(select auth.uid())` throughout — adds ZERO auth_rls_initplan warnings
+-- (measured: still 8 after applying).
+create policy options_owner_read on project_field_options
+  for select
+  using (exists (select 1 from projects p
+                 where p.id = project_field_options.project_id
+                   and p.owner_id = (select auth.uid())));
+
+create policy options_owner_insert on project_field_options
+  for insert
+  with check (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy options_owner_update on project_field_options
+  for update
+  using      (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())))
+  with check (exists (select 1 from projects p
+                      where p.id = project_field_options.project_id
+                        and p.owner_id = (select auth.uid())));
+
+create policy options_owner_delete on project_field_options
+  for delete
+  using (exists (select 1 from projects p
+                 where p.id = project_field_options.project_id
                    and p.owner_id = (select auth.uid())));
 
 -- THE TABLE WAS BORN WITH FULL CRUD FOR BOTH APP ROLES. Measured from pg_default_acl (not

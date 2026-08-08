@@ -43,6 +43,13 @@
  *
  * The narrowed domain unions live in `domain.ts`, which is hand-owned precisely so
  * that regenerating this file cannot clobber them.
+ *
+ * SPRIN-92 added the `project_field_options` table (single-select custom field
+ * options) and the `tfv_option_fk` composite foreign key on `ticket_field_values`
+ * (`field_id, value_option`) -> `project_field_options (field_id, slug)`. Both are
+ * new `Tables`/`Relationships` keys, so the same forcing property applies: calling
+ * `.from('project_field_options')` before this regeneration would have been a
+ * compile error rather than a silent `string`.
  */
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
@@ -93,6 +100,38 @@ export type Database = {
             isOneToOne: true
             referencedRelation: 'projects'
             referencedColumns: ['id']
+          },
+        ]
+      }
+      project_field_options: {
+        Row: {
+          field_id: string
+          label: string
+          position: number
+          project_id: string
+          slug: string
+        }
+        Insert: {
+          field_id: string
+          label: string
+          position: number
+          project_id: string
+          slug: string
+        }
+        Update: {
+          field_id?: string
+          label?: string
+          position?: number
+          project_id?: string
+          slug?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'pfo_field_fk'
+            columns: ['field_id', 'project_id']
+            isOneToOne: false
+            referencedRelation: 'project_fields'
+            referencedColumns: ['id', 'project_id']
           },
         ]
       }
@@ -281,6 +320,13 @@ export type Database = {
             isOneToOne: false
             referencedRelation: 'project_fields'
             referencedColumns: ['id', 'project_id']
+          },
+          {
+            foreignKeyName: 'tfv_option_fk'
+            columns: ['field_id', 'value_option']
+            isOneToOne: false
+            referencedRelation: 'project_field_options'
+            referencedColumns: ['field_id', 'slug']
           },
           {
             foreignKeyName: 'tfv_ticket_fk'
