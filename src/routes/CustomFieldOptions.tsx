@@ -1,15 +1,27 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 
 import type { ProjectField, ProjectFieldOption } from '@/lib/domain'
 import {
+  countTicketsHoldingOption,
   createProjectFieldOption,
+  deleteProjectFieldOption,
   optionsForField,
   renameProjectFieldOption,
 } from '@/lib/project-field-options'
 import { AddOptionSchema, RenameOptionSchema, type AddOptionValues } from '@/lib/field-schemas'
 import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   Form,
   FormControl,
@@ -142,14 +154,175 @@ function AddOptionForm({
  * instead. Both write-result tags are therefore undiagnosed on this path, and generic retry
  * copy is the honest fallback (identical reasoning to `CustomFieldRow`'s own rename).
  */
+/**
+ * How many tickets hold this option, at the point the confirm dialog owns it.
+ *
+ * THREE shapes, not `number | null` — mirroring `useTicketCounts` and SPRIN-80's
+ * `StatusDeleteControl`, this project's precedent for count-before-commit. `null` would make
+ * "the read failed" and "zero tickets hold it" the same value, and zero is exactly the value
+ * that UNLOCKS this destructive action: a failed read must never be able to impersonate it.
+ */
+type OptionCountState = 'counting' | { count: number } | 'failed'
+
+/**
+ * The destructive confirm for deleting one option — mirrors `StatusDeleteDialog`'s `AlertDialog`
+ * shape: closed while a delete is in flight, Cancel/destructive footer, an inline `role="alert"`
+ * for a refusal.
+ *
+ * The count is read HERE, lazily, on the `open` transition — never on render. A project field
+ * with many options must not fire one count query per option per paint; only the option whose
+ * confirm the user actually opened is ever counted.
+ */
+function OptionDeleteDialog({
+  fieldId,
+  option,
+  open,
+  onOpenChange,
+  onDeleted,
+}: {
+  fieldId: string
+  option: ProjectFieldOption
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onDeleted: (fieldId: string, slug: string) => void
+}) {
+  const [count, setCount] = useState<OptionCountState>('counting')
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Read only when the dialog is actually open — `open` starts `false`, so this never fires on
+  // render, only on the transition a click makes. The `'counting'` reset lives in `onOpenChange`
+  // below (an event callback, not the effect body itself), so this body only ever calls
+  // `setCount` from the promise's own callbacks.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    countTicketsHoldingOption(fieldId, option.slug)
+      .then((value) => {
+        if (!cancelled) setCount({ count: value })
+      })
+      .catch(() => {
+        if (!cancelled) setCount('failed')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, fieldId, option.slug])
+
+  async function submit() {
+    setDeleting(true)
+    setError(null)
+    const result = await deleteProjectFieldOption(fieldId, option.slug)
+    setDeleting(false)
+    if (!result.ok) {
+      setError(GENERIC_CREATE_ERROR)
+      return
+    }
+    onDeleted(fieldId, option.slug)
+  }
+
+  // The ONLY thing that unlocks the confirm button. `count` is a known number, not `'counting'`
+  // or `'failed'` — an unknown count must never be able to impersonate zero.
+  const known = typeof count === 'object'
+
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (deleting) return
+        setError(null)
+        // Reset on the way OUT, mirroring the error reset above: this component stays mounted
+        // while the dialog is closed, so without this a stale count from the LAST open would
+        // flash as already-known on the next one, ahead of the fresh fetch the effect starts.
+        if (!next) setCount('counting')
+        onOpenChange(next)
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove {option.label}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {known
+              ? `${count.count} ${count.count === 1 ? 'ticket' : 'tickets'} will lose this value. This can’t be undone.`
+              : 'This can’t be undone.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {count === 'failed' ? (
+          <p role="alert" className="text-destructive text-sm">
+            Could not check how many tickets hold this option. Try again.
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-destructive text-sm">
+            {error}
+          </p>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel asChild>
+            <Button variant="outline" disabled={deleting}>
+              Cancel
+            </Button>
+          </AlertDialogCancel>
+          <Button
+            variant="destructive"
+            onClick={() => void submit()}
+            disabled={deleting || !known}
+          >
+            {deleting ? 'Removing…' : 'Remove option'}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/**
+ * The Remove trigger plus the confirm dialog above. Split out of `CustomFieldOptionRow` so that
+ * component stays under the line/complexity thresholds, mirroring `StatusDeleteControl`; this
+ * owns the confirm-open state because only one option's dialog is ever open at a time.
+ */
+function OptionDeleteControl({
+  fieldId,
+  option,
+  onDeleted,
+}: {
+  fieldId: string
+  option: ProjectFieldOption
+  onDeleted: (fieldId: string, slug: string) => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        aria-label={`Remove ${option.label}`}
+        onClick={() => setConfirming(true)}
+      >
+        Remove
+      </Button>
+      <OptionDeleteDialog
+        fieldId={fieldId}
+        option={option}
+        open={confirming}
+        onOpenChange={setConfirming}
+        onDeleted={onDeleted}
+      />
+    </>
+  )
+}
+
 function CustomFieldOptionRow({
   fieldId,
   option,
   onUpdated,
+  onDeleted,
 }: {
   fieldId: string
   option: ProjectFieldOption
   onUpdated: (option: ProjectFieldOption) => void
+  onDeleted: (fieldId: string, slug: string) => void
 }) {
   const [error, setError] = useState<string | null>(null)
 
@@ -186,6 +359,7 @@ function CustomFieldOptionRow({
           </p>
         ) : null}
       </div>
+      <OptionDeleteControl fieldId={fieldId} option={option} onDeleted={onDeleted} />
     </li>
   )
 }
@@ -199,10 +373,12 @@ function CustomFieldOptionList({
   fieldId,
   options,
   onUpdated,
+  onDeleted,
 }: {
   fieldId: string
   options: readonly ProjectFieldOption[]
   onUpdated: (option: ProjectFieldOption) => void
+  onDeleted: (fieldId: string, slug: string) => void
 }) {
   if (options.length === 0) {
     return (
@@ -220,6 +396,7 @@ function CustomFieldOptionList({
           fieldId={fieldId}
           option={option}
           onUpdated={onUpdated}
+          onDeleted={onDeleted}
         />
       ))}
     </ul>
@@ -227,8 +404,8 @@ function CustomFieldOptionList({
 }
 
 /**
- * A `select` field's option list: listed, renameable, and addable (SPRIN-92, epic SPRIN-71
- * story 5). Task 8 adds the delete-with-count confirm; there is no delete control here.
+ * A `select` field's option list: listed, renameable, addable, and — since Task 8 — removable
+ * behind a count-gated confirm (SPRIN-92, epic SPRIN-71 story 5).
  *
  * `options` is the WHOLE PROJECT's options, exactly as `CustomFieldSettings` receives the
  * whole project's fields — `CustomFieldRow` renders one of these per `select` field, so a
@@ -236,26 +413,34 @@ function CustomFieldOptionList({
  * `optionsForField` narrows it, and `byPositionThenSlug` re-sorts the narrowed slice rather
  * than trusting the server's order to have survived the filter.
  *
- * Every write hands its result up through `onCreated` / `onUpdated`, the same discipline
- * `CustomFieldSettings` uses: this component never keeps a second copy of the list to mutate,
- * so a failed write leaves the rendered list exactly as it was with no rollback code anywhere.
+ * Every write hands its result up through `onCreated` / `onUpdated` / `onDeleted`, the same
+ * discipline `CustomFieldSettings` uses: this component never keeps a second copy of the list
+ * to mutate, so a failed write leaves the rendered list exactly as it was with no rollback code
+ * anywhere.
  */
 export function CustomFieldOptions({
   field,
   options,
   onCreated,
   onUpdated,
+  onDeleted,
 }: {
   field: ProjectField
   options: readonly ProjectFieldOption[]
   onCreated: (option: ProjectFieldOption) => void
   onUpdated: (option: ProjectFieldOption) => void
+  onDeleted: (fieldId: string, slug: string) => void
 }) {
   const mine = optionsForField(options, field.id).sort(byPositionThenSlug)
 
   return (
     <div className="flex flex-col gap-3">
-      <CustomFieldOptionList fieldId={field.id} options={mine} onUpdated={onUpdated} />
+      <CustomFieldOptionList
+        fieldId={field.id}
+        options={mine}
+        onUpdated={onUpdated}
+        onDeleted={onDeleted}
+      />
       <AddOptionForm
         projectId={field.project_id}
         fieldId={field.id}

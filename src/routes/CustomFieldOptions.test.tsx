@@ -4,21 +4,30 @@ import userEvent from '@testing-library/user-event'
 
 import { CustomFieldOptions } from './CustomFieldOptions'
 import type { ProjectField, ProjectFieldOption } from '@/lib/domain'
-import { createProjectFieldOption, renameProjectFieldOption } from '@/lib/project-field-options'
+import {
+  countTicketsHoldingOption,
+  createProjectFieldOption,
+  deleteProjectFieldOption,
+  renameProjectFieldOption,
+} from '@/lib/project-field-options'
 
-// Spread the real module: only the two network-touching writes are mocked, exactly as
-// CustomFieldSettings.test.tsx does for its sibling data module. `optionsForField` stays real
-// — it is pure, and mocking it would hide a bug in how this component uses it. An unmocked
-// write would otherwise reach the LIVE database silently, because `VITE_SUPABASE_URL` is a
-// placeholder in this environment and the rejection is handled.
+// Spread the real module: only the network-touching writes (and the count read) are mocked,
+// exactly as CustomFieldSettings.test.tsx does for its sibling data module. `optionsForField`
+// stays real — it is pure, and mocking it would hide a bug in how this component uses it. An
+// unmocked write would otherwise reach the LIVE database silently, because `VITE_SUPABASE_URL`
+// is a placeholder in this environment and the rejection is handled.
 vi.mock('@/lib/project-field-options', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-field-options')>()),
   createProjectFieldOption: vi.fn(),
   renameProjectFieldOption: vi.fn(),
+  countTicketsHoldingOption: vi.fn(),
+  deleteProjectFieldOption: vi.fn(),
 }))
 
 const mockCreate = vi.mocked(createProjectFieldOption)
 const mockRename = vi.mocked(renameProjectFieldOption)
+const mockCount = vi.mocked(countTicketsHoldingOption)
+const mockDelete = vi.mocked(deleteProjectFieldOption)
 
 const FIELD: ProjectField = {
   id: 'f1',
@@ -49,7 +58,7 @@ const LOW: ProjectFieldOption = {
 }
 const OPTIONS = [HIGH, LOW]
 
-const noopHandlers = { onCreated: vi.fn(), onUpdated: vi.fn() }
+const noopHandlers = { onCreated: vi.fn(), onUpdated: vi.fn(), onDeleted: vi.fn() }
 
 /** The row for an option, found by the label it renders. Scoping every DOM-text assertion to
  *  the row is the SPRIN-67 discipline carried over from `CustomFieldSettings.test.tsx`: an
@@ -63,6 +72,8 @@ function rowFor(label: string): HTMLElement {
 beforeEach(() => {
   mockCreate.mockReset()
   mockRename.mockReset()
+  mockCount.mockReset()
+  mockDelete.mockReset()
 })
 
 describe('CustomFieldOptions', () => {
@@ -91,6 +102,10 @@ describe('CustomFieldOptions', () => {
     render(<CustomFieldOptions field={FIELD} options={[]} {...noopHandlers} />)
     const empty = screen.getByText('No options yet.')
     expect(empty).toBeInTheDocument()
+    // Guarded against `aria-hidden`, mirroring CustomFieldSettings.test.tsx's identical "No X
+    // yet." assertion: `getByText` reaches hidden text just as happily as visible text, so
+    // without this an `aria-hidden="true"` on the paragraph would leave every test here green.
+    expect(empty).not.toHaveAttribute('aria-hidden')
     // Positive control: `queryByRole` EXCLUDES `aria-hidden`, so an absence check on the list
     // alone would not distinguish "no rows" from "rows hidden".
     expect(screen.queryAllByRole('listitem')).toHaveLength(0)
@@ -271,6 +286,52 @@ describe('CustomFieldOptions', () => {
 
       expect(await within(rowFor('Low')).findByRole('alert')).toBeInTheDocument()
       expect(mockRename).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('deleting an option', () => {
+    it('shows how many tickets hold the option before committing', async () => {
+      const u = userEvent.setup()
+      mockCount.mockResolvedValue(3)
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      expect(await screen.findByText(/3 tickets/i)).toBeInTheDocument()
+      expect(mockDelete).not.toHaveBeenCalled()
+    })
+
+    it('reads the count only when the confirm opens, not on render', () => {
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+      expect(mockCount).not.toHaveBeenCalled()
+    })
+
+    it('BLOCKS the delete when the count could not be read', async () => {
+      const u = userEvent.setup()
+      mockCount.mockRejectedValue(new Error('boom'))
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+
+      // Zero is what UNLOCKS a destructive action, so an unknown count must not read as zero.
+      expect(await screen.findByRole('alert')).toHaveTextContent(/could not check/i)
+      const confirm = screen.getByRole('button', { name: 'Remove option' })
+      expect(confirm).toBeDisabled()
+    })
+
+    it('deletes on confirm and hands the removal up', async () => {
+      const u = userEvent.setup()
+      mockCount.mockResolvedValue(0)
+      mockDelete.mockResolvedValue({ ok: true, value: undefined })
+      const onDeleted = vi.fn()
+      render(
+        <CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} onDeleted={onDeleted} />,
+      )
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      await u.click(await screen.findByRole('button', { name: 'Remove option' }))
+
+      expect(mockDelete).toHaveBeenCalledWith('f1', 'low')
+      expect(onDeleted).toHaveBeenCalledWith('f1', 'low')
     })
   })
 
