@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createProjectFieldOption, listProjectFieldOptions, optionsForField } from './project-field-options'
+import {
+  countTicketsHoldingOption,
+  createProjectFieldOption,
+  deleteProjectFieldOption,
+  listProjectFieldOptions,
+  optionsForField,
+  renameProjectFieldOption,
+} from './project-field-options'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
@@ -183,5 +190,103 @@ describe('createProjectFieldOption', () => {
       existing: [],
     })
     expect(result).toEqual({ ok: false, error: 'unknown' })
+  })
+})
+
+// The update chain gets its OWN link functions past `.eq()`, for the same reason the insert
+// chain does not reuse the read chain: `.update()` starts a different shape than `.select()`
+// does. The terminal `single` mock IS shared with the insert chain on purpose — both chains
+// end in `.select().single()` resolving the same `{ data, error }` shape, and every test
+// calls `mockWrite()` immediately before acting, so there is nothing for two callers of
+// `single` to collide on.
+const selectUpdate = vi.fn(() => ({ single }))
+const eqUpdateSlug = vi.fn(() => ({ select: selectUpdate }))
+const eqUpdateField = vi.fn(() => ({ eq: eqUpdateSlug }))
+const update = vi.fn(() => ({ eq: eqUpdateField }))
+
+describe('renameProjectFieldOption', () => {
+  beforeEach(() => {
+    vi.mocked(supabase.from).mockReturnValue({ update } as never)
+  })
+
+  // This one assertion pins TWO properties at once: the payload carries `label` and NOTHING
+  // else (the grant is column-scoped, so any other key is a 42501 a mocked test cannot see),
+  // and the label is TRIMMED before it is sent — asserted EXACTLY, not with
+  // `objectContaining`, the same discipline as `createProjectFieldOption`'s trim test.
+  it('sends label ALONE, trimmed, filtered on both key columns', async () => {
+    mockWrite({ ...LOW, label: 'Lowest' })
+    await renameProjectFieldOption('f1', 'low', '  Lowest  ')
+    expect(update).toHaveBeenCalledWith({ label: 'Lowest' })
+    expect(eqUpdateField).toHaveBeenCalledWith('field_id', 'f1')
+    expect(eqUpdateSlug).toHaveBeenCalledWith('slug', 'low')
+  })
+})
+
+// The delete chain gets its OWN link functions for the same reason: `.eq()` here terminates
+// in `.select('slug')` rather than `.order()` or `.select().single()`, so sharing a mock with
+// either other chain could only return one shape.
+const deleteSelect = vi.fn()
+const eqDeleteSlug = vi.fn(() => ({ select: deleteSelect }))
+const eqDeleteField = vi.fn(() => ({ eq: eqDeleteSlug }))
+const del = vi.fn(() => ({ eq: eqDeleteField }))
+
+describe('deleteProjectFieldOption', () => {
+  beforeEach(() => {
+    vi.mocked(supabase.from).mockReturnValue({ delete: del } as never)
+  })
+
+  it('filters the delete on BOTH key columns, not field_id alone', async () => {
+    deleteSelect.mockResolvedValue({ data: [{ slug: 'low' }], error: null })
+    await deleteProjectFieldOption('f1', 'low')
+    expect(eqDeleteField).toHaveBeenCalledWith('field_id', 'f1')
+    expect(eqDeleteSlug).toHaveBeenCalledWith('slug', 'low')
+  })
+
+  it('reports stale when no row was deleted', async () => {
+    deleteSelect.mockResolvedValue({ data: [], error: null })
+    await expect(deleteProjectFieldOption('f1', 'low')).resolves.toEqual({
+      ok: false,
+      error: 'stale',
+    })
+  })
+
+  it('succeeds when exactly one row was deleted', async () => {
+    deleteSelect.mockResolvedValue({ data: [{ slug: 'low' }], error: null })
+    await expect(deleteProjectFieldOption('f1', 'low')).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    })
+  })
+})
+
+// The count chain gets its OWN link functions: it reads `ticket_field_values`, not
+// `project_field_options`, and terminates in a head-count response rather than rows.
+const countEqSlug = vi.fn()
+const countEqField = vi.fn(() => ({ eq: countEqSlug }))
+const countSelect = vi.fn(() => ({ eq: countEqField }))
+
+describe('countTicketsHoldingOption', () => {
+  beforeEach(() => {
+    vi.mocked(supabase.from).mockReturnValue({ select: countSelect } as never)
+  })
+
+  it('asks for an exact head count on both key columns', async () => {
+    countEqSlug.mockResolvedValue({ count: 3, error: null })
+    await expect(countTicketsHoldingOption('f1', 'low')).resolves.toBe(3)
+    expect(countSelect).toHaveBeenCalledWith('*', { head: true, count: 'exact' })
+    expect(countEqField).toHaveBeenCalledWith('field_id', 'f1')
+    expect(countEqSlug).toHaveBeenCalledWith('value_option', 'low')
+  })
+
+  it('THROWS on error rather than reporting zero', async () => {
+    countEqSlug.mockResolvedValue({ count: null, error: { message: 'boom' } })
+    await expect(countTicketsHoldingOption('f1', 'low')).rejects.toThrow(
+      'Could not count tickets holding that option: boom',
+    )
+  })
+
+  it('THROWS on a MISSING count, which is not the same as zero', async () => {
+    countEqSlug.mockResolvedValue({ count: null, error: null })
+    await expect(countTicketsHoldingOption('f1', 'low')).rejects.toThrow()
   })
 })

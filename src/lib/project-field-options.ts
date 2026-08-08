@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { ProjectFieldOption } from './domain'
+import type { ProjectFieldOption, ProjectFieldOptionUpdate } from './domain'
 import { uniqueSlugForName } from './project-statuses'
 
 /**
@@ -121,4 +121,82 @@ export async function createProjectFieldOption(input: {
 
   if (error) return { ok: false, error: writeError(error) }
   return { ok: true, value: data as ProjectFieldOption }
+}
+
+/**
+ * Rename an option's LABEL (AC3). `label` is the ONLY column sent, and that is a security
+ * property rather than tidiness: `authenticated` holds UPDATE on `label` alone, so a patch
+ * touching `slug` is refused by Postgres with 42501 before any policy is consulted.
+ *
+ * `satisfies ProjectFieldOptionUpdate` is what makes that structural instead of a comment.
+ * The generated row type offers every column, so `.update({ slug })` would COMPILE and fail
+ * only at runtime against the live database — somewhere a mocked unit test never goes.
+ *
+ * The slug is untouched by construction, which is the whole point: `tfv_option_fk` keys value
+ * rows on the slug, so a rename must rewrite nothing but this one cell. AC3 is therefore true
+ * by construction rather than by care.
+ */
+export async function renameProjectFieldOption(
+  fieldId: string,
+  slug: string,
+  label: string,
+): Promise<OptionWriteResult<ProjectFieldOption>> {
+  const { data, error } = await supabase
+    .from('project_field_options')
+    .update({ label: label.trim() } satisfies ProjectFieldOptionUpdate)
+    .eq('field_id', fieldId)
+    .eq('slug', slug)
+    .select(OPTION_COLUMNS)
+    .single()
+
+  if (error) return { ok: false, error: writeError(error) }
+  return { ok: true, value: data }
+}
+
+/**
+ * Delete an option (AC4). Its value rows go with it via `tfv_option_fk`'s cascade — that is
+ * the AC, not a side effect: refusing the delete instead would make any option that was ever
+ * used permanently undeletable.
+ *
+ * The affected row count is checked EXPLICITLY, like `deleteProjectStatus`, rather than
+ * leaning on `.single()`'s incidental zero-row error. RLS FILTERS a delete rather than raising
+ * on it, so a cross-tenant or already-deleted row comes back as a successful zero-row delete
+ * unless something counts.
+ *
+ * BOTH key columns are filtered. `field_id` alone would delete every option on the field.
+ */
+export async function deleteProjectFieldOption(
+  fieldId: string,
+  slug: string,
+): Promise<OptionWriteResult<void>> {
+  const { data, error } = await supabase
+    .from('project_field_options')
+    .delete()
+    .eq('field_id', fieldId)
+    .eq('slug', slug)
+    .select('slug')
+
+  if (error) return { ok: false, error: writeError(error) }
+  if ((data ?? []).length !== 1) return { ok: false, error: 'stale' }
+  return { ok: true, value: undefined }
+}
+
+/**
+ * How many tickets hold this option (AC4 — the count is shown BEFORE the user commits).
+ *
+ * THROWS rather than resolving to zero on error — and on a MISSING count, treated the same
+ * way — for the same reason `ticketCountsByStatus` does: **zero is what UNLOCKS the
+ * destructive action**, so a failed count reported as zero would offer a delete whose blast
+ * radius the user was told was nil.
+ */
+export async function countTicketsHoldingOption(fieldId: string, slug: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('ticket_field_values')
+    .select('*', { head: true, count: 'exact' })
+    .eq('field_id', fieldId)
+    .eq('value_option', slug)
+
+  if (error) throw new Error(`Could not count tickets holding that option: ${error.message}`)
+  if (count === null) throw new Error('Could not count tickets holding that option: no count')
+  return count
 }
