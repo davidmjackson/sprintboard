@@ -52,6 +52,39 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 60 — housekeeping: SPRIN-57 closed, the advisor baseline corrected
+
+**No feature work.** Two items, both from reading the board against this file.
+
+**SPRIN-57 ("Pivot phase 2 — remove redundant files and code") was Done and nobody had closed
+it.** All three slices had merged — SPRIN-63, SPRIN-69 and SPRIN-58 — leaving an epic sitting in
+To Do that made the board look like it held work it did not. Every candidate target in its
+description was checked against the tree before transitioning rather than inferred from the
+children: `docs/sprintboard.md`, `sprintboard_phase1_backlog.md` and
+`sprintboard_phase1_traceability.md` are gone, and `.env.example` has no stale entries — all five
+variables still have live consumers. `docs/standards-audit-2026-07-25.md` is **still present on
+purpose** (SPRIN-69 kept it for its two non-historical sections), so its presence is not
+outstanding scope. The evidence is on the Jira issue, not only here. Transition id fetched (51),
+never hardcoded.
+
+**`CLAUDE.md` told every migration story to keep `get_advisors` at "zero lints", and that has
+been false for some time.** The rule is now "add no new lints", with the measured baseline stated
+inline. This mattered in both directions: a story taking it literally would either chase
+pre-existing lints it did not cause, or read a non-zero result as its own regression — the same
+inversion session 59 recorded, where "no signature matches, so it must be my diff" is backwards.
+
+**The follow-up entry recording that problem was itself stale, which is worth more than the fix.**
+It said 11 performance lints from 2026-08-05; the real figure on 2026-08-08 is **14** (6
+`unindexed_foreign_keys` INFOs + 8 `auth_rls_initplan` WARNs). SPRIN-88 added
+`ticket_field_values` and its three accepted INFOs, and nothing updated the line that tracked the
+count — a clean instance of [[a-written-record-decays]]. The numbers are now labelled as a
+timestamped observation with an instruction to re-derive, the same treatment the test-file
+tripwire already gets. Also corrected: the sweep has **three** `(select auth.uid())` precedents,
+not one — `project_fields` and `ticket_field_values` were written correctly by SPRIN-90 and -88,
+so neither is flagged.
+
+**Nothing on the board moved except SPRIN-57.** Next is still **SPRIN-92**.
+
 ### Session 59 — SPRIN-89, values on the create-ticket dialog, MERGED (PR #97, `5e8fbe1`)
 
 **Shipped.** Squash-merged to `main` as `5e8fbe1`; `verify` green **on the merge commit itself**
@@ -624,14 +657,24 @@ Engineering items with no story yet. Each is a candidate for one.
   `e2e/happy-path.spec.ts` is not currently a risk; that risk was conditional on the feature
   being *on*. Enabling it is still the recommendation, and doing so means randomising that
   password in the same change.
-- **Supabase advisors are NOT at zero lints, and `CLAUDE.md` implies they are.** Measured
-  2026-08-05: 1 security WARN (the leaked-password one above) and 11 performance lints — three
-  unindexed foreign keys on `tickets`, and **eight `auth_rls_initplan` warnings** where a policy
-  calls bare `auth.uid()` instead of `(select auth.uid())`, re-evaluating it per row. All
-  pre-existing; none introduced by SPRIN-85. The `auth_rls_initplan` fix is mechanical but
-  touches five tables' policies, so it belongs with **SPRIN-75**, not bolted onto a feature
-  story. Note `statuses_owner_delete` already uses the `(select …)` form and is not flagged —
-  the fix has a working precedent in this very schema.
+- **Supabase advisors are NOT at zero lints.** `CLAUDE.md` used to imply they were; **corrected
+  2026-08-08**, which also moved the baseline into `CLAUDE.md` so a story planning a migration
+  reads it without coming here. Re-measured **2026-08-08**: 1 security WARN (the leaked-password
+  one above) and **14** performance lints — **6** `unindexed_foreign_keys` INFOs and **eight
+  `auth_rls_initplan` warnings** where a policy calls bare `auth.uid()` instead of
+  `(select auth.uid())`, re-evaluating it per row. All pre-existing; none introduced by SPRIN-85.
+  The `auth_rls_initplan` fix is mechanical but touches five tables' policies, so it belongs with
+  **SPRIN-75**, not bolted onto a feature story.
+  **This entry was itself stale, which is the point of [[a-written-record-decays]].** It read
+  "11 performance lints — three unindexed foreign keys on `tickets`" from 2026-08-05. SPRIN-88
+  then added `ticket_field_values` and its three accepted INFOs, taking the fk count to 6 and the
+  total to 14, and nothing brought this line with it. Re-derive from `get_advisors`; do not quote
+  this paragraph as current.
+  Two details make the remaining work smaller than it looks. The three `ticket_field_values`
+  INFOs are **closed by David's decision** (keep `(field_id)`, accept them) and are not part of
+  any sweep. And the `(select …)` form now has **three** precedents in this schema, not one:
+  `statuses_owner_delete`, plus every policy on `project_fields` and `ticket_field_values`, which
+  SPRIN-90 and SPRIN-88 wrote correctly — so none of those three tables is flagged.
 - **`StatusWipLimitField` has no `aria-describedby`/`aria-invalid`** linking its error to its
   input, so a screen-reader user who is not focused when the live region fires gets no
   indication the field is invalid. Confirmed by probe. **The same gap exists on the pre-existing
