@@ -101,6 +101,29 @@ describe('createProjectFieldOption', () => {
     })
   })
 
+  // The schema trims at the form edge, but this function is the backstop for every OTHER
+  // caller — same reasoning as createProjectField's trim. `pfo_label_nonempty` checks
+  // `length(label) <= 40` on the STORED value, not a trimmed one, so an untrimmed label can
+  // be wrongly rejected (or silently persisted with stray whitespace) if this trim ever goes
+  // missing. Asserted EXACTLY, not with objectContaining, for the same reason as the
+  // five-column test above.
+  it('trims the label it sends', async () => {
+    mockWrite({ ...LOW, slug: 'medium', label: 'Medium', position: 3 })
+    await createProjectFieldOption({
+      projectId: 'p1',
+      fieldId: 'f1',
+      label: '  Medium  ',
+      existing: ROWS,
+    })
+    expect(insert).toHaveBeenCalledWith({
+      project_id: 'p1',
+      field_id: 'f1',
+      slug: 'medium',
+      label: 'Medium',
+      position: 3,
+    })
+  })
+
   it('derives position as max(position) + 1', async () => {
     mockWrite(LOW)
     await createProjectFieldOption({
