@@ -362,6 +362,22 @@ export type ProjectField = Omit<Tables<'project_fields'>, 'type'> & {
 }
 
 /**
+ * One choosable value of a `select` custom field (SPRIN-92). The definition is
+ * `ProjectField`; the ticket's stored value is `TicketFieldValue.value_option`.
+ *
+ * No narrowing wrapper is needed — unlike `ProjectField.type`, every column here is a
+ * plain scalar with no client-side union to keep honest.
+ */
+export type ProjectFieldOption = Tables<'project_field_options'>
+
+/**
+ * The UPDATE shape, mirroring a column-level GRANT exactly as `ProjectFieldUpdate` does.
+ * `authenticated` holds UPDATE on `label` alone, so `.update({ slug })` must be a COMPILE
+ * error rather than a runtime 42501 discovered only against the live database.
+ */
+export type ProjectFieldOptionUpdate = { label: string }
+
+/**
  * One ticket's value for one custom field (SPRIN-88). The definition is `ProjectField`.
  *
  * `field_type` is narrowed the same way and for the same reason `ProjectField.type` is, and

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { CUSTOM_FIELD_TYPES } from './domain'
-import { AddFieldSchema, RenameFieldSchema } from './field-schemas'
+import { AddFieldSchema, RenameFieldSchema, AddOptionSchema, RenameOptionSchema } from './field-schemas'
 
 describe('AddFieldSchema', () => {
   it('accepts a name and a type', () => {
@@ -111,5 +111,28 @@ describe('RenameFieldSchema', () => {
   // on an existing row, and refusing it would be a constraint the database does not have.
   it('accepts a name with no derivable slug, because a rename never touches the slug', () => {
     expect(RenameFieldSchema.safeParse({ name: '!!!' }).success).toBe(true)
+  })
+})
+
+describe('AddOptionSchema', () => {
+  it('trims the label', () => {
+    expect(AddOptionSchema.parse({ label: '  High  ' })).toEqual({ label: 'High' })
+  })
+
+  it('refuses an empty label', () => {
+    const result = AddOptionSchema.safeParse({ label: '   ' })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe('Give the option a label')
+  })
+
+  it('refuses a label over 40 characters, matching pfo_label_nonempty', () => {
+    const result = AddOptionSchema.safeParse({ label: 'x'.repeat(41) })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.message).toBe('Keep the label to 40 characters or fewer')
+  })
+
+  it('refuses a label with no derivable slug, which Rename accepts', () => {
+    expect(AddOptionSchema.safeParse({ label: '参照' }).success).toBe(false)
+    expect(RenameOptionSchema.safeParse({ label: '参照' }).success).toBe(true)
   })
 })
