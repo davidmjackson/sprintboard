@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
 import { DEFAULT_PROJECT_STATUSES } from '@/lib/domain'
@@ -1765,25 +1765,187 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
-     * NARROWED by SPRIN-91, not deleted, and the distinction matters.
+     * NARROWED by SPRIN-91 and now CASHED IN by SPRIN-93. Neither half was deleted, and that
+     * distinction is the whole reason the block below exists.
      *
-     * This test was written to pin story 1's no-INSERT/no-DELETE state so that stories 2 and 6
-     * could not widen the privilege silently — "deny by default, widen visibly". Migration B
-     * grants INSERT, so the INSERT half did its job and went red; it is replaced below by
-     * assertions that prove the policy the grant makes reachable.
+     * The original test pinned story 1's no-INSERT/no-DELETE state so that stories 2 and 6 could
+     * not widen either privilege silently — "deny by default, widen visibly". Migration B granted
+     * INSERT, so the INSERT half did its job and went red; it was replaced by the assertions
+     * further down that prove the policy the grant makes reachable.
      *
-     * The DELETE half stays exactly as it was. It is story 6's tripwire and deleting the whole
-     * test would throw it away — which is the easy, tidy-looking mistake here, since the test's
-     * name no longer matches half its body.
+     * `docs/migrations/sprin-93-project-fields-delete.sql` now grants DELETE, so the DELETE half
+     * has fired too, and it is replaced here by the proof of what it was guarding. Deleting a
+     * fired tripwire outright is the easy, tidy-looking mistake: the assertion it was standing in
+     * for was never "nobody can delete", it was "nothing widens this without a test arriving in
+     * the same change".
+     *
+     * WHY IT TAKES A BLOCK RATHER THAN ONE TEST. Postgres has no column-level DELETE, so the
+     * grant is TABLE-WIDE and `fields_owner_delete` is the only thing standing in front of it.
+     * Its blast radius is the largest of the three tables in this schema carrying such a grant: a
+     * single row removed here cascades into ticket data through `tfv_field_fk`/`tfv_type_fk` AND
+     * into option data through `pfo_field_fk`.
+     *
+     * ROW COUNTS, NEVER `error === null`, on every cross-tenant assertion below. RLS FILTERS a
+     * delete rather than raising on it, so a stranger's delete of another tenant's row comes back
+     * as `{ error: null, data: [] }` — byte for byte what a wide-open policy returns for a row it
+     * really did remove. A test written on `error` alone would pass with `fields_owner_delete`
+     * dropped outright, and CI would not have caught it either. That is not hypothetical: it is
+     * what SPRIN-92's review found on this table's sibling.
      */
-    it('an authenticated owner still holds no DELETE on their own fields', async () => {
-      const del = await a.from('project_fields').delete().eq('id', fieldA)
-      expect(del.error?.code).toBe('42501')
-      // The MESSAGE too, applying the same standard this story insists on for the INSERT
-      // proof. A owns this row, so RLS could not be the author of a 42501 here and the code
-      // alone is unambiguous today — but it stops being unambiguous the moment story 6 grants
-      // DELETE, and then this test must fail for the RIGHT reason or not at all.
-      expect(del.error?.message).toMatch(/permission denied/)
+    describe('the owner can DELETE a field, and only the owner (SPRIN-93)', () => {
+      /**
+       * A FRESH field per test, never `fieldA`.
+       *
+       * Three of the four tests here destroy the row they are handed and the other two are only
+       * meaningful while it survives, so one shared fixture would make each test depend on the
+       * order of the others. `fieldA` especially: six tests above assert against that id, so
+       * deleting it would retroactively break tests written before this migration existed —
+       * exactly the failure this suite hit one story ago, when a migration re-judged fixtures
+       * older than itself and two SPRIN-88 tests went red for reasons nothing local could see.
+       *
+       * Typed `select` so the cascade test can hang a `project_field_options` row off it without
+       * seeding a second field. The slug is deliberately NOT the name lowercased — a fixture
+       * where they match cannot tell a read of one from a read of the other.
+       */
+      let doomed: string
+      let seeded = 0
+
+      beforeEach(async () => {
+        seeded += 1
+        const { data, error } = await a
+          .from('project_fields')
+          .insert({
+            project_id: projectA,
+            slug: `doomed_field_${seeded}`,
+            name: `SPRIN-93 target ${seeded}`,
+            type: 'select',
+          })
+          .select('id')
+          .single()
+        if (error) throw new Error(`Fixture: could not seed SPRIN-93 field: ${error.message}`)
+        doomed = data.id
+      })
+
+      /** Option rows for a field, counted PAST RLS so "hidden" cannot pass for "gone". */
+      async function optionCount(fieldId: string): Promise<number | null> {
+        const { count } = await adminClient()
+          .from('project_field_options')
+          .select('*', { head: true, count: 'exact' })
+          .eq('field_id', fieldId)
+        return count
+      }
+
+      /** Ticket value rows for a field, counted PAST RLS for the same reason. */
+      async function valueCount(fieldId: string): Promise<number | null> {
+        const { count } = await adminClient()
+          .from('ticket_field_values')
+          .select('*', { head: true, count: 'exact' })
+          .eq('field_id', fieldId)
+        return count
+      }
+
+      it('A deletes its own field, and the row is really gone', async () => {
+        const removed = await a.from('project_fields').delete().eq('id', doomed).select('id')
+        expect(removed.error).toBeNull()
+        // ONE ROW, not merely "no error", and this count is the positive control for every
+        // zero-count assertion below it in this block: it is what establishes that the grant
+        // landed and that the DELETE verb reaches this table at all. Without it, a `[]` in the
+        // stranger test would be just as consistent with "deletes do not work here" as with
+        // "the policy refused".
+        expect(removed.data).toHaveLength(1)
+        expect(removed.data?.[0]?.id).toBe(doomed)
+
+        // Read back through adminClient(), which bypasses RLS. As `a`, a row still present but
+        // hidden by a broken `fields_owner_read` would be indistinguishable from a row deleted.
+        const { data: after } = await adminClient()
+          .from('project_fields')
+          .select('id')
+          .eq('id', doomed)
+        expect(after).toEqual([])
+      })
+
+      it("B's delete removes ZERO of A's field rows, and the row survives", async () => {
+        const attempt = await b.from('project_fields').delete().eq('id', doomed).select('id')
+        // `authenticated` holds DELETE on this table role-wide — grants are per ROLE, never per
+        // row — so B's request reaches `fields_owner_delete` rather than dying on the privilege
+        // check. RLS answers by matching zero rows, with no error at all.
+        expect(attempt.error).toBeNull()
+        // THE ROW COUNT IS THE ASSERTION. The `error` check above describes the mechanism; it is
+        // not a control, because it passes just as happily when the policy is dropped and B's
+        // delete genuinely succeeds.
+        expect(attempt.data).toEqual([])
+
+        // Positive control, past RLS: the row B could not delete is still there. Without it, a
+        // fixture that silently failed to insert produces exactly the same `[]` above.
+        const { data: intact } = await adminClient()
+          .from('project_fields')
+          .select('id')
+          .eq('id', doomed)
+        expect(intact).toHaveLength(1)
+      })
+
+      it('an anonymous caller is refused by the GRANT, not by the policy', async () => {
+        const del = await anonClient().from('project_fields').delete().eq('id', doomed)
+        expect(del.error?.code).toBe('42501')
+        // THE MESSAGE, not the SQLSTATE alone. `fields_owner_delete` carries no `TO` clause, so
+        // it applies to `public`, which INCLUDES anon — and an RLS refusal raises 42501 too.
+        // `permission denied` is emitted by the privilege check; an RLS refusal says "violates
+        // row-level security policy" instead. Drop this line and the assertion above stays green
+        // on the day a migration hands DELETE to anon, because the policy would then refuse the
+        // same request with the same code. Migration E names `anon` in its revoke for this
+        // reason; this is the live half of that.
+        expect(del.error?.message).toMatch(/permission denied/)
+
+        const { data: intact } = await adminClient()
+          .from('project_fields')
+          .select('id')
+          .eq('id', doomed)
+        expect(intact).toHaveLength(1)
+      })
+
+      /**
+       * AC3, exercised through the APP ROLE rather than adminClient().
+       *
+       * The cascades themselves were built by stories 3 and 5 and this migration adds none — but
+       * until DELETE was granted, nothing could prove the privilege the app actually holds is
+       * enough to fire them. A cascade proven only through adminClient() proves a property of the
+       * schema; this proves the property the feature depends on.
+       */
+      it('deleting a field takes its option rows and its ticket values with it', async () => {
+        const option = await a.from('project_field_options').insert({
+          project_id: projectA,
+          field_id: doomed,
+          slug: 'sprin93_low',
+          label: 'Low',
+          position: 1,
+        })
+        expect(option.error).toBeNull()
+
+        const value = await a.from('ticket_field_values').insert({
+          ticket_id: ticketA,
+          project_id: projectA,
+          field_id: doomed,
+          field_type: 'select',
+          value_option: 'sprin93_low',
+        })
+        expect(value.error).toBeNull()
+
+        // BOTH SIDES COUNTED BEFORE THE DELETE. "Zero rows afterwards" establishes nothing
+        // unless something first establishes there were rows to lose — a seed that silently
+        // wrote nothing yields the same zero, and the cascade would be proven by a fixture bug.
+        expect(await optionCount(doomed)).toBe(1)
+        expect(await valueCount(doomed)).toBe(1)
+
+        const removed = await a.from('project_fields').delete().eq('id', doomed).select('id')
+        expect(removed.error).toBeNull()
+        expect(removed.data).toHaveLength(1)
+
+        // Counted past RLS again: `options_owner_read` and `tfv_owner_read` both reach their
+        // table through an EXISTS on the field's project, so as `a` a STRANDED row would read as
+        // absent whether the cascade cleared it or a policy merely hid it.
+        expect(await optionCount(doomed)).toBe(0)
+        expect(await valueCount(doomed)).toBe(0)
+      })
     })
 
     // ---- SPRIN-91: the INSERT grant, and the policy it finally makes provable ----
@@ -2751,7 +2913,11 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       })
       expect(seeded.error).toBeNull()
 
-      // Through adminClient: `authenticated` holds no DELETE on project_fields until story 6.
+      // Through adminClient(), which is now a CHOICE rather than a necessity: SPRIN-93 granted
+      // `authenticated` DELETE on project_fields, and the SPRIN-93 block above proves the app
+      // role fires this very cascade itself. It stays adminClient() here so this test keeps
+      // isolating the CASCADE — a delete as `a` would also depend on that grant and on
+      // `fields_owner_delete`, so a red result would no longer say which of the three broke.
       const removed = await adminClient()
         .from('project_fields')
         .delete()
@@ -2852,8 +3018,10 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       // Deleting the tickets cascades away any ticket_field_values rows still attached to
       // them. Deleting the field cascades away its options (pfo_field_fk) and any surviving
       // value rows (tfv_field_fk / tfv_type_fk) — the same pair the SPRIN-88 block's own
-      // cascade test exercises directly. `authenticated` holds no DELETE on project_fields
-      // until story 6, so this goes through adminClient() rather than `a`.
+      // cascade test exercises directly. SPRIN-93 has since granted `authenticated` DELETE on
+      // project_fields, so `a` would work here now — adminClient() stays because a TEARDOWN must
+      // not depend on the privilege the suite is testing. If a broken grant or a broken policy is
+      // what reddened the run, the cleanup still has to happen.
       await a.from('tickets').delete().eq('id', ticketId)
       await a.from('tickets').delete().eq('id', otherTicketId)
       await adminClient().from('project_fields').delete().eq('id', fieldId)
