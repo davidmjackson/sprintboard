@@ -191,10 +191,23 @@ after a reload") true without a refetch.
 Follows `AddStatusForm` exactly: `useForm` + `zodResolver`, two native `<select>`s with
 `selectClass`, `SubmitButton`, `FormRootError` for the failure banner.
 
-- Takes `projectId` in addition to `cadence`, and an `onUpdated` callback — the shell owns the
-  project object, the same way `StatusSettings` hands every write result up rather than
-  keeping a second copy. **No local mirror of the cadence**, so AC3's "previous values remain
-  shown" needs no rollback code: a failed write simply never calls `onUpdated`.
+- Takes `projectId` in addition to `cadence`, and an `onUpdated` callback, so the write result
+  is handed up rather than mirrored locally — the discipline `StatusSettings` follows.
+  **No local mirror of the cadence**, so AC3's "previous values remain shown" needs no
+  rollback code: a failed write simply never calls `onUpdated`.
+
+  **Correction, found while building.** An earlier draft of this line said "the shell owns the
+  project object, the same way `StatusSettings` hands every write result up". That is true of
+  statuses and **false of the project**: `ProjectShellContext` has reducers for tickets,
+  sprints, statuses, fields and options, and none for the project — `ProjectShell` reads it
+  with a `find` over `AppLayout`'s list. So the patch lives in `SettingsTab` (a
+  `usePatchedProject` hook) rather than on the context, which keeps the change inside this
+  story's file set instead of reaching into `ProjectShell.tsx` and `AppLayout.tsx`.
+
+  It carries an **id guard**: the tab is a nested route element, so switching project
+  re-renders rather than remounts it, and without the comparison one project's saved cadence
+  would be shown over the next project's real values. Lifting the patch onto the context is
+  the right move the day a second tab reads the cadence — which is SPRIN-96.
 - `defaultValues` come from the `cadence` prop.
 - The failure banner distinguishes the two tags. `'forbidden'` gets its own sentence naming a
   permissions problem rather than inviting a retry that will fail identically forever — the

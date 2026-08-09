@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
 import type { ProjectShellContext } from './ProjectShell'
-import type { ProjectStatus } from '@/lib/domain'
+import type { Project, ProjectStatus } from '@/lib/domain'
 import { hasSprints, hasWipLimits } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
 import { CadenceSettings } from './CadenceSettings'
@@ -53,6 +53,30 @@ function useTicketCounts(
 }
 
 /**
+ * The project row this tab RENDERS, plus the patch a successful project write applies to it
+ * (SPRIN-97).
+ *
+ * **The patch lives here rather than in `ProjectShell`, and that is a deviation worth stating.**
+ * Every other write on this tab hands its row to a reducer on `ProjectShellContext`, because the
+ * shell owns those lists. It does not own `project`: the shell finds it in `AppLayout`'s
+ * `projects` list (`projects.find((p) => p.id === projectId)`), so a project reducer would have
+ * to be threaded from `AppLayout` down through `ProjectShell` and published on the context.
+ * That is the right end state and SPRIN-96 — which reads the cadence to pre-fill a sprint's
+ * dates from a DIFFERENT tab — is where it starts paying for itself. Today nothing outside this
+ * section renders the cadence, so the patch is kept where its only reader is.
+ *
+ * **The id guard is not defensive dressing.** This tab is a nested route element, so switching
+ * projects re-renders it with a new `project` instead of remounting it — the same hazard
+ * `useTicketCounts`'s effect deps and `patchLoaded`'s "does this belong to this project" check
+ * exist for. Without the comparison, a cadence saved on one project would go on being shown
+ * over the next project's real values.
+ */
+function usePatchedProject(project: Project): [Project, (updated: Project) => void] {
+  const [patched, setPatched] = useState<Project | null>(null)
+  return [patched && patched.id === project.id ? patched : project, setPatched]
+}
+
+/**
  * The project's settings — a fourth tab beside Board, Backlog and Sprints (SPRIN-77).
  *
  * A tab rather than a dialog because the shell already publishes `statuses` and
@@ -95,6 +119,7 @@ export function SettingsTab() {
   } = useOutletContext<ProjectShellContext>()
 
   const counts = useTicketCounts(project.id, statuses, statusesPhase === 'loaded')
+  const [shown, onCadenceUpdated] = usePatchedProject(project)
 
   if (statusesPhase === 'failed') return <LoadFailure resource="statuses" onRetry={onRetry} />
   if (statusesPhase !== 'loaded') return <p className="text-muted-foreground text-sm">Loading…</p>
@@ -105,8 +130,17 @@ export function SettingsTab() {
           than the other way round. Gated on hasSprints, not on !hasWipLimits: they are two
           different questions that share an answer only while there are exactly two project
           types. No phase gate of its own — the cadence rides on `project`, which the shell has
-          already resolved by the time this tab renders at all. */}
-      {hasSprints(project) && <CadenceSettings cadence={project} />}
+          already resolved by the time this tab renders at all.
+
+          SPRIN-97 makes it a form. The gate stays exactly here — the project-type comparison
+          belongs in the one place `project-type-single-expression.test.ts` can see it — and it
+          reads the CONTEXT's `project`, not the patched copy: `project_type` has no UPDATE
+          grant at all, so a patch can never change the answer, and reading `shown` here would
+          make the gate look like it depended on a write. `cadence` is the patched row, so a
+          saved cadence is stated in words without a reload. */}
+      {hasSprints(project) && (
+        <CadenceSettings projectId={project.id} cadence={shown} onUpdated={onCadenceUpdated} />
+      )}
 
       <StatusSettings
         projectId={project.id}

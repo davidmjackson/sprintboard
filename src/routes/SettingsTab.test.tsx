@@ -20,6 +20,7 @@ import {
   deleteProjectFieldOption,
   renameProjectFieldOption,
 } from '@/lib/project-field-options'
+import { updateProjectCadence } from '@/lib/projects'
 
 // SPRIN-91. Mocked because the tests below drive the custom-field add and rename forms through
 // this tab, and the real writes reach PostgREST. `useTaggedRead` is not involved here, so an
@@ -46,6 +47,14 @@ vi.mock('@/lib/project-field-options', async (orig) => ({
   renameProjectFieldOption: vi.fn(),
   deleteProjectFieldOption: vi.fn(),
   countTicketsHoldingOption: vi.fn(),
+}))
+
+// SPRIN-97. The cadence section is a FORM now and this file renders the real one, so the save
+// button has a live PostgREST write behind it — the same reason the field and option writes
+// above are mocked. `listProjects`/`createProject` are spread through untouched.
+vi.mock('@/lib/projects', async (orig) => ({
+  ...(await orig<typeof import('@/lib/projects')>()),
+  updateProjectCadence: vi.fn(),
 }))
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
@@ -129,29 +138,34 @@ const STATUSES = [
   { id: 'st2', slug: 'shipped', name: 'Shipped', category: 'done', position: 2, wip_limit: null },
 ] as unknown as ProjectStatus[]
 
-function renderTab(
-  ctx: {
-    project?: Project
-    statuses?: ProjectStatus[]
-    statusesPhase?: ReadPhase
-    fields?: ProjectField[]
-    fieldsPhase?: ReadPhase
-    options?: ProjectFieldOption[]
-    optionsPhase?: ReadPhase
-    onFieldCreated?: (field: ProjectField) => void
-    onFieldUpdated?: (field: ProjectField) => void
-    onFieldDeleted?: (id: string) => void
-    // SPRIN-93. Overridable only so the crossed-wire test below can hand in its OWN spy: this
-    // callback shares `onFieldDeleted`'s exact signature, which is what makes the swap invisible
-    // to the compiler and worth a test.
-    onStatusDeleted?: (id: string) => void
-    onOptionCreated?: (option: ProjectFieldOption) => void
-    onOptionUpdated?: (option: ProjectFieldOption) => void
-    onOptionDeleted?: (fieldId: string, slug: string) => void
-    onRetry?: () => void
-  } = {},
-) {
-  const context = {
+type ContextOverrides = {
+  project?: Project
+  statuses?: ProjectStatus[]
+  statusesPhase?: ReadPhase
+  fields?: ProjectField[]
+  fieldsPhase?: ReadPhase
+  options?: ProjectFieldOption[]
+  optionsPhase?: ReadPhase
+  onFieldCreated?: (field: ProjectField) => void
+  onFieldUpdated?: (field: ProjectField) => void
+  onFieldDeleted?: (id: string) => void
+  // SPRIN-93. Overridable only so the crossed-wire test below can hand in its OWN spy: this
+  // callback shares `onFieldDeleted`'s exact signature, which is what makes the swap invisible
+  // to the compiler and worth a test.
+  onStatusDeleted?: (id: string) => void
+  onOptionCreated?: (option: ProjectFieldOption) => void
+  onOptionUpdated?: (option: ProjectFieldOption) => void
+  onOptionDeleted?: (fieldId: string, slug: string) => void
+  onRetry?: () => void
+}
+
+/**
+ * The outlet context, built but NOT rendered — split out of `renderTab` for SPRIN-97, whose
+ * project-switch test has to render the same tree TWICE with two different projects and needs
+ * a second context to do it with. `renderTab` is unchanged from the caller's side.
+ */
+function buildContext(ctx: ContextOverrides = {}): ProjectShellContext {
+  return {
     project,
     statuses: STATUSES,
     statusesPhase: 'loaded',
@@ -190,15 +204,26 @@ function renderTab(
     onStatusesReordered: vi.fn(),
     ...ctx,
   } as unknown as ProjectShellContext
-  render(
+}
+
+/** The tab under its route, as an ELEMENT — so a test can re-render the identical tree with a
+ *  different context and get a re-render rather than a remount, which is what a project switch
+ *  actually is here (the tab is a nested route element, so react-router reuses it). */
+function tabTree(context: ProjectShellContext) {
+  return (
     <MemoryRouter initialEntries={['/settings']}>
       <Routes>
         <Route path="/" element={<Outlet context={context} />}>
           <Route path="settings" element={<SettingsTab />} />
         </Route>
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   )
+}
+
+function renderTab(ctx: ContextOverrides = {}) {
+  const context = buildContext(ctx)
+  render(tabTree(context))
   return context
 }
 
@@ -339,6 +364,99 @@ describe('SettingsTab sprint cadence (SPRIN-94)', () => {
     // that renders and is merely hidden from the a11y tree. The raw DOM query is what makes
     // this an assertion about the section not EXISTING.
     expect(document.body.textContent).not.toContain('3 weeks, starting Tuesday')
+  })
+})
+
+/**
+ * SPRIN-97: the SEAM between this tab and the cadence form.
+ *
+ * `CadenceSettings.test.tsx` owns the form's own behaviour — the two pickers, the coercion, the
+ * two failure sentences. It renders the component directly, hands in its own `projectId` and
+ * `onUpdated`, and therefore cannot see either of the two wires this tab is responsible for:
+ * that the id reaching the write is THIS project's, and that a saved row is actually applied to
+ * what the section states.
+ *
+ * The second of those is the deviation this story records. Every other write here hands its row
+ * to a `ProjectShellContext` reducer, but the shell does not own `project` — it finds it in
+ * `AppLayout`'s list — so the patch lives in `usePatchedProject` in `SettingsTab` until a story
+ * needs the cadence outside this tab (SPRIN-96). Being tab-local is exactly why it needs a test
+ * here: there is no shell reducer whose own suite would cover it.
+ */
+describe('SettingsTab saves the sprint cadence (SPRIN-97)', () => {
+  const scrum = { ...project, sprint_length_weeks: 3, sprint_start_weekday: 6 } as Project
+
+  beforeEach(() => {
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+    vi.mocked(updateProjectCadence).mockReset()
+  })
+
+  it('saves against THIS project and restates the saved cadence without a reload', async () => {
+    const u = userEvent.setup()
+    // NOT the shared 'p1'. With 'p1', replacing `projectId={project.id}` with the literal
+    // survives the whole suite, because every other fixture here uses that same value — the
+    // confound `CustomFieldSettings`' own seam test had to break for the same reason.
+    const saved = {
+      ...scrum,
+      id: 'p-distinct',
+      sprint_length_weeks: 1,
+      sprint_start_weekday: 5,
+    } as Project
+    vi.mocked(updateProjectCadence).mockResolvedValue({ ok: true, project: saved })
+    renderTab({ project: { ...scrum, id: 'p-distinct' } })
+
+    const section = screen.getByRole('region', { name: /sprint cadence/i })
+    await u.selectOptions(within(section).getByRole('combobox', { name: /sprint length/i }), '1')
+    await u.selectOptions(within(section).getByRole('combobox', { name: /start day/i }), '5')
+    await u.click(within(section).getByRole('button', { name: 'Save cadence' }))
+
+    // AC2 on this surface: the section states the SAVED row, and it says so in words rather
+    // than only inside the pickers — the summary is what a reader of the tab actually sees.
+    expect(await within(section).findByText('1 week, starting Friday')).toBeInTheDocument()
+    expect(within(section).queryByText('3 weeks, starting Saturday')).not.toBeInTheDocument()
+
+    expect(vi.mocked(updateProjectCadence)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(updateProjectCadence)).toHaveBeenCalledWith('p-distinct', {
+      sprint_length_weeks: 1,
+      sprint_start_weekday: 5,
+    })
+  })
+
+  // AC3 through the tab: a failed write hands nothing up, so there is nothing to patch and the
+  // previous cadence is still what the section states — no rollback code anywhere in the chain.
+  it('leaves the stated cadence alone when the write fails', async () => {
+    const u = userEvent.setup()
+    vi.mocked(updateProjectCadence).mockResolvedValue({ ok: false, error: 'unknown' })
+    renderTab({ project: scrum })
+
+    const section = screen.getByRole('region', { name: /sprint cadence/i })
+    await u.selectOptions(within(section).getByRole('combobox', { name: /sprint length/i }), '1')
+    await u.click(within(section).getByRole('button', { name: 'Save cadence' }))
+
+    expect(await within(section).findByRole('alert')).toBeInTheDocument()
+    expect(within(section).getByText('3 weeks, starting Saturday')).toBeInTheDocument()
+  })
+
+  /**
+   * The guard on the patch. This tab is a nested route element, so switching projects
+   * RE-RENDERS it with a new `project` rather than remounting it — a patch kept without an id
+   * comparison would go on being shown over the next project's real values. Mutating
+   * `usePatchedProject` to `patched ?? project` turns this red and nothing else in the suite.
+   */
+  it('drops a saved cadence when the tab is re-used for a different project', async () => {
+    const u = userEvent.setup()
+    const saved = { ...scrum, sprint_length_weeks: 1, sprint_start_weekday: 5 } as Project
+    vi.mocked(updateProjectCadence).mockResolvedValue({ ok: true, project: saved })
+    const { rerender } = render(tabTree(buildContext({ project: scrum })))
+
+    const section = screen.getByRole('region', { name: /sprint cadence/i })
+    await u.click(within(section).getByRole('button', { name: 'Save cadence' }))
+    expect(await within(section).findByText('1 week, starting Friday')).toBeInTheDocument()
+
+    const other = { ...scrum, id: 'p2', sprint_length_weeks: 4, sprint_start_weekday: 2 } as Project
+    rerender(tabTree(buildContext({ project: other })))
+
+    expect(screen.getByText('4 weeks, starting Tuesday')).toBeInTheDocument()
+    expect(screen.queryByText('1 week, starting Friday')).not.toBeInTheDocument()
   })
 })
 

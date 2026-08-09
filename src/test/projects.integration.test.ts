@@ -201,6 +201,93 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
     expect(after.data).toEqual([{ project_type: 'scrum' }])
   }, 30_000)
 
+  /**
+   * SPRIN-97 AC1 — the owner CAN rewrite the two cadence columns. Migration B
+   * (`docs/migrations/sprin-97-project-cadence-update.sql`) runs
+   * `grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenticated`,
+   * the first UPDATE privilege this table has carried since SPRIN-82 revoked the table-wide
+   * one.
+   *
+   * THIS TEST AND THE ONE DIRECTLY ABOVE IT ARE A PAIR, and neither means much alone. The
+   * property is "this column set is writable and the rest of the table is not", which no
+   * single assertion states: a column grant and a table grant are indistinguishable from the
+   * writable side, and an un-applied migration and a correctly narrow one are
+   * indistinguishable from the refused side. They fail DISJOINTLY, which is what makes the
+   * pair worth its two round trips:
+   *
+   *   migration B never applied            -> THIS test reddens; the project_type test does not
+   *   widened to `grant update on projects` -> the project_type test reddens; this one does not
+   *
+   * IT IS ALSO THE ONLY POSITIVE OBSERVATION THAT MIGRATION B EXISTS. Everything else this
+   * story ships runs against source text or a mocked client — the AST allowlist in
+   * `project-type-immutability.test.ts` reads the app's payload literal, and
+   * `projects.test.ts` mocks the supabase client — so on a database where the grant was never
+   * applied, every one of them stays green while the Settings form fails with 42501 for every
+   * user forever. (The cross-tenant line in `rls.integration.test.ts` would redden too, since
+   * a missing grant turns its `[]` into a 42501 with `data === null` — but it reddens as an
+   * apparent isolation failure, which is the wrong diagnosis pointing at the wrong story.
+   * This is the test whose failure names the cause.)
+   *
+   * OWNER, and only the owner. `projects_owner` is `for all` on `owner_id = auth.uid()`, so a
+   * stranger's UPDATE is filtered to zero rows whether or not the grant exists — the mirror of
+   * the argument in the docblock above, where owner-vs-stranger decides what a refusal proves.
+   *
+   * The payload names both columns and NOTHING else, deliberately: it is the same shape
+   * `updateProjectCadence` sends, and it never writes `owner_id`, so the one thing this path
+   * cannot produce is the RLS `WITH CHECK` flavour of 42501 the spoofed-owner test below
+   * asserts.
+   *
+   * THE RE-READ IS NOT REDUNDANT. `.select()` on an UPDATE is PostgREST asking for RETURNING:
+   * the statement's own account of what it did, reported before the transaction is anyone
+   * else's business. A separate SELECT is what the table holds afterwards. They differ if the
+   * write never commits, or if an AFTER trigger rewrites the row behind RETURNING's back —
+   * and this story's whole subject is the gap between "the write was accepted" and "the value
+   * is there", which is also exactly what AC2 ("still there after a reload") claims.
+   */
+  it('lets the owner UPDATE both cadence columns (SPRIN-97 grant -> one row)', async () => {
+    // Push before asserting: a failed expect() aborts the body, and a teardown delete is
+    // an obligation where an assertion is only a report.
+    const created = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Cadence update', key: runKey() })
+      .select('id, sprint_length_weeks, sprint_start_weekday')
+      .single()
+
+    if (created.data) createdIds.push(created.data.id)
+
+    expect(created.error).toBeNull()
+    // The starting values are asserted, not assumed, because the update below has to write
+    // something DIFFERENT in both columns: a write of the value a row already holds is
+    // indistinguishable from no write at all, and would pass on a database with no grant if
+    // the grant ever stopped being what refuses. (The defaults themselves are SPRIN-94's
+    // claim, pinned separately at the bottom of this file.)
+    expect(created.data!.sprint_length_weeks).toBe(2)
+    expect(created.data!.sprint_start_weekday).toBe(1)
+    const id = created.data!.id
+
+    // 3 weeks starting Thursday. Both inside the range checks — 1-4 and 1-7 — so a 23514
+    // here would be a constraint regression, not this test picking an illegal value.
+    const { data, error } = await a
+      .from('projects')
+      .update({ sprint_length_weeks: 3, sprint_start_weekday: 4 })
+      .eq('id', id)
+      .select()
+
+    expect(error).toBeNull()
+    // EXACTLY one row. `.eq('id', …)` is not what makes that true — a `.update()` whose
+    // filter went missing would rewrite every project this user owns and still return the
+    // one row this test could match against, so the length is the assertion that catches it.
+    expect(data).toHaveLength(1)
+    expect(data![0]).toMatchObject({ id, sprint_length_weeks: 3, sprint_start_weekday: 4 })
+
+    const after = await a
+      .from('projects')
+      .select('sprint_length_weeks, sprint_start_weekday')
+      .eq('id', id)
+    expect(after.error).toBeNull()
+    expect(after.data).toEqual([{ sprint_length_weeks: 3, sprint_start_weekday: 4 }])
+  }, 30_000)
+
   it('rejects a duplicate key for the same owner (projects_owner_key_unique -> 23505)', async () => {
     const key = runKey()
     const first = await a

@@ -254,6 +254,76 @@ describe('the schema parser can still see the whole truth', () => {
   })
 
   /**
+   * THE SAME DRIFT, ON `projects` — the fourth sighting, and the first where the doc's
+   * statements come from TWO migrations that must be read together.
+   *
+   * `projects` is the security-sensitive one. SPRIN-82 revoked UPDATE table-wide so
+   * `project_type` could not be rewritten; SPRIN-97 granted UPDATE back on exactly the two
+   * cadence columns. The doc has to state both, and a rebuild from a doc missing the revoke
+   * would produce a database where any authenticated user can rewrite `name`, `key` and
+   * `project_type` on their own project — the immutability CLAUDE.md calls non-negotiable,
+   * silently gone, with every live test still green because the live database is built from
+   * the migrations rather than from the doc.
+   *
+   * ORDER IS ASSERTED SEPARATELY, AND IT IS NOT PEDANTRY. `grantStatements` SORTS, so it
+   * compares the two files as SETS and is blind to sequence — and on this pair sequence is
+   * the whole meaning. A table-level `revoke update` CASCADES to column privileges, so
+   * `grant (cadence…)` followed by `revoke update` leaves the table with NO update privilege
+   * at all, while `revoke` followed by `grant` leaves the two columns writable. Those two
+   * documents differ by nothing a sorted comparison can see — and sorted order happens to put
+   * `grant` first, i.e. the broken sequence is the one the set comparison would bless. The
+   * `project_fields` test above can ignore this because its statements are order-independent;
+   * this one cannot.
+   */
+  it('states the same projects grants as the two migrations that applied them', () => {
+    const read = (file: string) => readFileSync(join(MIGRATIONS_DIR, file), 'utf8')
+    const fromMigrations = [
+      ...grantStatements(read('sprin-82-projects-immutable.sql'), 'projects'),
+      ...grantStatements(read('sprin-97-project-cadence-update.sql'), 'projects'),
+    ].sort()
+    const fromDoc = grantStatements(SCHEMA, 'projects')
+
+    expect(
+      fromMigrations.length,
+      'The grant-statement matcher found nothing across the two projects migrations. It has ' +
+        'stopped matching, so the equality below would compare two empty lists and pass ' +
+        'vacuously.',
+    ).toBe(2)
+
+    expect(
+      fromDoc,
+      'docs/sprintboard_phase1_schema.sql no longer states the same projects grants as ' +
+        'docs/migrations/sprin-82-projects-immutable.sql plus ' +
+        'docs/migrations/sprin-97-project-cadence-update.sql. A rebuild from the doc would ' +
+        'produce a DIFFERENT database — and on this table that means project_type ' +
+        'immutability, which nothing else in the gate would notice.',
+    ).toEqual(fromMigrations)
+
+    // Sequence, which the sorted comparison above cannot see. See the docblock: a table-level
+    // revoke cascades to column privileges, so the revoke MUST precede the column grant.
+    const docText = SCHEMA.replace(/--.*$/gm, '')
+    const revokedAt = docText.search(/revoke\s+update\s+on\s+projects\b/i)
+    const grantedAt = docText.search(/grant\s+update\s*\([^)]*\)\s*on\s+projects\b/i)
+
+    expect(
+      revokedAt,
+      'The doc no longer contains a table-level UPDATE revoke on projects.',
+    ).toBeGreaterThan(-1)
+    expect(
+      grantedAt,
+      'The doc no longer contains a column-level UPDATE grant on projects.',
+    ).toBeGreaterThan(-1)
+    expect(
+      revokedAt,
+      'In docs/sprintboard_phase1_schema.sql the column-level UPDATE grant on projects now ' +
+        'comes BEFORE the table-level revoke. A table-level revoke cascades to column ' +
+        'privileges, so applied in that order it would wipe the cadence grant and leave ' +
+        'projects with no update privilege at all — the cadence form would 42501 on every ' +
+        'save. The revoke must come first.',
+    ).toBeLessThan(grantedAt)
+  })
+
+  /**
    * CLAUDE.md: "Every table has RLS. Do not add a table without a policy." That was
    * prose until SPRIN-79 added the first new table since S1.1, and prose is not a
    * control — a table created without a policy is not merely unguarded, it is
