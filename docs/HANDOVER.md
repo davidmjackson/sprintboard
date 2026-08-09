@@ -14,8 +14,11 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:
 custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done** 2026-08-05) →
-**custom fields (71 — in progress)** → sprint cadence (74) → **teams, roles and permissions (75 —
-the security boundary, deliberately last)**.
+**custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (74 — NEXT)** → **teams, roles
+and permissions (75 — the security boundary, deliberately last)**.
+
+**Three of five Rung 3 epics are complete.** The board holds exactly two open items, both epics,
+both undecomposed: SPRIN-74 and SPRIN-75. Neither has stories yet — that is the next planning job.
 
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
@@ -40,12 +43,19 @@ answer:
 | 3 — values on the ticket detail sidebar | SPRIN-88 | **Done** | C, applied |
 | 4 — values on the create-ticket dialog | SPRIN-89 | **Done** | — (none needed, verified) |
 | 5 — single-select fields | SPRIN-92 | **Done** | D, applied |
-| 6 — delete a field, with its value count | **SPRIN-93 ← NEXT** | To Do | grants |
+| 6 — delete a field, with its value count | SPRIN-93 | **Done** | E (grants), applied |
 
-**Epic SPRIN-71 is five of six.** Only story 6 remains, and it is the DELETE-grant one — the
-widening `rls.integration.test.ts` already pins `project_fields` against, so a test goes red
-first. After it, the epic closes and the order moves to **SPRIN-74** (sprint cadence), then
-**SPRIN-75 (RLS) LAST**.
+**Epic SPRIN-71 is COMPLETE — six of six, closed 2026-08-09.** The epic issue was transitioned by
+hand after checking `parent = SPRIN-71` rather than inferring from the last story: Jira does not
+close epics on its own, and SPRIN-57 sat in To Do for three sessions with every child Done because
+nobody did this. The order now moves to **SPRIN-74** (sprint cadence), then **SPRIN-75 (RLS) LAST**.
+
+**Read this before planning SPRIN-74: it will hit the SPRIN-82 wall.** If cadence lives on
+`projects`, editing it needs `grant update (...) on projects` — and `projects` currently holds **no
+UPDATE privilege for `authenticated` at all**. Per `CLAUDE.md` that story owes three things, not
+one: the grant, a narrowing of the AST guard in `src/test/project-type-immutability.test.ts`, and
+restoring a cross-tenant UPDATE row-count assertion to `rls.integration.test.ts` (SPRIN-82 removed
+it precisely because there was no privilege left for RLS to filter). Budget it as most of a story.
 
 **The migration letters have shifted by one.** The design calls `ticket_field_values` "migration
 B" and `project_field_options` "migration C"; SPRIN-91's grant file took the name
@@ -55,6 +65,70 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 63 — SPRIN-93 **MERGED**, epic SPRIN-71 **CLOSED** (PR #102, `44c7440`)
+
+**Merged 2026-08-09.** `verify` green on the PR's own head (`b93c785`): **76 test files / 1432
+tests / 0 skipped**, tripwire gap **7** against `test:unit`'s 69 — so the live suites really ran.
+Migration E applied by hand and verified from the catalogue. `main` and the database agree.
+
+**The Jira issue said "no migration" and was wrong** — the third time this epic's paperwork has
+mis-stated a story's migration needs. `sprin-90` revoked DELETE table-wide; `sprin-91`'s header
+names story 6 as the one that grants it back. **Check the ACs against the actual schema before
+designing**, every time; the epic design has now been wrong about stories 2, 4 and 6.
+
+**Migration E restates the WHOLE grant state** (David's call, 2026-08-09) rather than adding one
+statement. The rejected alternative — a bare `grant delete` — cannot cascade anything away and is
+in that narrow sense safer; it lost because it leaves the complete privilege set stated in no
+single file, which is exactly how the schema doc drifted. Verified after applying: table ACL
+`authenticated=rdDxtm`, and all four column grants (`project_id=a`, `slug=a`, `name=aw`, `type=a`)
+intact — **the revoke's cascade ate nothing.** Advisors unchanged at **16 performance / 1 security**.
+
+**THE FINDING WORTH READING, and it was mine rather than an implementer's.** The schema doc's
+`project_fields` grant block had never gained SPRIN-91's INSERT grant — a rebuild from it produced
+a table `authenticated` could not insert into at all. I fixed that, then wrote *"the two cannot
+drift again independently"* into both the doc and the design spec — **enforced by nothing.** An
+adversarial reviewer deleted the story's own `grant delete` line from the doc and the entire gate
+stayed green, because **nothing in this repo reads a grant line out of `sprintboard_phase1_schema.sql`,
+and the doc is never applied**, so no live assertion can ever observe doc drift. That is a
+prose-only invariant committed while fixing the third instance of the very drift it claimed to
+prevent. `domain.test.ts` now compares the doc's `project_fields` grant statements to migration E's,
+**with `--` comments stripped first** — both files argue about grants in prose, so a matcher that
+read comments would compare documentation rather than SQL.
+
+**The adversarial pass: 5 lenses, 132 mutations planted, 118 killed, 7 survivors, 1 killed finding.**
+Every survivor was a *missing test*, not broken behaviour — no lens could make `f608785` misbehave.
+Four guards were unpinned and now each have a test watched to fail:
+
+- **The row `key` became load-bearing for the first time in this story.** `key={field.id}` → `key={i}`
+  survived the whole gate. Before SPRIN-93 no row had ever been *removed* from the field list, so
+  identity and index keys were behaviourally identical. Under an index key a survivor reuses the
+  deleted row's component instance — a reviewer drove that to a real `deleteProjectField` call on a
+  field the user never selected.
+- **The count effect's `cancelled` flag is AC4's second half** and four of five lenses found it
+  unobserved, in four shapes — including flipping the cleanup to `cancelled = false`, which also
+  slips past ESLint since the variable stays read *and* assigned. The `onOpenChange` reset does
+  **not** cover it (measured with the reset intact). **The identical guard in `CustomFieldOptions.tsx`
+  (SPRIN-92's, which this story copied faithfully) was equally unpinned** — closed in both places,
+  because fixing only the copy is the "closed at the leaves, still open one level up" failure.
+- A refusal outlived its dialog: dropping `setError(null)` from `onOpenChange` left the suite green
+  while a stale error rendered in a freshly reopened confirm.
+
+**`onDeleted={onRetryOptions}` COMPILES.** TypeScript assigns a zero-parameter `() => void` to a
+`(id: string) => void` slot, so requiredness does not cover that crossing — only an assertion does.
+Worth remembering wherever this project leans on required props to catch unplugged wires.
+
+**Open follow-ups from this session, none blocking:**
+
+- `rls.integration.test.ts:~1756` — the pre-existing anon-delete assertion checks only the SQLSTATE,
+  not the message, and is now the weaker of the two anon-delete assertions in the file. One line.
+- **Settled non-issue, recorded so it is not re-raised:** two fields may share a name (SPRIN-91 AC2
+  requires it), giving two `Remove <name>` buttons with identical accessible names. Adversarially
+  refuted and I agree: the two rendered rows are **byte-identical for a sighted user**, so there is
+  no AT-specific loss; removing the `aria-label` reddens 16 tests across 4 files, so the label is
+  the mitigation rather than the cause; and clicking the second routes correctly to its own id. The
+  residue is a *product* question — with two identically-named fields the only discriminator in the
+  confirm is the ticket count — inherited from SPRIN-91 and shared with the rename control.
 
 ### Session 62 — SPRIN-92 reviewed, fixed and **MERGED** (PR #100, `532a5ec`)
 
