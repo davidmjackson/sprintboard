@@ -126,9 +126,12 @@ most stories rather than a rare one.
 **The advisor baseline is NOT zero, and this file used to say it was.** That wording was
 aspirational when written and has been false for some time — a story that took it literally
 would either chase pre-existing lints it did not cause or, worse, read a red result as its own
-regression. Measured **2026-08-08**: **1 security WARN** (leaked-password protection disabled)
-and **14 performance lints** (6 `unindexed_foreign_keys` INFOs — 3 on `ticket_field_values`,
-3 on `tickets`; and 8 `auth_rls_initplan` WARNs across five tables). **Compare against that
+regression. Re-measured **2026-08-09**: **1 security WARN** (leaked-password protection disabled)
+and **16 performance lints** (8 `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`,
+3 on `tickets`, 1 on `project_field_options`; and 8 `auth_rls_initplan` WARNs across five tables).
+This paragraph said **14** and **6 / 3+3** until SPRIN-97 re-derived it: the extra two arrived with
+SPRIN-92/93's tables (`pfo_field_fk` and `tfv_option_fk`) and nobody updated the line, which is the
+decay this file warns about two paragraphs down happening to the warning itself. **Compare against that
 baseline, not against zero** — the same discipline as the test-file tripwire above, where the
 GAP is the invariant and the absolute counts move with every story. Re-derive the numbers with
 `get_advisors` rather than trusting this paragraph; they are a timestamped observation.
