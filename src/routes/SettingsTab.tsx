@@ -138,8 +138,22 @@ export function SettingsTab() {
           grant at all, so a patch can never change the answer, and reading `shown` here would
           make the gate look like it depended on a write. `cadence` is the patched row, so a
           saved cadence is stated in words without a reload. */}
+      {/* `key={project.id}` REMOUNTS the section on a project switch, and it is load-bearing
+          rather than a hint to the reconciler. This tab is a nested route element, so moving
+          between projects RE-RENDERS it instead of unmounting it — and `useForm`'s
+          `defaultValues` are captured once, at mount. Without the key the summary line updates
+          (it reads the `cadence` prop) while the two pickers keep showing the PREVIOUS
+          project's cadence, so a user who switches project and presses Save writes the old
+          project's numbers onto the new one. `usePatchedProject`'s id guard does NOT cover
+          this: it fixes what is displayed above the form, not the form's own state. Found by
+          the SPRIN-97 review; pinned by "resets the cadence pickers, not just the summary". */}
       {hasSprints(project) && (
-        <CadenceSettings projectId={project.id} cadence={shown} onUpdated={onCadenceUpdated} />
+        <CadenceSettings
+          key={project.id}
+          projectId={project.id}
+          cadence={shown}
+          onUpdated={onCadenceUpdated}
+        />
       )}
 
       <StatusSettings

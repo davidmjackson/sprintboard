@@ -458,6 +458,29 @@ describe('SettingsTab saves the sprint cadence (SPRIN-97)', () => {
     expect(screen.getByText('4 weeks, starting Tuesday')).toBeInTheDocument()
     expect(screen.queryByText('1 week, starting Friday')).not.toBeInTheDocument()
   })
+
+  /**
+   * THE SUMMARY LINE AND THE FORM ARE TWO DIFFERENT CLAIMS, and the test above only makes the
+   * first. That gap was a real defect (SPRIN-97 review): the summary reads the `cadence` prop
+   * and updates on re-render, but `useForm`'s `defaultValues` are captured ONCE, at mount.
+   * Because this tab is a nested route element, a project switch re-renders it — so the two
+   * pickers went on showing the PREVIOUS project's cadence under a correct summary, and a user
+   * who switched project and pressed Save wrote the old project's numbers onto the new one.
+   *
+   * `key={project.id}` at the call site fixes it by remounting. Remove that one prop and this
+   * test goes red while every other test in this file stays green — which is the whole reason
+   * it asserts the SELECTED VALUES rather than the summary text.
+   */
+  it('resets the cadence pickers, not just the summary, when the tab is re-used', () => {
+    const { rerender } = render(tabTree(buildContext({ project: scrum })))
+
+    const other = { ...scrum, id: 'p2', sprint_length_weeks: 4, sprint_start_weekday: 2 } as Project
+    rerender(tabTree(buildContext({ project: other })))
+
+    const section = screen.getByRole('region', { name: /sprint cadence/i })
+    expect(within(section).getByRole('combobox', { name: /sprint length/i })).toHaveValue('4')
+    expect(within(section).getByRole('combobox', { name: /start day/i })).toHaveValue('2')
+  })
 })
 
 /**
