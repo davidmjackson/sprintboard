@@ -1,16 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createProjectField, listProjectFields, renameProjectField } from './project-fields'
+import {
+  countTicketsHoldingField,
+  createProjectField,
+  deleteProjectField,
+  listProjectFields,
+  renameProjectField,
+} from './project-fields'
 import type { ProjectField } from './domain'
 import { supabase } from './supabase'
 
 vi.mock('@/lib/supabase', () => ({ supabase: { from: vi.fn() } }))
 
-// The three chains this module issues:
+// The five chains this module issues:
 //
-//   listProjectFields:   from().select().eq().order().order()
-//   createProjectField:  from().insert().select().single()
-//   renameProjectField:  from().update().eq().select().single()
+//   listProjectFields:        from().select().eq().order().order()
+//   createProjectField:       from().insert().select().single()
+//   renameProjectField:       from().update().eq().select().single()
+//   deleteProjectField:       from().delete().eq().select()
+//   countTicketsHoldingField: from().select().eq()          — on ticket_field_values
 //
 // Each chain gets its OWN link functions rather than sharing one `select`/`eq`. The chains
 // diverge after the same method name — `.select()` returns `{ eq }` when it starts a read and
@@ -481,5 +489,120 @@ describe('renameProjectField', () => {
       ok: false,
       error: 'unknown',
     })
+  })
+})
+
+// The delete chain gets its OWN link functions, for the reason the header comment states: this
+// `.eq()` terminates in a bare `.select('id')` rather than in `.order()` or `.select().single()`,
+// so a mock shared with either other chain could only ever return one of those shapes and a test
+// asserting on it could not say which call it saw. Mirrors `project-field-options.test.ts`.
+const delSelect = vi.fn()
+const delEq = vi.fn(() => ({ select: delSelect }))
+const del = vi.fn(() => ({ eq: delEq }))
+
+describe('deleteProjectField', () => {
+  beforeEach(() => {
+    delSelect.mockReset()
+    delEq.mockClear()
+    del.mockClear()
+    vi.mocked(supabase.from).mockReturnValue({ delete: del } as never)
+  })
+
+  it('filters on the field id and asks for the deleted rows back', async () => {
+    delSelect.mockResolvedValue({ data: [{ id: 'f1' }], error: null })
+
+    await deleteProjectField('f1')
+
+    expect(supabase.from).toHaveBeenCalledWith('project_fields')
+    expect(delEq).toHaveBeenCalledWith('id', 'f1')
+    // The returned rows are what makes the zero-row check possible at all.
+    expect(delSelect).toHaveBeenCalledWith('id')
+  })
+
+  /**
+   * RLS FILTERS a delete rather than raising on it, so another tenant's row — or one another tab
+   * already removed — comes back as `error: null` with NO rows. Without the explicit count this
+   * resolves `{ ok: true }` and the UI removes a row the database still holds.
+   */
+  it('reports a zero-row delete as stale rather than as success', async () => {
+    delSelect.mockResolvedValue({ data: [], error: null })
+
+    await expect(deleteProjectField('f1')).resolves.toEqual({ ok: false, error: 'stale' })
+  })
+
+  // A `null` data with no error is the same fact as an empty array here, and `?? []` is the only
+  // thing standing between it and a `TypeError` on `.length`.
+  it('reports a null row set as stale too', async () => {
+    delSelect.mockResolvedValue({ data: null, error: null })
+
+    await expect(deleteProjectField('f1')).resolves.toEqual({ ok: false, error: 'stale' })
+  })
+
+  it('reports a query failure as unknown', async () => {
+    delSelect.mockResolvedValue({ data: null, error: { code: '42501', message: 'denied' } })
+
+    await expect(deleteProjectField('f1')).resolves.toEqual({ ok: false, error: 'unknown' })
+  })
+
+  it('resolves ok when exactly one row was removed', async () => {
+    delSelect.mockResolvedValue({ data: [{ id: 'f1' }], error: null })
+
+    await expect(deleteProjectField('f1')).resolves.toEqual({ ok: true, value: undefined })
+  })
+})
+
+// The count chain gets its OWN link functions: it reads `ticket_field_values`, not
+// `project_fields`, and terminates in a head-count response rather than in rows.
+const countEq = vi.fn()
+const countSelect = vi.fn(() => ({ eq: countEq }))
+
+describe('countTicketsHoldingField', () => {
+  beforeEach(() => {
+    countEq.mockReset()
+    countSelect.mockClear()
+    vi.mocked(supabase.from).mockReturnValue({ select: countSelect } as never)
+  })
+
+  it('counts value rows for the field without fetching them', async () => {
+    countEq.mockResolvedValue({ count: 3, error: null })
+
+    await expect(countTicketsHoldingField('f1')).resolves.toBe(3)
+
+    expect(supabase.from).toHaveBeenCalledWith('ticket_field_values')
+    // `head: true` is what keeps this a COUNT rather than a full read of every value row.
+    expect(countSelect).toHaveBeenCalledWith('*', { head: true, count: 'exact' })
+    expect(countEq).toHaveBeenCalledWith('field_id', 'f1')
+  })
+
+  /**
+   * AC4. Zero is the value that UNLOCKS a destructive delete, so a failed count reported as zero
+   * would offer a delete whose blast radius the user was told was nil.
+   */
+  it('THROWS on a failed read rather than resolving to zero', async () => {
+    countEq.mockResolvedValue({ count: null, error: { message: 'boom' } })
+
+    await expect(countTicketsHoldingField('f1')).rejects.toThrow(
+      'Could not count tickets holding that field: boom',
+    )
+  })
+
+  /**
+   * PostgREST can answer without a count header. `count: null` with `error: null` would otherwise
+   * flow into the component as a number and land as `0` — the one value that unlocks the delete.
+   */
+  it('THROWS on a MISSING count, which is not the same as a failed read', async () => {
+    countEq.mockResolvedValue({ count: null, error: null })
+
+    await expect(countTicketsHoldingField('f1')).rejects.toThrow(
+      'Could not count tickets holding that field: no count',
+    )
+  })
+
+  // Zero is a legitimate answer and must survive the two guards above intact — the positive
+  // control for them. A guard written as `if (!count)` passes both tests above and fails this one.
+  it('resolves to zero when no ticket holds a value for the field', async () => {
+    countEq.mockResolvedValue({ count: 0, error: null })
+
+    await expect(countTicketsHoldingField('f1')).resolves.toBe(0)
   })
 })
