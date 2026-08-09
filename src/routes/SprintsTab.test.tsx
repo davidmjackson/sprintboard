@@ -50,7 +50,14 @@ vi.mock('./CreateSprintDialog', () => ({
 // cast is an assertion rather than a check, so nothing warned about the missing field — the
 // suite simply went red all at once. Kept explicit rather than defaulted inside `renderTab`,
 // because "these tests are about a project that HAS sprints" is a fact worth reading here.
-const project = { id: 'p1', name: 'Sprintboard', key: 'SPB', project_type: 'scrum' } as Project
+const project = {
+  id: 'p1',
+  name: 'Sprintboard',
+  key: 'SPB',
+  project_type: 'scrum',
+  sprint_length_weeks: 2,
+  sprint_start_weekday: 1,
+} as Project
 
 /** The same project delivered continuously. Built by spreading the fixture above so the two
  *  differ in `project_type` and nothing else — a pair that also differed in, say, its id

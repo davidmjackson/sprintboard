@@ -96,6 +96,7 @@ export function SprintsTab() {
         {phase === 'loaded' ? (
           <CreateSprintDialog
             projectId={project.id}
+            cadence={project}
             existing={sprints}
             onCreated={onSprintCreated}
           />

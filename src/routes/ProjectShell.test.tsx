@@ -165,12 +165,33 @@ beforeEach(() => {
 })
 
 const PROJECTS = [
-  { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'scrum', created_at: '' },
+  {
+    id: 'p1',
+    name: 'Apple',
+    key: 'APP',
+    owner_id: 'u1',
+    project_type: 'scrum',
+    created_at: '',
+    // SPRIN-96: CreateSprintDialog now requires a real cadence to pre-fill its dates —
+    // without these the real dialog (rendered by this file, not mocked) computes an
+    // invalid date the moment it opens.
+    sprint_length_weeks: 2,
+    sprint_start_weekday: 1,
+  },
 ] as never
 /** The same project as `PROJECTS`, delivered continuously — the other half of SPRIN-81's
  *  header badge, which renders for BOTH types rather than only for Kanban. */
 const KANBAN_PROJECTS = [
-  { id: 'p1', name: 'Apple', key: 'APP', owner_id: 'u1', project_type: 'kanban', created_at: '' },
+  {
+    id: 'p1',
+    name: 'Apple',
+    key: 'APP',
+    owner_id: 'u1',
+    project_type: 'kanban',
+    created_at: '',
+    sprint_length_weeks: 2,
+    sprint_start_weekday: 1,
+  },
 ] as never
 
 const ticketBase: Ticket = {
