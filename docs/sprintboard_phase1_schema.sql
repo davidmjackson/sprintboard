@@ -71,9 +71,17 @@ create table projects (
   -- live constraint read `CHECK ((project_type = 'scrum'::text))` despite the IN here.
   project_type text not null default 'scrum' check (project_type in ('scrum', 'kanban')),
   created_at   timestamptz not null default now(),
+  -- SPRIN-94: sprint cadence. int + CHECK, never an enum, same reasoning as
+  -- project_type above. Not null with defaults: every project has a cadence,
+  -- including Kanban projects that never read one.
+  sprint_length_weeks  int not null default 2,
+  sprint_start_weekday int not null default 1,
   -- key: first char a letter, total length 2 to 4, uppercase alnum
   constraint projects_key_format check (key ~ '^[A-Z][A-Z0-9]{1,3}$'),
-  constraint projects_owner_key_unique unique (owner_id, key)
+  constraint projects_owner_key_unique unique (owner_id, key),
+  -- SPRIN-94: named because the live tests assert the names.
+  constraint projects_sprint_length_weeks_range check (sprint_length_weeks between 1 and 4),
+  constraint projects_sprint_start_weekday_range check (sprint_start_weekday between 1 and 7)
 );
 
 -- ============================================================

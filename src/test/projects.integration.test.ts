@@ -283,4 +283,54 @@ describe.skipIf(!hasRlsCredentials)('S3.1 project-creation contract', () => {
     expect(ids).toContain(mine.data!.id)
     expect(ids).not.toContain(theirs.data!.id)
   }, 30_000)
+
+  /**
+   * SPRIN-94 AC2 — every project is born with a cadence, and the DATABASE is what
+   * supplies it. `createProject` sends neither column, exactly as it sends no
+   * `project_type`, so a default that regressed to null or to a different number would
+   * surface here and nowhere in the client.
+   */
+  it('defaults a new project to a two-week cadence starting Monday (SPRIN-94 AC2)', async () => {
+    const key = runKey()
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Cadence default', key })
+      .select('id, sprint_length_weeks, sprint_start_weekday')
+      .single()
+
+    expect(error).toBeNull()
+    createdIds.push(data!.id)
+    expect(data!.sprint_length_weeks).toBe(2)
+    expect(data!.sprint_start_weekday).toBe(1)
+  })
+
+  /**
+   * SPRIN-94 AC5, both halves. The CONSTRAINT NAME is asserted, not just the SQLSTATE:
+   * `projects_key_format` and `projects_owner_key_unique` also live on this table, so a
+   * bare 23514 would pass on a violation this test is not about — and `runKey()` is
+   * random, so that is not hypothetical.
+   */
+  it('rejects a sprint length outside 1-4 (projects_sprint_length_weeks_range -> 23514)', async () => {
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Bad length', key: runKey(), sprint_length_weeks: 5 })
+      .select('id')
+      .single()
+
+    expect(data).toBeNull()
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('projects_sprint_length_weeks_range')
+  })
+
+  it('rejects a start weekday outside 1-7 (projects_sprint_start_weekday_range -> 23514)', async () => {
+    const { data, error } = await a
+      .from('projects')
+      .insert({ owner_id: userAId, name: 'Bad weekday', key: runKey(), sprint_start_weekday: 8 })
+      .select('id')
+      .single()
+
+    expect(data).toBeNull()
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('projects_sprint_start_weekday_range')
+  })
 })
