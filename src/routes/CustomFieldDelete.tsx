@@ -75,6 +75,12 @@ function FieldDeleteDialog({
   // body), so this body only ever calls `setCount` from the promise's own callbacks.
   useEffect(() => {
     if (!open) return
+    // `cancelled` IS AC4's SECOND HALF — not React boilerplate, and not made redundant by the
+    // `'counting'` reset below. Without it, a read abandoned by a previous open settles after
+    // the close, flips `known` true, and UNLOCKS the destructive button on the NEXT open before
+    // that open's own count has arrived: an unknown count impersonating a known one. Measured
+    // with the reset fully intact — it does not cover this. Pinned by "ignores a count abandoned
+    // by a previous open"; the same guard in `CustomFieldOptions.tsx` is pinned by its twin.
     let cancelled = false
     countTicketsHoldingField(field.id)
       .then((value) => {

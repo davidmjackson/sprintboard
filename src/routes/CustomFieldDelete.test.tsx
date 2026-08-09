@@ -223,6 +223,96 @@ describe('CustomFieldDeleteControl', () => {
     expect(onDeleted).not.toHaveBeenCalled()
   })
 
+  /**
+   * THE `cancelled` FLAG IS AC4'S SECOND HALF, and until this test nothing observed it.
+   *
+   * Four of five adversarial lenses found this independently, in four mutation shapes — deleting
+   * both `if (!cancelled)` reads, deleting the cleanup, deleting the mechanism, and flipping the
+   * cleanup to `cancelled = false` (which also slips past ESLint, since the variable stays both
+   * read and assigned). Every shape survived the full suite, lint and typecheck.
+   *
+   * The sibling test below is NOT this test. It closes the dialog after the count has already
+   * settled, so it exercises the `onOpenChange` reset. This one differs in exactly one respect —
+   * **when** the first read settles — and that is the whole difference between the two guards.
+   * The reset was left fully intact while measuring this, and the stale write still landed: an
+   * abandoned read resolving after the close flips `known` true and UNLOCKS the destructive
+   * button on the next open, before that open's own count has arrived. An unknown count
+   * impersonating a known one is AC4 breached in its own words.
+   */
+  it('ignores a count abandoned by a previous open, even after it settles', async () => {
+    const u = userEvent.setup()
+
+    // The FIRST open's read never settles while the dialog is open — it is released below, after
+    // the close, which is the moment the `cancelled` flag exists to cover.
+    let releaseAbandoned: (n: number) => void = () => {}
+    mockCount.mockReturnValueOnce(
+      new Promise<number>((resolve) => {
+        releaseAbandoned = resolve
+      }),
+    )
+    renderControl()
+
+    const dialog = await openConfirm(u)
+    // POSITIVE CONTROL: the first open really did start a read and really is waiting on it, so
+    // the release below is resolving something real rather than a promise nobody awaited.
+    expect(confirmIn(dialog)).toBeDisabled()
+    expect(mockCount).toHaveBeenCalledTimes(1)
+
+    await u.click(within(dialog).getByRole('button', { name: /^cancel$/i }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+    // The abandoned read lands NOW, after its dialog is gone.
+    await act(async () => {
+      releaseAbandoned(5)
+    })
+
+    // A second open whose own read is still in flight, so the state under test is observable.
+    mockCount.mockReturnValue(new Promise<number>(() => {}))
+    const reopened = await openConfirm(u)
+
+    // The destructive button must still be locked: this open has no count of its own yet.
+    expect(confirmIn(reopened)).toBeDisabled()
+    // `queryByText` does not honour `aria-hidden`, so it is the raw-DOM half of the pair.
+    expect(within(reopened).queryByText(/5 tickets will lose this value/)).toBeNull()
+    // POSITIVE CONTROL: the dialog really did reopen, so the absence above is the guard working
+    // rather than an unmounted subtree.
+    expect(within(reopened).getByText(/^This can’t be undone\.$/)).toBeInTheDocument()
+  })
+
+  /**
+   * A refusal must not outlive the open it belongs to.
+   *
+   * `submit()` clears `error` on retry, which covers retrying WITHOUT closing. Nothing covered
+   * close-and-reopen until now: dropping `setError(null)` from `onOpenChange` leaves the whole
+   * suite green while a stale "Something went wrong" renders inside a freshly reopened confirm,
+   * describing nothing that happened in that open. The file argues against itself there — the
+   * adjacent line resets `count` for exactly this reason.
+   */
+  it('does not carry a refusal into the next open', async () => {
+    const u = userEvent.setup()
+    mockCount.mockResolvedValue(0)
+    mockDelete.mockResolvedValue({ ok: false, error: 'unknown' })
+    renderControl()
+
+    const dialog = await openConfirm(u)
+    await waitFor(() => expect(confirmIn(dialog)).toBeEnabled())
+    await u.click(confirmIn(dialog))
+    // POSITIVE CONTROL: the refusal really did render in the open it belongs to.
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      /^Something went wrong\. Please try again\.$/,
+    )
+
+    await u.click(within(dialog).getByRole('button', { name: /^cancel$/i }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+    const reopened = await openConfirm(u)
+    expect(within(reopened).queryByRole('alert')).toBeNull()
+    expect(reopened.querySelector('[role="alert"]')).toBeNull()
+    // POSITIVE CONTROL: the reopened dialog is real and has resolved its own count, so the
+    // absence above is not an unmounted subtree.
+    await waitFor(() => expect(confirmIn(reopened)).toBeEnabled())
+  })
+
   it('re-reads the count on a second open rather than flashing the first one', async () => {
     // The component stays mounted while the dialog is closed, so without the reset on the way OUT
     // a stale count renders as already-known ahead of the fresh fetch — and 'already-known' is

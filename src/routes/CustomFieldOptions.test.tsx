@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { CustomFieldOptions } from './CustomFieldOptions'
@@ -370,6 +370,58 @@ describe('CustomFieldOptions', () => {
       // was told was nil. The three sibling call sites in this file are all pinned this way;
       // this one was not, and the mutation survived. Row 0 is LOW (position 1).
       expect(mockCount).toHaveBeenCalledWith('f1', LOW.slug)
+    })
+
+    /**
+     * CLOSING THE CLASS, not just this instance (SPRIN-93).
+     *
+     * SPRIN-93's adversarial review found that `FieldDeleteDialog`'s `cancelled` flag was pinned
+     * by nothing, and re-derived the SCOPE rather than assuming it: **the identical guard here,
+     * written by SPRIN-92, also survived all of this file's tests.** SPRIN-93 copied this
+     * component faithfully — untested half included — so fixing only the copy would leave the
+     * original open, which is the "closed at the leaves, still open one level up" failure this
+     * project has already paid for once.
+     *
+     * The mechanism: an abandoned read settling after its dialog closed flips `known` true and
+     * UNLOCKS the destructive button on the NEXT open, before that open's own count arrives.
+     * The `onOpenChange` reset does not cover it — it was left fully intact while measuring, and
+     * the stale write still landed.
+     */
+    it('ignores a count abandoned by a previous open, even after it settles', async () => {
+      const u = userEvent.setup()
+
+      let releaseAbandoned: (n: number) => void = () => {}
+      mockCount.mockReturnValueOnce(
+        new Promise<number>((resolve) => {
+          releaseAbandoned = resolve
+        }),
+      )
+      render(<CustomFieldOptions field={FIELD} options={OPTIONS} {...noopHandlers} />)
+
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const dialog = await screen.findByRole('alertdialog')
+      // POSITIVE CONTROL: the first open really is waiting on a read, so the release below
+      // resolves something real rather than a promise nobody awaited.
+      expect(within(dialog).getByRole('button', { name: /^remove option$/i })).toBeDisabled()
+      expect(mockCount).toHaveBeenCalledTimes(1)
+
+      await u.click(within(dialog).getByRole('button', { name: /^cancel$/i }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+      // The abandoned read lands now, after its dialog is gone.
+      await act(async () => {
+        releaseAbandoned(5)
+      })
+
+      mockCount.mockReturnValue(new Promise<number>(() => {}))
+      await u.click(screen.getAllByRole('button', { name: /remove/i })[0]!)
+      const reopened = await screen.findByRole('alertdialog')
+
+      expect(within(reopened).getByRole('button', { name: /^remove option$/i })).toBeDisabled()
+      // `queryByText` does not honour `aria-hidden`, so it is the raw-DOM half of the pair.
+      expect(within(reopened).queryByText(/5 tickets will lose this value/)).toBeNull()
+      // POSITIVE CONTROL: the dialog really did reopen.
+      expect(within(reopened).getByText(/^This can’t be undone\.$/)).toBeInTheDocument()
     })
 
     // The singular branch of `${n} ${n === 1 ? 'ticket' : 'tickets'}`, which no other fixture

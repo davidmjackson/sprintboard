@@ -137,7 +137,7 @@ function renderSettings(
     onDeleted: vi.fn(),
     ...props,
   }
-  const { container } = render(
+  const { container, rerender } = render(
     <CustomFieldSettings
       projectId="p1"
       fields={props.fields ?? FIELDS}
@@ -153,7 +153,29 @@ function renderSettings(
       onDeleted={handlers.onDeleted}
     />,
   )
-  return { ...handlers, container }
+
+  /** Re-render with a different field list, everything else held constant — what the SHELL does
+   *  after `onFieldDeleted` filters the row out. Needed because the row `key` only becomes
+   *  observable when a row is REMOVED, which no test before SPRIN-93 ever did. */
+  const rerenderFields = (fields: ProjectField[]) =>
+    rerender(
+      <CustomFieldSettings
+        projectId="p1"
+        fields={fields}
+        phase={props.phase ?? 'loaded'}
+        options={props.options ?? []}
+        optionsPhase={props.optionsPhase ?? 'loaded'}
+        onRetry={handlers.onRetry}
+        onCreated={handlers.onCreated}
+        onUpdated={handlers.onUpdated}
+        onOptionCreated={handlers.onOptionCreated}
+        onOptionUpdated={handlers.onOptionUpdated}
+        onOptionDeleted={handlers.onOptionDeleted}
+        onDeleted={handlers.onDeleted}
+      />,
+    )
+
+  return { ...handlers, container, rerenderFields }
 }
 
 /** The row for a field, found by the name it renders. Scoping every DOM-text assertion to the
@@ -887,6 +909,50 @@ describe('CustomFieldSettings', () => {
       // POSITIVE CONTROL: the controls that would have made those calls really did render, so
       // the two absences above are about laziness rather than about an empty list.
       expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(3)
+    })
+
+    /**
+     * THE ROW KEY IS LOAD-BEARING FOR THE FIRST TIME, AND THIS IS WHAT PINS IT.
+     *
+     * `key={field.id}` in `CustomFieldList` could be changed to the array index with the whole
+     * gate green — 1277 unit tests, lint and typecheck all pass. Before SPRIN-93 that was
+     * harmless, because no row had ever been REMOVED from this list: with only appends and
+     * renames, an identity key and an index key behave identically. Deleting a field is the
+     * first operation that tells them apart.
+     *
+     * Under an index key, removing a non-last row makes the survivor **reuse the deleted row's
+     * component instance**: the confirm dialog stays mounted, retitled to the surviving field,
+     * still holding the deleted field's ticket count, with an ENABLED destructive button. A
+     * reviewer drove exactly that to a real `deleteProjectField` call on a field the user never
+     * selected.
+     *
+     * The raw-DOM pair is not decoration: Radix leaves the closed dialog's subtree
+     * `aria-hidden`, and `queryByRole` EXCLUDES `aria-hidden` subtrees — so the role query alone
+     * would report "gone" for a dialog still mounted and still clickable.
+     */
+    it('closes the confirm when its own field is removed from the list', async () => {
+      const u = userEvent.setup()
+      mockCountField.mockResolvedValue(3)
+      const { rerenderFields } = renderSettings({ fields: [CUSTOMER_REF, PRIORITY] })
+
+      await u.click(
+        within(rowFor('Customer ref')).getByRole('button', { name: 'Remove Customer ref' }),
+      )
+      // POSITIVE CONTROL: the confirm really opened and really resolved its count, so its
+      // absence below is the removal doing something rather than the dialog never appearing.
+      const dialog = await screen.findByRole('alertdialog')
+      expect(within(dialog).getByText(/^3 tickets will lose this value\./)).toBeInTheDocument()
+
+      // What the shell does after `onFieldDeleted`: the same list, minus that field.
+      rerenderFields([PRIORITY])
+
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+      // POSITIVE CONTROL: the surviving row is still rendered, so the assertions above are not
+      // passing because the whole list unmounted.
+      expect(
+        within(rowFor('Priority level')).getByRole('button', { name: 'Remove Priority level' }),
+      ).toBeInTheDocument()
     })
 
     /**
