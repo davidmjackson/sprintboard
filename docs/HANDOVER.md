@@ -81,6 +81,65 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
+### Session 65 — SPRIN-97 **MERGED**, the SPRIN-82 debt **PAID** (PR #107, `66647bf`)
+
+**Merged 2026-08-09.** `verify` green on the PR's own head `3c03b31`: **78 test files, 1497 tests,
+0 skipped**, gap **7** against `test:unit`'s 71. Migration B applied by hand and verified from
+`pg_class.relacl` / `pg_attribute.attacl`: table ACL still `authenticated=ardDxtm` — **no `w`** —
+plus `authenticated=w` on `sprint_length_weeks` and `sprint_start_weekday` and nothing else, and
+nothing for `anon` or `PUBLIC`. Advisors unchanged at **16 performance / 1 security**.
+
+**FOUR RECORDED INSTRUCTIONS WERE WRONG, AND FOLLOWING THEM WOULD HAVE SHIPPED A TEST THAT PROVED
+NOTHING.** The guard docblock, the schema doc, the RLS deletion site and the SPRIN-82 banner all
+said to restore the cross-tenant assertion as `.update({ name: 'pwned' })`. They were written
+anticipating a *rename* story. This story granted only the two cadence columns, so `name` stayed
+revoked: that update is refused by the **privilege layer** with `42501`/`data === null`, never the
+`[]` the assertion expects — and asserting the error instead rebuilds the exact defect the deletion
+site argues against, because the line would then pass off the GRANT and dropping `projects_owner`
+would no longer redden it. **The rule, as a property rather than a column name: a cross-tenant
+row-count assertion is only honest on a column the role may actually UPDATE.** Privileges are
+checked before policies. Restored on `sprint_length_weeks`, writing a value the fixture does not
+hold, paired with a re-read as A. A **fifth** copy lived in `CLAUDE.md` — the always-loaded file —
+stating as fact that `projects` holds no UPDATE privilege at all. All five corrected.
+
+**The review cost £20 of top-up credit in 30 minutes and is the most important process lesson
+here.** Six mutation lenses in isolated worktrees, ~106 mutations planted, then three refuters per
+finding: **84 agents, ~7.4M subagent tokens across two runs**, and it exhausted the session limit
+twice. It found real defects — see below — so it was not wasted, but "warranted" was the wrong test
+to apply on its own. **Price a fan-out in money before launching it, and size the verify phase to
+the finding count** (26 findings × 3 refuters = 78 agents was the blow-up, not the 6 finders).
+
+**My own workflow script scored a dead agent as a refutation.** The verdict test was
+`cast.length > 0 && refuters < 2`, so when 43 verifiers died on the session limit their findings
+fell into `killed` — which reads as "adversarially refuted" when it means "never looked at".
+**Three states, never two.** Fixed to an explicit `unresolved` bucket; the 12 unresolved findings
+were then read off disk rather than re-run, and one of them was a real user-facing bug.
+
+**Five findings fixed, each proven by mutation:** (1) nothing tied the **applied SQL grant's column
+list** to `SPRINT_CADENCE_COLUMNS` — widening the migration to `name` passed the *entire* gate,
+because the AST guard polices what `src/` writes, not what the database permits; (2) the new
+doc-vs-migration test **hardcoded two migration filenames**, which inverts the control against the
+drift that actually happens (migration leads, doc lags) — it now globs the directory, so a third
+migration cannot be invisible; (3) `grantStatements` matched the literal `on projects`, so
+`on public.projects` in the doc was dropped before comparison; (4) the cadence **form** kept the
+previous project's values across a project switch — the tab is a nested route element so it
+re-renders rather than remounts, `useForm` captures `defaultValues` once, and the summary line
+updated while the pickers did not, so Save wrote the old project's numbers onto the new project
+(fixed with `key={project.id}`, pinned by a test that reds without it); (5) the `CLAUDE.md` false
+fact above.
+
+**Also found, in my own new test: a sorted comparison cannot see order, and here order is the
+meaning.** `grantStatements` sorts, so it compares files as sets — but a table-level `revoke`
+**cascades** to column privileges, so `grant`-then-`revoke` leaves the table with no update
+privilege at all. Sorted order puts `grant` first, i.e. the broken sequence is the one a set
+comparison blesses. A separate ordering assertion now covers it.
+
+**Left open, deliberately.** No live assertion covers `name`/`key` immutability — the owner-side
+pair only narrows `project_type`. Three of the five tables whose grants the schema doc states are
+pinned by nothing (`project_statuses`, `ticket_field_values`, `project_field_options`) — same drift
+class, other tables. And the AST guard's own fail-closed predicate is untested; that is a genuine
+gap but also an infinite regress, so it is recorded rather than chased.
+
 ### Session 64 — epic SPRIN-74 **DECOMPOSED**, SPRIN-94 **MERGED** (PRs #104, #105, `1464227`)
 
 **Merged 2026-08-09.** `verify` green on the PR's own head `29ba664`: **77 test files**, gap **7**
@@ -1063,5 +1122,8 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
 - Orphaned fixture projects — gone. **SPRIN-58** — unbuilt, deliberately. **T7 / 80% coverage** and
   everything from Rung 2 — out of scope.
 
-> A **project rename** story owes three specific things before it can work. They are stated in
-> `CLAUDE.md` (the `projects` UPDATE revoke section) — not repeated here, so the two cannot drift.
+> A **project rename** story owes four specific things before it can work — SPRIN-97 discharged the
+> two that were shared (the AST guard narrowing and the restored cross-tenant assertion) and added
+> two that are new (the `SPRINT_CADENCE_COLUMNS` allowlist, and keeping the doc-vs-migration matcher
+> in step). They are stated in `CLAUDE.md` (the `projects` UPDATE section) — not repeated here, so
+> the two cannot drift.
