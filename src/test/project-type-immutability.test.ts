@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
+import { SPRINT_CADENCE_COLUMNS } from '@/lib/domain'
 import {
   SRC_ROOT,
   at,
@@ -11,6 +12,7 @@ import {
   describeNode,
   literalText,
   nodesOf,
+  objectLiteralKeys,
   parse,
   rootIdentifier,
   sourceFiles,
@@ -106,9 +108,16 @@ import {
  *   4. RESOLVE — every `.update(`/`.upsert(` ON A SUPABASE CHAIN must walk back to a
  *      `from(<string literal>)`. A table name held in a variable, a call, or a
  *      concatenation is unresolvable, and unresolvable is red.
- *   5. FORBID — of the writes that DO resolve, none may resolve to `projects`. Writes to
- *      `tickets`, `sprints` and `project_statuses` are legitimate and stay green; there
- *      are seven of them today and the floors below prove the walk still sees them.
+ *   5. ALLOWLIST THE PAYLOAD — of the writes that DO resolve, one to `projects` passes only
+ *      if its payload is an object literal every key of which is in `SPRINT_CADENCE_COLUMNS`
+ *      (imported from `src/lib/domain.ts`, never re-typed here). Until SPRIN-97 this check
+ *      forbade the table outright; a grant now exists for two columns, so the question moved
+ *      one level in — from "which table?" to "which columns?" — and the answer is read the
+ *      same way. A payload whose keys cannot be read is a FAILURE, not a pass: a spread, a
+ *      computed key, a bare identifier and an array of rows are each a place a
+ *      `project_type` key can sit unseen. Writes to the other tables are unconditionally
+ *      legitimate; the floors below prove the walk still sees them AND still sees the one
+ *      permitted `projects` write, which is the only positive control the payload reader has.
  *   6. ALLOWLIST — every `rpc(…)` must name an RPC on `ALLOWED_RPCS`. A new RPC reddens
  *      this until someone consciously adds it, which is the entire point: an RPC is a
  *      write path that no amount of table-chain analysis can see the inside of.
@@ -126,18 +135,32 @@ import {
  * That second anchor is what keeps a client this file cannot trace — a factory return, a
  * renamed re-export, a `SupabaseClient` parameter — inside check 4 rather than outside it.
  *
- * WHEN A LEGITIMATE PROJECT UPDATE ARRIVES — renaming a project, say — TWO things stop it,
- * one per layer, and that is the design working rather than an obstacle. Check 5 below goes
- * red, AND the write fails live with 42501, because SPRIN-82 revoked the table UPDATE
- * outright and granted no columns back. That story has to do both: `grant update (name) on
- * projects to authenticated` in its migration, and narrow this guard so it inspects the
- * update's payload for `project_type` rather than forbidding every write to the table. The
- * grant without the narrowing leaves check 5 blocking the merge; the narrowing without the
- * grant ships a rename that silently 42501s. Deleting either layer instead puts AC5 back to
- * being prose — and note which one is now the cheaper to lose by accident: a stray `grant
+ * A LEGITIMATE PROJECT UPDATE HAS NOW ARRIVED, and this paragraph is the record of what it
+ * cost rather than the prediction it used to be. SPRIN-97 made the sprint cadence editable,
+ * and it needed exactly the two halves predicted here: `grant update (sprint_length_weeks,
+ * sprint_start_weekday) on projects to authenticated`
+ * (`docs/migrations/sprin-97-project-cadence-update.sql`), and a narrowing of check 5 from
+ * "no write to this table" to "no write outside `SPRINT_CADENCE_COLUMNS`". Both directions of
+ * the prediction held: the grant without the narrowing leaves check 5 blocking the merge, and
+ * the narrowing without the grant ships a write that 42501s at runtime with nothing red to
+ * say so. What the prediction did NOT anticipate is that narrowing a table-level refusal into
+ * a payload-level allowlist introduces a shape the old check never had to think about — a
+ * payload it cannot read — which is why the narrowing had to be fail-closed rather than a
+ * search for the word `project_type`.
+ *
+ * WHAT REMAINS TRUE OF `name`, `key` AND `project_type` is everything that paragraph said,
+ * because the grant is COLUMN-level and adds no table-level UPDATE. Those three still have no
+ * privilege behind them, so a write to any of them is refused with 42501 before a policy is
+ * consulted, and check 5 still reds on it — now by reading the payload's keys rather than by
+ * forbidding the table. A rename story owes the same two halves, plus a third thing SPRIN-97
+ * had no need of: `SPRINT_CADENCE_COLUMNS` is declared `satisfies readonly
+ * (keyof SprintCadence)[]`, so a non-cadence column is not appended to it — the type widens
+ * and the constant stops deserving that name. Deleting either layer instead puts AC5 back to
+ * being prose, and note which one is still the cheaper to lose by accident: a stray `grant
  * update on projects` in an unrelated migration undoes the database half silently, and no
  * check in CI can read pg_catalog to notice. What would notice is the live 42501 assertion
- * in `src/test/projects.integration.test.ts`, which is why it exists.
+ * in `src/test/projects.integration.test.ts`, which is why it exists — and which SPRIN-97
+ * deliberately left unmodified as the proof its column grant did not widen to the table.
  *
  * AND THERE IS A THIRD OBLIGATION ON THAT STORY, which is the one nothing red will ask for.
  * SPRIN-82 DELETED the cross-tenant `projects` UPDATE row-count assertion from
@@ -149,6 +172,25 @@ import {
  * project. That story must restore the deleted line. It is recorded in three places for that
  * reason: this docblock, the comment above the revoke in
  * `docs/sprintboard_phase1_schema.sql`, and the note at the deletion site itself.
+ *
+ * ⚠ DISCHARGED BY SPRIN-97 — AND THE COLUMN THIS PARAGRAPH NAMES WAS THE WRONG ONE. The line
+ * is back in `rls.integration.test.ts`. But every one of the recorded copies said to restore
+ * it as `.update({ name: 'pwned' })`, and that would have shipped a test passing for the
+ * wrong reason. The story that first needed a writable project column was not the rename this
+ * paragraph imagined; it was the sprint cadence, which granted
+ * `(sprint_length_weeks, sprint_start_weekday)` and left `name` REVOKED. On an ungranted
+ * column the privilege layer refuses first — 42501 with `data === null`, never the `[]` the
+ * assertion expects — and asserting the error instead rebuilds the exact defect the deletion
+ * site argues against, because the line would then pass off the GRANT and dropping
+ * `projects_owner` would no longer redden it.
+ *
+ * THE RULE THIS PARAGRAPH SHOULD HAVE STATED, as a property rather than a column name: a
+ * cross-tenant ROW-COUNT assertion is only honest on a column the role may actually UPDATE.
+ * Privileges are checked before policies, so an ungranted column never reaches RLS and the
+ * row count measures the grant instead. The restored line uses `sprint_length_weeks`, writes
+ * a value the fixture does not already hold, and is paired with a re-read as A — because `[]`
+ * alone is satisfied both by a write that matched nothing and by one whose `.select()` was
+ * filtered on the way out.
  *
  * WHAT IT STILL CANNOT SEE, stated without flattery:
  *   - Anything outside `src/`. `scripts/` and `e2e/` are tooling and tests, and neither
@@ -173,6 +215,18 @@ const GUARDED_TABLE = 'projects'
 
 /** The chained calls that write. `insert` is legitimate; these are the ones AC5 forbids. */
 const WRITE_VERBS = new Set(['update', 'upsert'])
+
+/**
+ * The only columns of `projects` an update in `src/` may name — SPRIN-97's migration B
+ * granted these two and nothing else, and check 5 reads a payload's keys against them.
+ *
+ * IMPORTED, NEVER RE-TYPED. `src/lib/domain.ts` is the one list the zod schema, the write
+ * payload in `updateProjectCadence` and this guard all read. A second hand-maintained copy of
+ * "which columns are writable" is a drift class this project has recorded four times, and
+ * this pairing is the worst one to get wrong: the other half of it is a Postgres grant that
+ * no test in CI can read.
+ */
+const ALLOWED_PROJECT_COLUMNS: ReadonlySet<string> = new Set(SPRINT_CADENCE_COLUMNS)
 
 /**
  * Members that may only ever be CALLED, never referenced. Deliberately checked by name
@@ -207,7 +261,7 @@ const ALLOWED_RPCS = new Set(['reorder_project_statuses'])
  * numbers together, or the suite says so.
  */
 const DOCUMENTED_CHECKS = 7
-const DOCUMENTED_FLOORS = 5
+const DOCUMENTED_FLOORS = 6
 
 type Scan = { nodes: ts.Node[]; clients: Set<string> }
 
@@ -309,6 +363,34 @@ const WRITES = SCANS.flatMap((scan) =>
   callsIn(scan).filter((call) => isSupabaseWrite(call, scan.clients)),
 )
 
+/** The writes that resolve to the guarded table: the population check 5 judges by payload. */
+const PROJECT_WRITES = WRITES.filter((call) => tableOf(call) === GUARDED_TABLE)
+
+/**
+ * Does this write name ONLY granted columns, in keys this file can actually read?
+ *
+ * `objectLiteralKeys` returns null for every payload whose key set is not fully spelled out,
+ * and null is a failure here rather than a pass — the same inversion check 4 applies to table
+ * names, applied one level in. These are the mutations it is built against, each of which
+ * must go red (they are type-valid and lint-clean; only this predicate stands between them
+ * and `main`):
+ *
+ *     supabase.from('projects').update({ project_type: 'kanban' })            // forbidden key
+ *     supabase.from('projects').update(payload)                               // identifier
+ *     supabase.from('projects').update({ ...cadence })                        // spread
+ *     supabase.from('projects').update({ [key]: value })                      // computed key
+ *     supabase.from('projects').update({ sprint_length_weeks: 2, name: 'x' }) // one bad key
+ *     supabase.from('projects').upsert({ project_type: 'kanban' })            // upsert too
+ *
+ * An empty literal is vacuously allowed, and that is not a hole: `{}` names no column, so it
+ * can write none. A key set this file CAN read is safe to judge however short it is; the
+ * danger was only ever the set it cannot read.
+ */
+function writesOnlyGrantedColumns(call: ts.CallExpression): boolean {
+  const keys = objectLiteralKeys(call.arguments[0])
+  return keys !== null && keys.every((key) => ALLOWED_PROJECT_COLUMNS.has(key))
+}
+
 /** Every `rpc(…)` in non-test source, reached through the client or through a bare name. */
 const RPCS = SCANS.flatMap((scan) => callsIn(scan).filter((call) => calleeName(call) === 'rpc'))
 
@@ -363,9 +445,11 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
     expect(
       PROJECT_FROMS.length,
       `Only ${PROJECT_FROMS.length} from('projects') call site(s) found in non-test source. ` +
-        'There are two (createProject inserts, listProjects selects), so a number this low ' +
-        'means the data layer stopped using the supabase client directly, or the AST walk no ' +
-        'longer sees it — in both cases the chain-following assertion below is now vacuous.',
+        'There are three (createProject inserts, listProjects selects, updateProjectCadence ' +
+        'updates — measured 2026-08-09; the count moves with every story, the floor does ' +
+        'not), so a number this low means the data layer stopped using the supabase client ' +
+        'directly, or the AST walk no longer sees it — in both cases the chain-following ' +
+        'assertion below is now vacuous.',
     ).toBeGreaterThanOrEqual(2)
   })
 
@@ -373,11 +457,33 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
     expect(
       WRITES.length,
       `Only ${WRITES.length} supabase update/upsert call(s) found in non-test source. There ` +
-        'are seven legitimate ones (tickets, sprints, project_statuses), so a number this low ' +
-        'means the AST walk stopped seeing writes, or the anchoring in isSupabaseWrite() ' +
-        'stopped recognising them — and a guard that sees no writes approves every write. ' +
-        'Fix the walk, do not lower the floor.',
+        'were twelve when this was last measured (2026-08-09) — eleven on tickets, sprints, ' +
+        'project_statuses, project_fields, project_field_options and ticket_field_values, ' +
+        'plus the one permitted projects write — so a number this low means the AST walk ' +
+        'stopped seeing writes, or the anchoring in isSupabaseWrite() stopped recognising ' +
+        'them, and a guard that sees no writes approves every write. The floor stays loose ' +
+        'on purpose: it is walk health, not a census. Fix the walk, do not lower it.',
     ).toBeGreaterThanOrEqual(5)
+  })
+
+  /**
+   * The positive control on check 5's PAYLOAD reader, which is the one part of this file that
+   * reads an argument rather than a name — and, since SPRIN-97, the one check that can pass a
+   * write rather than only forbid it. The floors above keep the walk honest; this one keeps
+   * the walk's single permitted write in front of the reader. With no `projects` write in the
+   * tree, check 5 passes having inspected nothing, which is indistinguishable from a tree
+   * where the reader still works, and `objectLiteralKeys` becomes dead code that has to be
+   * right on the day someone re-adds a write.
+   */
+  it('still finds the permitted write to projects', () => {
+    expect(
+      PROJECT_WRITES.map(at),
+      'Found no update/upsert resolving to the projects table. updateProjectCadence ' +
+        '(src/lib/projects.ts, SPRIN-97) is one, so zero means either the walk stopped ' +
+        'resolving it or the cadence form lost its write — and check 5 below then reports a ' +
+        'clean tree by reading no payloads at all. If a story legitimately removes the last ' +
+        'projects write, this floor goes with it and check 5 reverts to forbidding the table.',
+    ).not.toHaveLength(0)
   })
 
   it('still finds the known rpc call site', () => {
@@ -398,8 +504,9 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
     expect(
       CLIENT_FILES,
       `Only ${CLIENT_FILES} file(s) under src/ were seen to import the supabase client. ` +
-        'Eight do (four data-layer modules, the auth context, and three route ' +
-        'components), so a number this low means clientImportNames() stopped matching ' +
+        'Eleven do as of 2026-08-09 (the census moves with every story that adds a ' +
+        'data-layer module; the FLOOR is what is deliberately loose), so a number this ' +
+        'low means clientImportNames() stopped matching ' +
         'the module specifier — and check 3 is then vacuous, as is half of check 7.',
     ).toBeGreaterThanOrEqual(6)
   })
@@ -477,20 +584,37 @@ describe('nothing in src/ writes projects.project_type after insert (SPRIN-81 AC
     ).toEqual([])
   })
 
-  /** Check 5 — the actual AC. */
-  it('makes no update or upsert call against the projects table', () => {
-    const offenders = WRITES.filter((call) => tableOf(call) === GUARDED_TABLE).map(describeNode)
+  /**
+   * Check 5 — the actual AC, narrowed by SPRIN-97 from "no write to this table" to "no write
+   * outside the two columns a grant exists for". The narrowing is not a relaxation: the
+   * unreadable payload it refuses is a shape the old check never had to think about, because
+   * it forbade the table outright.
+   */
+  it('writes only the granted cadence columns to the projects table', () => {
+    const offenders = PROJECT_WRITES.filter((call) => !writesOnlyGrantedColumns(call)).map(
+      describeNode,
+    )
 
     expect(
       offenders,
-      "SPRIN-81 AC5: a project's type is fixed at creation. RLS does not enforce that — " +
-        'projects_owner is FOR ALL, so the policy would accept an owner rewriting their ' +
-        'own row — but SPRIN-82 revoked the table UPDATE privilege on projects and granted ' +
-        'no columns back, so the database now refuses this write with a 42501 the app does ' +
-        'not handle. This guard is the OTHER layer: it says the app never attempts it, ' +
-        'which is a claim about this repo rather than about the database. If this update ' +
-        'is legitimate, the story owes a column grant AND a narrowing of this guard to ' +
-        "inspect its payload for project_type; see this file's docblock. Do not delete it.",
+      'This update/upsert on the projects table either names a column outside ' +
+        'SPRINT_CADENCE_COLUMNS, or carries a payload whose keys this guard cannot read — a ' +
+        'spread, a computed key, an identifier standing in for the object, an array of rows. ' +
+        'BOTH ARE FAILURES, and the second is the one to understand: unknown is where a ' +
+        'project_type write hides, and three type-valid ones walked past the regex version ' +
+        'of this guard on exactly that basis. Spell the payload out as an object literal with ' +
+        'plain keys (a `satisfies`/`as` wrapper around it is read through and is fine). ' +
+        "SPRIN-81 AC5 is what this protects: a project's type is fixed at creation, and " +
+        'projects_owner is FOR ALL so RLS would happily accept an owner rewriting their own ' +
+        'row. The database half is the privilege, not the policy — SPRIN-82 revoked UPDATE on ' +
+        'projects and SPRIN-97 granted back these two columns only, so any other column 42501s ' +
+        'live in a way the app does not handle. If this write is legitimate, its story owes ' +
+        'BOTH halves and neither alone is enough: a `grant update (<column>) on projects to ' +
+        'authenticated` in its migration, AND that column added to SPRINT_CADENCE_COLUMNS in ' +
+        'src/lib/domain.ts — which is declared `satisfies readonly (keyof SprintCadence)[]`, ' +
+        'so a non-cadence column also needs that type widened and the constant renamed. The ' +
+        'grant without the constant leaves this check blocking the merge; the constant ' +
+        'without the grant ships a write that silently 42501s. Do not delete this check.',
     ).toEqual([])
   })
 

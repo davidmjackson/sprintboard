@@ -649,6 +649,36 @@ export const SPRINT_WEEKDAYS = [
 export const SPRINT_LENGTH_WEEKS = [1, 2, 3, 4] as const
 
 /**
+ * The ONLY columns of `projects` that `authenticated` may UPDATE, mirroring SPRIN-97's
+ * migration B — the first UPDATE privilege this table has carried since SPRIN-82 revoked the
+ * table-wide one. `name`, `key` and `project_type` stay immutable in the *database*, not
+ * merely in our code.
+ *
+ * A runtime LIST rather than a `Pick` type, unlike `ProjectStatusUpdate` and
+ * `ProjectFieldUpdate` above, because one of its three consumers cannot read a type:
+ *
+ *   * `CadenceSchema` (`cadence-schemas.ts`) — the shape the form validates.
+ *   * `updateProjectCadence` (`projects.ts`) — the keys the write payload spells out.
+ *   * `src/test/project-type-immutability.test.ts` — which parses the source of every
+ *     `.update()` on `projects` and allows a payload ONLY if every key it can statically
+ *     read is in this list. That check runs on an AST, so it needs values, not a type.
+ *
+ * One source for all three is the whole job. Two hand-maintained copies of "which columns are
+ * writable" is a drift class this project has now recorded three times, and here the two
+ * halves are a Postgres grant and a test that claims to police it — the pair least likely to
+ * be re-derived and most expensive to get wrong.
+ *
+ * Widening it must not read like a one-line edit: another writable column needs a migration
+ * granting it AND an entry here, in the same commit. `satisfies` ties the names to the two
+ * columns `SprintCadence` names, so a typo is a compile error rather than a guard that
+ * silently allows a column no grant exists for.
+ */
+export const SPRINT_CADENCE_COLUMNS = [
+  'sprint_length_weeks',
+  'sprint_start_weekday',
+] as const satisfies readonly (keyof SprintCadence)[]
+
+/**
  * A project's cadence in words: `'2 weeks, starting Monday'`.
  *
  * THE single expression of this sentence, so the read-only display here and SPRIN-97's form

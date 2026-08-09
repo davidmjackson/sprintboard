@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
@@ -7,6 +7,7 @@ import {
   DEFAULT_PROJECT_STATUSES,
   PROJECT_TYPES,
   PROJECT_TYPE_LABELS,
+  SPRINT_CADENCE_COLUMNS,
   SPRINT_LENGTH_WEEKS,
   SPRINT_STATUSES,
   STATUS_CATEGORIES,
@@ -56,9 +57,22 @@ const MIGRATIONS_DIR = join(import.meta.dirname, '..', '..', 'docs', 'migrations
  *
  * Statements are split on `;`, whitespace-collapsed and lowercased, so the two files may format
  * and comment themselves however they like and still be compared on what they DO.
+ *
+ * **THE TABLE MATCH TOLERATES SCHEMA QUALIFICATION AND QUOTING, and that is a fix rather than
+ * a nicety** (SPRIN-97 review). It used to be the literal `\bon <table>\b`, which drops
+ * `on public.projects` and `on "projects"` before either side is compared. Most directions of
+ * that failed closed — an unrecognised statement in the migration empties `fromMigration` and
+ * trips the vacuity guard — but one did not: an EXTRA grant added to the schema doc in a
+ * qualified form is invisible to `fromDoc`, so the equality passes while the doc quietly says
+ * something the migrations never applied. On `projects` that is the difference between a
+ * documented `project_type` immutability and a rebuilt database without one.
+ *
+ * Both spellings are legal SQL and Postgres treats them as the same relation, so the matcher
+ * has to as well. The alternative — forbidding the qualified form by convention — is a
+ * prose-only invariant, which is the footgun this project has recorded before.
  */
 function grantStatements(sql: string, table: string): string[] {
-  const onTable = new RegExp(`\\bon ${table}\\b`)
+  const onTable = new RegExp(`\\bon\\s+(?:public\\s*\\.\\s*)?"?${table}"?(?![\\w"])`)
   return sql
     .split('\n')
     .map((line) => line.replace(/--.*$/, ''))
@@ -251,6 +265,121 @@ describe('the schema parser can still see the whole truth', () => {
         'docs/migrations/sprin-93-project-fields-delete.sql. A rebuild from the doc would ' +
         'produce a DIFFERENT database from the one the migrations built.',
     ).toEqual(fromMigration)
+  })
+
+  /**
+   * THE SAME DRIFT, ON `projects` — the fourth sighting, and the first where the doc's
+   * statements come from TWO migrations that must be read together.
+   *
+   * `projects` is the security-sensitive one. SPRIN-82 revoked UPDATE table-wide so
+   * `project_type` could not be rewritten; SPRIN-97 granted UPDATE back on exactly the two
+   * cadence columns. The doc has to state both, and a rebuild from a doc missing the revoke
+   * would produce a database where any authenticated user can rewrite `name`, `key` and
+   * `project_type` on their own project — the immutability CLAUDE.md calls non-negotiable,
+   * silently gone, with every live test still green because the live database is built from
+   * the migrations rather than from the doc.
+   *
+   * ORDER IS ASSERTED SEPARATELY, AND IT IS NOT PEDANTRY. `grantStatements` SORTS, so it
+   * compares the two files as SETS and is blind to sequence — and on this pair sequence is
+   * the whole meaning. A table-level `revoke update` CASCADES to column privileges, so
+   * `grant (cadence…)` followed by `revoke update` leaves the table with NO update privilege
+   * at all, while `revoke` followed by `grant` leaves the two columns writable. Those two
+   * documents differ by nothing a sorted comparison can see — and sorted order happens to put
+   * `grant` first, i.e. the broken sequence is the one the set comparison would bless. The
+   * `project_fields` test above can ignore this because its statements are order-independent;
+   * this one cannot.
+   */
+  it('states the same projects grants as the migrations that applied them', () => {
+    // EVERY migration, discovered by reading the directory — NOT a hardcoded file list.
+    // A hardcoded list inverts this control against the drift that actually happens: the
+    // migration is the applied artefact and the doc is the transcript, so the realistic
+    // failure is migration-leads-doc-lags. With a fixed list, a THIRD migration that widens
+    // (or revokes) a projects grant is invisible and the test stays green while the doc is
+    // wrong — and worse, the author who correctly DOES update the doc is punished with a red
+    // that reads as "remove the line you just added". Globbing makes a new migration join the
+    // comparison automatically, so the incentive points the right way.
+    const fromMigrations = readdirSync(MIGRATIONS_DIR)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .flatMap((file) =>
+        grantStatements(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'), 'projects'),
+      )
+      .sort()
+    const fromDoc = grantStatements(SCHEMA, 'projects')
+
+    expect(
+      fromMigrations.length,
+      'No grant/revoke on projects was found in ANY file under docs/migrations. The matcher ' +
+        'has stopped matching, so the equality below would compare two empty lists and pass ' +
+        'vacuously.',
+    ).toBeGreaterThanOrEqual(2)
+
+    expect(
+      fromDoc,
+      'docs/sprintboard_phase1_schema.sql no longer states the same projects grants as the ' +
+        'migrations under docs/migrations that applied them. A rebuild from the doc would ' +
+        'produce a DIFFERENT database — and on this table that means project_type ' +
+        'immutability, which nothing else in the gate would notice.',
+    ).toEqual(fromMigrations)
+
+    /**
+     * THE APPLIED GRANT'S COLUMN LIST IS PINNED TO `SPRINT_CADENCE_COLUMNS`, and without this
+     * the two halves of "which columns are writable" are joined by prose alone.
+     *
+     * Three independent review lenses found the same hole: widen the SQL to
+     * `grant update (sprint_length_weeks, sprint_start_weekday, name) …` and the ENTIRE gate
+     * stays green. The AST guard only polices what `src/` writes, not what the database
+     * permits; the live suites only assert the two cadence columns ARE writable, never that
+     * nothing else is; `docs/` is prettier-ignored and ESLint has no `.sql` glob. So the
+     * privilege could widen in the applied artefact with nothing anywhere going red — the
+     * precise shape of "a comment is not a control".
+     */
+    const grantMatch = /grant update \(([^)]*)\) on projects to authenticated/.exec(
+      fromMigrations.join(';'),
+    )
+    expect(
+      grantMatch,
+      'No `grant update (<columns>) on projects to authenticated` statement was found in the ' +
+        'migrations. Either it was removed — in which case the cadence form 42501s on every ' +
+        'save — or it was reworded and this assertion is now reading nothing.',
+    ).not.toBeNull()
+
+    const grantedColumns = (grantMatch?.[1] ?? '')
+      .split(',')
+      .map((column) => column.trim())
+      .sort()
+    expect(
+      grantedColumns,
+      'The columns granted UPDATE on projects by the migrations no longer match ' +
+        'SPRINT_CADENCE_COLUMNS in src/lib/domain.ts. These two must move together: the ' +
+        'constant is what the AST guard allows the app to write, and the grant is what the ' +
+        'database permits anyone to write. Widening only the grant opens a privilege the app ' +
+        'never uses and no other test can see; widening only the constant ships a write that ' +
+        'silently 42501s.',
+    ).toEqual([...SPRINT_CADENCE_COLUMNS].sort())
+
+    // Sequence, which the sorted comparison above cannot see. See the docblock: a table-level
+    // revoke cascades to column privileges, so the revoke MUST precede the column grant.
+    const docText = SCHEMA.replace(/--.*$/gm, '')
+    const revokedAt = docText.search(/revoke\s+update\s+on\s+projects\b/i)
+    const grantedAt = docText.search(/grant\s+update\s*\([^)]*\)\s*on\s+projects\b/i)
+
+    expect(
+      revokedAt,
+      'The doc no longer contains a table-level UPDATE revoke on projects.',
+    ).toBeGreaterThan(-1)
+    expect(
+      grantedAt,
+      'The doc no longer contains a column-level UPDATE grant on projects.',
+    ).toBeGreaterThan(-1)
+    expect(
+      revokedAt,
+      'In docs/sprintboard_phase1_schema.sql the column-level UPDATE grant on projects now ' +
+        'comes BEFORE the table-level revoke. A table-level revoke cascades to column ' +
+        'privileges, so applied in that order it would wipe the cadence grant and leave ' +
+        'projects with no update privilege at all — the cadence form would 42501 on every ' +
+        'save. The revoke must come first.',
+    ).toBeLessThan(grantedAt)
   })
 
   /**

@@ -80,15 +80,28 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   shortcut to undo.
 - **Ticket keys are already project-scoped** (`unique (project_id, number)`) and **blocked
   is a flag, not a column.** Both survive custom workflows unchanged. Preserve them.
-- **`projects` holds NO UPDATE privilege for `authenticated` or `anon`** (SPRIN-82). Nothing
-  in `src/` updates the table, so the revoke granted no columns back — which makes
-  `project_type` immutable in the *database* rather than only in our code, now that
-  `hasSprints(project)` decides whether sprints exist at all. **A story that needs to edit a
-  project — renaming is the obvious one — will get a `42501` until its migration runs
-  `grant update (name) on projects to authenticated`**, and it owes two more things: narrow
-  the AST guard in `src/test/project-type-immutability.test.ts`, and restore a cross-tenant
-  UPDATE row-count assertion to `rls.integration.test.ts`, which SPRIN-82 removed precisely
-  because there was no longer a privilege for RLS to filter. Deny by default, widen visibly.
+- **`projects` holds NO TABLE-LEVEL UPDATE for `authenticated` or `anon`, and exactly TWO
+  column grants** (SPRIN-82 revoked, SPRIN-97 granted back). Measured from `pg_class.relacl`
+  and `pg_attribute.attacl` on 2026-08-09: table ACL `authenticated=ardDxtm` — no `w` — plus
+  `authenticated=w` on `sprint_length_weeks` and `sprint_start_weekday` and nothing else.
+  That is what keeps `name`, `key` and `project_type` immutable in the *database* rather than
+  only in our code, now that `hasSprints(project)` decides whether sprints exist at all.
+
+  **This bullet used to say `projects` holds no UPDATE privilege at all, and to tell the next
+  story to run `grant update (name)` and restore the RLS assertion on `name`. Both halves are
+  now wrong, and the second was wrong in a way that would have shipped a passing test proving
+  nothing** — `name` is still revoked, so a cross-tenant `.update({ name })` is refused by the
+  privilege layer with `42501` before RLS is consulted, and a row-count assertion on it would
+  measure the grant instead of the policy. The rule, as a property rather than a column name:
+  **a cross-tenant row-count assertion is only honest on a column the role may actually
+  UPDATE.** SPRIN-97 restored it on `sprint_length_weeks`.
+
+  **A story that needs another writable column still owes four things**, and only the first
+  announces itself: `grant update (<column>) on projects to authenticated` in its migration;
+  that column added to `SPRINT_CADENCE_COLUMNS` in `domain.ts` (which is
+  `satisfies readonly (keyof SprintCadence)[]`, so a non-cadence column needs the type widened
+  and the constant renamed); the doc-vs-migration matcher in `domain.test.ts` kept in step; and
+  a live assertion that the column is genuinely writable. Deny by default, widen visibly.
 
 **The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
 Every policy on every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions

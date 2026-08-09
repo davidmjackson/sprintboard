@@ -102,6 +102,37 @@
 -- in rls.integration.test.ts explaining the deleted line. A migration banner is
 -- not somewhere a future author has any reason to open.
 --
+-- ⚠ ALL THREE OBLIGATIONS WERE DISCHARGED BY SPRIN-97 (2026-08-09), AND THE
+-- `.update({ name: 'pwned' })` INSTRUCTION IN ITEM 3 ABOVE WAS WRONG AS
+-- WRITTEN. Left in place rather than rewritten, because this file is the record
+-- of what was applied and the error is worth seeing. Read it with this:
+--
+-- The story that first needed a writable project column was not the rename this
+-- banner imagined. It was SPRIN-97 (configurable sprint cadence), and it ran
+--
+--     grant update (sprint_length_weeks, sprint_start_weekday) on projects
+--       to authenticated;   -- docs/migrations/sprin-97-project-cadence-update.sql
+--
+-- so `name` is STILL revoked. Item 3 taken literally therefore produces a test
+-- that fails: `b.from('projects').update({ name: 'pwned' })` is refused by the
+-- privilege layer with 42501 and `data === null`, never the `[]` the assertion
+-- expects. And the repair that suggests itself — assert the error instead —
+-- rebuilds the exact defect the deletion note argues against, because the line
+-- would then pass off the GRANT: drop the `projects_owner` policy and it stays
+-- green.
+--
+-- THE GENERAL RULE, which item 3 stated as a column name instead of as a
+-- property: a cross-tenant ROW-COUNT assertion is only honest on a column the
+-- role may actually UPDATE. The privilege layer is checked first, so an
+-- ungranted column never reaches the policy and the row count measures the
+-- grant rather than RLS. SPRIN-97 restored the line on `sprint_length_weeks`
+-- (writing 4, not the default 2, so a no-op cannot be mistaken for a filtered
+-- write) plus a re-read as A proving the value did not move.
+--
+-- The rename story this banner was written for still owes `grant update (name)`
+-- and an addition to `SPRINT_CADENCE_COLUMNS`'s allowlist in the AST guard —
+-- but it no longer owes obligations 2 and 3, which now exist.
+--
 -- WHY anon IS INCLUDED. It holds the identical `arwdDxtm` and has no policy on
 -- this table, so it can update nothing today regardless. A privilege that
 -- nothing may use is exactly how the next audit produces a false positive, and

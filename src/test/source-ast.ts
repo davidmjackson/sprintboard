@@ -111,6 +111,59 @@ export function unwrapExpression(expr: ts.Expression): ts.Expression {
 }
 
 /**
+ * The key one object-literal property names, or null when it names nothing readable here.
+ *
+ * `{ sprint_length_weeks: n }`, `{ 'sprint_length_weeks': n }` and the shorthand
+ * `{ sprint_length_weeks }` all read the same, because in each the key is spelled out in the
+ * source. A spread brings its keys from somewhere else, a computed key is decided at runtime,
+ * and a method or accessor is not a column being written at all — each of those is null,
+ * which the caller must treat as unknown rather than as absent.
+ */
+function propertyKey(property: ts.ObjectLiteralElementLike): string | null {
+  if (ts.isShorthandPropertyAssignment(property)) return property.name.text
+  if (!ts.isPropertyAssignment(property)) return null
+  const name = property.name
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text
+  if (ts.isNoSubstitutionTemplateLiteral(name)) return name.text
+  return null
+}
+
+/**
+ * Every key of an object literal, or null if ANY ONE of them cannot be read statically.
+ *
+ * The caller gets one bit: the COMPLETE key set, or "unknown". There is deliberately no
+ * partial answer, because a partial key set read as a complete one is precisely how a payload
+ * smuggles a key past an allowlist — `{ ...cadence, project_type: <a type> }` would otherwise
+ * report the one key it happens to spell out. (That example is written with a placeholder
+ * rather than a real project type on purpose: `project-type-single-expression.test.ts` scans
+ * PROSE as well as code, so quoting the literal value here reddens the gate from inside a
+ * comment. It did, once, before this line was rewritten.) Null is also the answer for
+ * anything that is not
+ * an object literal: an identifier standing in for the payload, a call, an array of rows (the
+ * shape `upsert` also accepts, and one this cannot read), or no argument at all.
+ *
+ * WRAPPERS THAT CANNOT CHANGE THE KEY SET ARE STRIPPED FIRST, so `{ … } satisfies T` and
+ * `{ … } as T` read as the literals they are. That is not a softening — a type assertion moves
+ * no keys — and it is load-bearing: `satisfies` is this repo's idiom for write payloads
+ * (`renameProjectStatus`, `renameProjectFieldOption`), so a reader that reddened on it would
+ * teach its next author to delete a type annotation rather than to fix a real problem. A
+ * spread INSIDE such a literal is still null; the unwrapping is of the wrapper, not of the
+ * doctrine.
+ */
+export function objectLiteralKeys(node: ts.Expression | undefined): string[] | null {
+  if (node === undefined) return null
+  const literal = unwrapExpression(node)
+  if (!ts.isObjectLiteralExpression(literal)) return null
+  const keys: string[] = []
+  for (const property of literal.properties) {
+    const key = propertyKey(property)
+    if (key === null) return null
+    keys.push(key)
+  }
+  return keys
+}
+
+/**
  * What a call names: `x.foo(…)` is `foo` and a bare `foo(…)` is also `foo`, so a client
  * method reached by destructuring (`const { from } = supabase`) reads the same as one
  * reached through the client. Null for anything the name of which cannot be read —

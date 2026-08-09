@@ -392,52 +392,79 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     })
 
     /**
-     * `projects` IS DELIBERATELY ABSENT FROM THIS TEST, and it used to be the first line.
+     * `projects` WAS ABSENT FROM THIS TEST BETWEEN SPRIN-82 AND SPRIN-97, and is back.
      *
-     * SPRIN-82 revoked the table-wide UPDATE privilege on `projects` from `authenticated`
-     * (docs/migrations/sprin-82-projects-immutable.sql), so B's update no longer returns
-     * an empty result set — it returns 42501 with `data === null`, and the row count this
-     * test is built on stops existing.
+     * SPRIN-82 revoked the table-wide UPDATE privilege on `projects` and removed this line,
+     * because B's update stopped returning an empty result set: with no privilege at all it
+     * returned 42501 with `data === null`, and the row count this test is built on stopped
+     * existing. The removal came with an obligation — put it back the day any column of
+     * `projects` becomes updatable — and SPRIN-97 is that day:
+     * `grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenticated`.
      *
-     * The tempting repair — change `[]` to `null`, or assert the error — is the WRONG one
-     * and was rejected explicitly. That line would then pass because of the GRANT, so
-     * dropping the `projects_owner` policy would no longer redden it: two controls on one
-     * write, and the assertion can no longer tell you which one is holding. `sprints` and
-     * `tickets` stay because they still hold table-wide UPDATE, so they still genuinely
-     * exercise RLS *filtering*, which is what this describe block's comment says it is
-     * about.
+     * ⚠ THE COLUMN IS THE WHOLE ARGUMENT, AND THE RECORDED INSTRUCTION NAMED THE WRONG ONE.
+     * Three places in this repo (this docblock, the guard docblock in
+     * `src/test/project-type-immutability.test.ts`, and the note above the revoke in
+     * `docs/sprintboard_phase1_schema.sql`) said to restore the line as
+     * `b.from('projects').update({ name: 'pwned' })`. They were written anticipating a
+     * RENAME story, which would grant `name`. SPRIN-97 grants neither `name` nor `key` nor
+     * `project_type`: those stay revoked, so that update returns 42501 with `data === null`
+     * and `toEqual([])` simply fails. The tempting repair — assert the error instead —
+     * reproduces the exact defect SPRIN-82 refused: the line would then pass off the GRANT,
+     * dropping the `projects_owner` policy would no longer redden it, and the assertion
+     * could no longer tell you which of the two controls on that write was holding.
      *
-     * WHERE THE COVERAGE WENT. `projects` keeps its cross-tenant coverage for SELECT (the
-     * test directly above) and DELETE (the test two below) here, and for INSERT via the
-     * spoofed-`owner_id` 42501 case in `src/test/projects.integration.test.ts`. Nothing was
-     * dropped, because there is no longer any UPDATE privilege for RLS to filter — the
-     * assertion removed was not covering a hole, it was covering a verb that no longer
-     * reaches the policy at all. The privilege refusal
-     * itself is asserted, owner-side, in `src/test/projects.integration.test.ts`
-     * ("refuses the owner's own project_type UPDATE"): owner rather than stranger, because
-     * a stranger was already blocked by the policy and would prove nothing about the grant.
+     * So the restored line writes a GRANTED column. Only a granted column lets UPDATE reach
+     * the policy at all; then RLS *filters* on `USING`, and a row count is once again the
+     * honest assertion — which is the condition SPRIN-82 set for restoring it. Every future
+     * reader owes the same test: pick a column `authenticated` may actually UPDATE, or this
+     * line stops testing RLS and starts testing the ACL that the owner-side test in
+     * `src/test/projects.integration.test.ts` already covers.
      *
-     * ⚠ PUT THIS LINE BACK THE DAY ANY COLUMN OF `projects` BECOMES UPDATABLE — and the
-     * "rename a project" story the migration anticipates is exactly that day. The argument
-     * above holds only while `projects` carries NO update privilege at all. The moment a
-     * story runs `grant update (name) on projects to authenticated`, UPDATE reaches the
-     * policy again for that column, `projects_owner` is load-bearing for it, and B renaming
-     * A's project is a live cross-tenant write with no assertion anywhere in this repo
-     * against it. The owner-side 42501 test does NOT cover it and will not notice: a COLUMN
-     * grant leaves `project_type` ungranted, so that test stays green while this hole opens.
-     * Nothing goes red to ask for this. Restore it in the same shape `sprints` and `tickets`
-     * use below — `b.from('projects').update({ name: 'pwned' }).eq('id', projectA).select()`,
-     * asserting `[]` — because at that point RLS filtering is once again what is holding, so
-     * a row count is once again the honest assertion. The same obligation is recorded above
-     * the revoke in `docs/sprintboard_phase1_schema.sql` and in
-     * `docs/migrations/sprin-82-projects-immutable.sql`.
+     * The rest of `projects`'s cross-tenant coverage is unchanged: SELECT in the test
+     * directly above, DELETE two below, INSERT via the spoofed-`owner_id` 42501 case in
+     * `src/test/projects.integration.test.ts`. The privilege side of the boundary — that
+     * `project_type` is still refused outright, to its own owner — is asserted there too,
+     * owner-side rather than stranger-side, because a stranger was already filtered by the
+     * policy and would prove nothing about the grant.
      */
     it('B cannot UPDATE any of it', async () => {
+      // 4 weeks, and the value matters. The fixture project is at the default 2, so a write
+      // of 4 genuinely changes the row if it lands — where a write of 2 would leave the
+      // table identical whether RLS filtered it or not. One const, used twice, so the guard
+      // below cannot drift away from the write it is guarding.
+      const attempted = 4
+      const before = await a
+        .from('projects')
+        .select('sprint_length_weeks')
+        .eq('id', projectA)
+        .single()
+      expect(before.error).toBeNull()
+      expect(before.data!.sprint_length_weeks).not.toBe(attempted)
+
+      const project = await b
+        .from('projects')
+        .update({ sprint_length_weeks: attempted })
+        .eq('id', projectA)
+        .select()
       const sprint = await b.from('sprints').update({ name: 'pwned' }).eq('id', sprintA).select()
       const ticket = await b.from('tickets').update({ summary: 'pwned' }).eq('id', ticketA).select()
 
+      // `error === null` is asserted for `projects` alone, and it is not decoration: it is
+      // what distinguishes the two ways this line can be satisfied. A filtered write is
+      // success-with-zero-rows; a MISSING grant is 42501 with `data === null`, which fails
+      // `toEqual([])` too but reads as an isolation failure when it is a migration that was
+      // never applied. Asserting both makes the two failures say different things.
+      expect(project.error).toBeNull()
+      expect(project.data).toEqual([])
       expect(sprint.data).toEqual([])
       expect(ticket.data).toEqual([])
+
+      // `[]` alone does not say the row is untouched. PostgREST applies the SELECT policy to
+      // an UPDATE's RETURNING rows, so a write that DID land and was then hidden from B on
+      // the way out arrives here as the same empty array. Row count and unchanged value are
+      // one assertion in two halves; the second half is read as A, who can see the row.
+      const still = await a.from('projects').select('sprint_length_weeks').eq('id', projectA)
+      expect(still.data).toEqual([{ sprint_length_weeks: before.data!.sprint_length_weeks }])
 
       // Positive control: the same update, as A, changes exactly one row.
       const asA = await a
@@ -447,7 +474,12 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
         .select()
       expect(asA.data).toHaveLength(1)
       expect(asA.data![0]!.summary).toBe('renamed by its owner')
-    })
+      // 30s, raised from vitest's 5s default by SPRIN-97. Restoring the `projects` line took
+      // this test from four live round trips to six, and CLAUDE.md records a recurring
+      // failure whose signature is a bare 5s timeout on a live suite whose VICTIM MOVES
+      // between runs — a starved shared database, not a defect. The longest test in this
+      // file gets the least headroom is the wrong way round; its siblings already use 30s.
+    }, 30_000)
 
     // Every negative assertion above uses client `b`. An anonymous client would
     // also see nothing and pass all of them — proving nothing about isolation.

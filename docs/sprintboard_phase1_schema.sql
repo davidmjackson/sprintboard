@@ -928,29 +928,74 @@ revoke delete on project_statuses from anon;
 revoke update on project_statuses from authenticated, anon;
 grant  update (name, category, position, wip_limit) on project_statuses to authenticated;
 
--- SPRIN-82: `projects` holds NO update privilege at all, and nothing is granted back —
--- because nothing in src/ updates the table (createProject inserts, listProjects selects).
--- This is the SAME statement as the line above with the opposite shape: no column-level
--- grant follows it, so the trap described above does not arise here. It makes SPRIN-81's
--- app-layer "the project type cannot change after creation" a database control, which
--- matters as of SPRIN-82 because hasSprints(project) now decides whether the Sprints tab,
--- the /sprints route and the ticket sprint picker exist. It is NOT a tenant-isolation fix
--- — projects_owner already confined the write to the owner's own row — it stops an owner
--- stranding their own sprints behind a UI that no longer shows them.
+-- SPRIN-82: the TABLE-level update privilege on `projects` is revoked outright, and until
+-- SPRIN-97 nothing was granted back — because nothing in src/ updated the table
+-- (createProject inserts, listProjects selects). The revoke is table-wide for the reason
+-- spelled out above the project_statuses pair: a column-level REVOKE cannot carve a hole in
+-- a table-level grant, so the table privilege has to go outright. It makes SPRIN-81's
+-- app-layer "the project type cannot
+-- change after creation" a database control, which matters as of SPRIN-82 because
+-- hasSprints(project) now decides whether the Sprints tab, the /sprints route and the ticket
+-- sprint picker exist. It is NOT a tenant-isolation fix — projects_owner already confined the
+-- write to the owner's own row — it stops an owner stranding their own sprints behind a UI
+-- that no longer shows them.
 --
--- A FUTURE "RENAME A PROJECT" STORY OWES THREE THINGS, and only the first is obvious:
---   1. `grant update (name) on projects to authenticated` — right here.
+-- SPRIN-97 IS THE STORY THAT FIRST NEEDED A COLUMN BACK, and it paid all three of the debts
+-- recorded here. The list is kept rather than deleted, because items 1 and 2 are owed again
+-- by the next story that widens the writable set — and because item 3 was recorded WRONG, in
+-- a way that would have shipped a test passing for the wrong reason.
+--   1. `grant update (<col>) on projects to authenticated` — the line below the revoke.
+--      SPRIN-97 grants sprint_length_weeks and sprint_start_weekday and nothing else, so
+--      name, key and project_type stay immutable in the DATABASE and not merely in our code.
+--      ⚠ A story widening the set must ADD its column to that grant (or add a second bare
+--      `grant update (<new>)`). It must NOT copy the revoke-then-restate shape used on
+--      project_statuses and project_fields above: a table-level revoke CASCADES to column
+--      grants, so `revoke update on projects …; grant update (name) …` would silently strip
+--      the two cadence columns and break the Settings cadence form with a 42501.
 --   2. Narrow the AST guard in src/test/project-type-immutability.test.ts (check 5) so it
---      inspects an update's payload for project_type instead of forbidding every write to
---      this table. That one blocks the merge, so it cannot be forgotten.
+--      inspects an update's payload instead of forbidding every write to this table. That one
+--      blocks the merge, so it cannot be forgotten. SPRIN-97 turned check 5 into a fail-closed
+--      allowlist keyed on SPRINT_CADENCE_COLUMNS in src/lib/domain.ts — a payload whose keys
+--      cannot be read statically is a FAILURE there, not a pass. Widening the grant therefore
+--      means widening that constant too, in the same commit.
 --   3. RESTORE the cross-tenant `projects` UPDATE row-count assertion to
 --      src/test/rls.integration.test.ts's "B cannot UPDATE any of it". SPRIN-82 deleted it
---      because the revoke left no UPDATE privilege for RLS to filter — a column grant hands
---      that privilege straight back for `name`, so projects_owner becomes load-bearing again
---      for a verb nothing tests, and "B renames A's project" is a real cross-tenant write.
---      Nothing goes red to ask for this. That is why it is written next to the line that
---      causes it rather than only in the migration file nobody will reopen.
+--      because the revoke left no UPDATE privilege for RLS to filter; a column grant hands
+--      that privilege back, so projects_owner is load-bearing again for a verb nothing tested.
+--      SPRIN-97 restored it — but NOT in the shape this note originally prescribed.
+--
+--      ⚠ THIS NOTE USED TO SAY "bring it back as `.update({ name: 'pwned' })`". THAT WAS
+--      WRONG, not merely out of date. It was written anticipating a RENAME story, which would
+--      grant `name`. SPRIN-97 grants only the two cadence columns, so `name` is still revoked
+--      and that update is refused by the PRIVILEGE before any policy is consulted: 42501 with
+--      `data === null`, never the `[]` the assertion expects. It would simply fail — and the
+--      tempting repair, asserting the error code instead, reproduces the exact defect the
+--      deletion argued against: the line would then pass off the GRANT, so dropping
+--      projects_owner would no longer redden it, and the assertion could no longer tell you
+--      which of the two controls was holding.
+--
+--      THE RULE, so the next widening story gets it right first time: write a cross-tenant
+--      row-count assertion on a column the calling role HAS been granted. Only a granted
+--      column lets the UPDATE reach the policy at all, and RLS FILTERS on USING rather than
+--      raising — so zero rows is evidence about RLS only once the privilege layer has already
+--      been satisfied. On an ungranted column the same `[]` is unreachable, and any assertion
+--      you can make instead is an assertion about the grant.
+--
+--      SPRIN-97 used `.update({ sprint_length_weeks: 4 })` — 4, not the default 2, so a no-op
+--      update cannot be mistaken for a filtered one — asserting `[]`, paired with a re-read as
+--      A proving the value is unchanged. `[]` alone is satisfied both by a write that matched
+--      nothing and by one whose `.select()` was filtered afterwards; the row count plus the
+--      unchanged value is the pair that tells them apart.
 revoke update on projects from authenticated, anon;
+
+-- SPRIN-97: the first columns ever granted back on this table (migration
+-- docs/migrations/sprin-97-project-cadence-update.sql). COLUMN-level UPDATE only — no
+-- table-level `w` is restored for either client role, which is precisely what keeps name,
+-- key and project_type unwritable in the database while the Settings cadence form works.
+-- Measured before applying: projects.attacl was EMPTY, so this creates the table's first
+-- column ACL rather than widening one. src/lib/domain.ts's SPRINT_CADENCE_COLUMNS mirrors
+-- this list on the client side and the AST guard reads it; keep the three in step.
+grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenticated;
 
 -- SPRIN-90: project_fields. Four owner-scoped policies, all written with `(select
 -- auth.uid())` rather than the bare call — wrapped in a scalar subquery it plans as an
