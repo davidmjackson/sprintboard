@@ -3,8 +3,9 @@ import { useOutletContext } from 'react-router-dom'
 
 import type { ProjectShellContext } from './ProjectShell'
 import type { ProjectStatus } from '@/lib/domain'
-import { hasWipLimits } from '@/lib/domain'
+import { hasSprints, hasWipLimits } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
+import { CadenceSettings } from './CadenceSettings'
 import { CustomFieldSettings } from './CustomFieldSettings'
 import { LoadFailure } from './LoadFailure'
 import { StatusSettings } from './StatusSettings'
@@ -100,6 +101,13 @@ export function SettingsTab() {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* SPRIN-94. Above the status list because a project's rhythm frames the columns rather
+          than the other way round. Gated on hasSprints, not on !hasWipLimits: they are two
+          different questions that share an answer only while there are exactly two project
+          types. No phase gate of its own — the cadence rides on `project`, which the shell has
+          already resolved by the time this tab renders at all. */}
+      {hasSprints(project) && <CadenceSettings cadence={project} />}
+
       <StatusSettings
         projectId={project.id}
         statuses={statuses}

@@ -50,6 +50,14 @@
  * new `Tables`/`Relationships` keys, so the same forcing property applies: calling
  * `.from('project_field_options')` before this regeneration would have been a
  * compile error rather than a silent `string`.
+ *
+ * SPRIN-94 added `projects.sprint_length_weeks` and `projects.sprint_start_weekday`,
+ * both `not null` with defaults (`2` and `1`), so they arrive here as plain `number`
+ * — not `number | null` — on `Row`, `Insert` and `Update` alike. Their range checks
+ * (`projects_sprint_length_weeks_range`, 1-4; `projects_sprint_start_weekday_range`,
+ * 1-7) are, like every other check constraint in this schema, invisible here: the
+ * columns are unconstrained `number` on the client, and `SPRINT_LENGTH_WEEKS` /
+ * `SPRINT_WEEKDAYS` in `domain.ts` are what keep a picker built on them honest.
  */
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
@@ -222,6 +230,8 @@ export type Database = {
           name: string
           owner_id: string
           project_type: string
+          sprint_length_weeks: number
+          sprint_start_weekday: number
         }
         Insert: {
           created_at?: string
@@ -230,6 +240,8 @@ export type Database = {
           name: string
           owner_id: string
           project_type?: string
+          sprint_length_weeks?: number
+          sprint_start_weekday?: number
         }
         Update: {
           created_at?: string
@@ -238,6 +250,8 @@ export type Database = {
           name?: string
           owner_id?: string
           project_type?: string
+          sprint_length_weeks?: number
+          sprint_start_weekday?: number
         }
         Relationships: []
       }

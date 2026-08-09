@@ -52,13 +52,22 @@ on day one could never change it, which fails the epic's own "must stay editable
 ### The SPRIN-82 wall is real — verified live, 2026-08-09
 
 ```
-projects.relacl → authenticated=ardDxtm     -- no `w`. No UPDATE.
-                  anon=ardDxtm
-information_schema.column_privileges for projects → no rows for anon/authenticated
+projects.relacl    → authenticated=ardDxtm   -- no `w`. No UPDATE.
+                     anon=ardDxtm
+projects.attacl    → EMPTY. No column on this table carries an ACL.
 ```
 
 So there are no column grants either. Story 2 is where this is paid down, and it owes
 **three** things, not one. They are itemised under that story below.
+
+**READ `pg_class.relacl` AND `pg_attribute.attacl`, NEVER `information_schema`.** The first
+draft of this section cited `information_schema.column_privileges` returning no rows as the
+proof of "no column grants". **That proves nothing.** Both `column_privileges` and
+`role_table_grants` filter to grants the *querying* role is party to, and the Supabase
+read-only MCP user is party to none of them — they return zero rows for this table whatever
+its ACL is. The conclusion above survived (re-derived from `attacl` on 2026-08-09, genuinely
+empty), but the method did not, and **story 2 leans on this fact far harder than story 1
+does**. SPRIN-85's migration banner records the same trap; this is its second sighting.
 
 ## Schema and migrations
 
@@ -321,10 +330,11 @@ actually matters — the pre-filled dates are editable **and submit as edited**,
 **Story 4** asserts a live insert of `end_date < start_date` earns `23514` **and** names
 `sprints_end_not_before_start`. A bare SQLSTATE would pass if some other check fired.
 
-**A watch item, not a task.** `src/lib/domain.ts` is already 654 lines. `max-lines` is
-configured with comment skipping so it passes today, but story 1 adds to it. If it lands near
-the 400 threshold, **split it — do not widen the max.** Widening reddens
-`verify-gate.test.mjs` by design.
+**A watch item, now measured and discharged.** `src/lib/domain.ts` is 654 physical lines,
+which looks alarming against the 400-line threshold. `max-lines` runs with `skipComments` and
+`skipBlankLines`, and this file is mostly docblock: the **counted** figure is ~181 of 400.
+There is ample headroom and no split is needed for this epic. Should a later story push it
+close, **split it — do not widen the max**, which reddens `verify-gate.test.mjs` by design.
 
 ## Constraints carried from the epic and `CLAUDE.md`
 
@@ -348,3 +358,22 @@ the 400 threshold, **split it — do not widen the max.** Widening reddens
   which is the guard working, not an obstacle.
 - It does not touch the `auth_rls_initplan` advisor sweep. That belongs to SPRIN-75.
 - It does not change sprint naming, the one-active-sprint rule, or `completeSprint`.
+
+## Known gaps, recorded rather than fixed (SPRIN-94 review, 2026-08-09)
+
+A 13-mutation adversarial pass over SPRIN-94 killed 11 and found **no Critical or Important**
+defects. Two Minor gaps stand, both about the same thing and both inherited by later stories:
+
+- **Nothing compares the schema doc's CHECK bounds to the applied migration's.** A reviewer
+  changed `between 1 and 4` in `docs/sprintboard_phase1_schema.sql` so the doc and the live
+  database disagreed, and the whole gate stayed green. `domain.test.ts` has a doc-vs-migration
+  matcher, but it covers `project_fields` GRANT statements only — not DDL bounds, and not this
+  table. This is the same drift class session 63 found in the `project_fields` grant block and
+  the third sighting in this project.
+- **The migration's literal `default 2` / `default 1` are unguarded locally.** Only the live
+  suite observes them, and it cannot run locally. The migration's own banner discloses this,
+  so it is expected rather than silent.
+
+**Neither was fixed in SPRIN-94, deliberately**: a general doc-vs-DDL matcher is a piece of test
+infrastructure, not this story's scope, and building one badly is worse than the gap. Whoever
+widens the cadence range in a later story should know the doc will not argue with them.
