@@ -102,6 +102,16 @@ export type ProjectShellContext = {
    *  `field_id`, so they are unaffected too — which is the whole point of the name/slug
    *  division this epic rests on. */
   onFieldUpdated: (field: ProjectField) => void
+  /** A custom field was deleted from the Settings tab (SPRIN-93). Removes it from `fields` by
+   *  id AND removes that field's rows from `options` — TWO lists, because the database changed
+   *  two tables: `pfo_field_fk` is `on delete cascade`, so those option rows are already gone
+   *  server-side and keeping them here would publish a list the database disagrees with. That
+   *  matters beyond this tab, which is why the second patch is not tidiness: `options` is read
+   *  by `CreateTicketCustomFields` and `TicketDetailSidebar` too, so the staleness would not
+   *  stay on the surface that caused it. The VALUE rows cascade as well (`tfv_field_fk`,
+   *  `tfv_type_fk`) and there is deliberately no third patch — the shell holds no value list,
+   *  since the detail sidebar fetches a ticket's values when it opens. */
+  onFieldDeleted: (id: string) => void
   /** A status was added from the Settings tab (SPRIN-77). Appended, because the write gives
    *  it `max(position)+1` — so appending IS the board's column order, not a guess at it. */
   onStatusCreated: (status: ProjectStatus) => void
@@ -305,6 +315,25 @@ export function ProjectShell() {
   const onFieldUpdated = (updated: ProjectField) =>
     fieldRead.patch(project.id, (fs) => fs.map((f) => (f.id === updated.id ? updated : f)))
 
+  // A field was deleted (SPRIN-93). TWO lists are patched, because the database changed two
+  // tables: `pfo_field_fk` cascades, so this field's option rows are already gone server-side and
+  // leaving them in the shared list would make the client's copy disagree with the database.
+  // `options` is read by `CreateTicketCustomFields` and `TicketDetailSidebar` as well as the
+  // settings tab, so the staleness would not stay on the surface that caused it. Mirrors
+  // `onSprintCompleted`, the existing precedent for one event patching two of the shell's lists.
+  //
+  // The VALUE rows also cascade (`tfv_field_fk`, `tfv_type_fk`), and there is deliberately no
+  // third patch: the shell holds no value list — the detail sidebar fetches a ticket's values when
+  // it opens — so there is nothing here to keep in step.
+  //
+  // A `const` arrow, not a conditional in `ProjectShell`'s own body: this component is at exactly
+  // 10 of 10 cyclomatic, so a branch written INLINE would redden `npm run lint`. Re-measured for
+  // this story, not recalled from the precedent.
+  const onFieldDeleted = (id: string) => {
+    fieldRead.patch(project.id, (fs) => fs.filter((f) => f.id !== id))
+    optionRead.patch(project.id, (os) => os.filter((o) => o.field_id !== id))
+  }
+
   // The three option reducers (SPRIN-92 task 9), local mutations for the same reason as every
   // other one here — and costing ZERO cyclomatic points for the same reason `onFieldCreated`/
   // `onFieldUpdated` do: these are `const` arrow declarations, not branches written INLINE in
@@ -385,6 +414,7 @@ export function ProjectShell() {
                 onOptionDeleted,
                 onFieldCreated,
                 onFieldUpdated,
+                onFieldDeleted,
                 onStatusCreated,
                 onStatusUpdated,
                 onStatusesReordered,

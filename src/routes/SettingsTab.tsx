@@ -83,6 +83,7 @@ export function SettingsTab() {
     onRetry,
     onFieldCreated,
     onFieldUpdated,
+    onFieldDeleted,
     onOptionCreated,
     onOptionUpdated,
     onOptionDeleted,
@@ -124,6 +125,7 @@ export function SettingsTab() {
         onRetry={onRetry}
         onCreated={onFieldCreated}
         onUpdated={onFieldUpdated}
+        onDeleted={onFieldDeleted}
         onOptionCreated={onOptionCreated}
         onOptionUpdated={onOptionUpdated}
         onOptionDeleted={onOptionDeleted}

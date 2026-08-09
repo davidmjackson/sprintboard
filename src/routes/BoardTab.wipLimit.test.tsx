@@ -140,6 +140,8 @@ function ctxWith(
     onOptionDeleted: vi.fn(),
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
+    // SPRIN-93, same reason as `BoardTab.test.tsx`: a real `ProjectShellContext`, not a cast.
+    onFieldDeleted: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),

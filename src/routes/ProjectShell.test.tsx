@@ -372,6 +372,43 @@ function OptionContextProbe() {
   )
 }
 
+/**
+ * SPRIN-93. The only probe that renders BOTH the fields list and the options list, because
+ * `onFieldDeleted` is the only reducer that patches two of them — `pfo_field_fk` cascades, so the
+ * database has already removed the deleted field's option rows and a shell that kept them would
+ * publish a list disagreeing with the database. Neither `FieldContextProbe` nor
+ * `OptionContextProbe` can see that: each shows one list, and the missing patch is invisible in
+ * the one it does not render.
+ *
+ * TWO delete buttons, on two different field ids, so the "another field's options survive" control
+ * below can delete a field that owns NO options — a reducer that cleared the option list wholesale
+ * satisfies the first test's f2 assertions only by accident of ordering, and this one refuses it
+ * outright.
+ */
+function FieldDeleteProbe() {
+  const { fields, options, onFieldDeleted } = useOutletContext<ProjectShellContext>()
+  return (
+    <div>
+      <ul aria-label="probe fields">
+        {fields.map((f) => (
+          <li key={f.id}>{f.name}</li>
+        ))}
+      </ul>
+      <ul aria-label="probe options">
+        {options.map((o) => (
+          <li key={`${o.field_id}:${o.slug}`}>{o.label}</li>
+        ))}
+      </ul>
+      <button type="button" onClick={() => onFieldDeleted('f1')}>
+        probe delete field f1
+      </button>
+      <button type="button" onClick={() => onFieldDeleted('f3')}>
+        probe delete field f3
+      </button>
+    </div>
+  )
+}
+
 function SprintContextProbe() {
   const { sprints, sprintsPhase } = useOutletContext<ProjectShellContext>()
   return (
@@ -454,6 +491,7 @@ function renderShell(path: string, ctx: ProjectsContext = { projects: PROJECTS, 
             <Route path="ticket-probe" element={<TicketContextProbe />} />
             <Route path="field-probe" element={<FieldContextProbe />} />
             <Route path="option-probe" element={<OptionContextProbe />} />
+            <Route path="field-delete-probe" element={<FieldDeleteProbe />} />
             <Route path="crash" element={<CrashProbe />} />
             <Route path="crash-flaky" element={<FlakyCrashProbe />} />
           </Route>
@@ -1209,6 +1247,104 @@ describe('ProjectShell', () => {
 
       await waitFor(() => expect(mockListOptions).toHaveBeenCalledWith('p1'))
       expect(await screen.findByText('Low')).toBeInTheDocument()
+    })
+  })
+
+  /**
+   * SPRIN-93's `onFieldDeleted`, the shell's SECOND reducer to patch two lists at once — the
+   * first being `onSprintCompleted`, which this one mirrors.
+   *
+   * The second patch is not tidiness. `pfo_field_fk` is `on delete cascade`, so by the time this
+   * reducer runs the database has ALREADY removed the deleted field's option rows; leaving them
+   * in the shared list makes the client's copy disagree with the database. And `options` is read
+   * by `CreateTicketCustomFields` and `TicketDetailSidebar` as well as the Settings tab, so the
+   * staleness would not stay on the surface that caused it — a deleted `select` field's options
+   * would keep appearing in the create dialog until a reload.
+   *
+   * There is deliberately no third patch for the VALUE rows that `tfv_field_fk` also cascades:
+   * the shell holds no value list (the detail sidebar fetches a ticket's values when it opens),
+   * so there is nothing here to keep in step.
+   */
+  describe('deleting a custom field (SPRIN-93)', () => {
+    const FIELD_ONE = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'urgency',
+      name: 'Priority tier',
+      type: 'select',
+      created_at: '2026-08-07T10:00:00Z',
+    } as unknown as ProjectField
+    const FIELD_TWO = {
+      id: 'f2',
+      project_id: 'p1',
+      slug: 'risk_band',
+      name: 'Exposure',
+      type: 'select',
+      created_at: '2026-08-07T11:00:00Z',
+    } as unknown as ProjectField
+    /** A field that owns NO options — the control test deletes THIS one. */
+    const FIELD_THREE = {
+      id: 'f3',
+      project_id: 'p1',
+      slug: 'customer_ref',
+      name: 'Reference',
+      type: 'text',
+      created_at: '2026-08-07T12:00:00Z',
+    } as unknown as ProjectField
+
+    /** Both options carry the SAME slug on different fields — the designed state, since the key
+     *  is `(field_id, slug)` — so a reducer filtering on the slug rather than on `field_id`
+     *  cannot pass these by accident. The labels differ so the assertions can tell them apart. */
+    const OPTION_OF_ONE: ProjectFieldOption = {
+      project_id: 'p1',
+      field_id: 'f1',
+      slug: 'low',
+      label: 'Low urgency',
+      position: 1,
+    }
+    const OPTION_OF_TWO: ProjectFieldOption = {
+      project_id: 'p1',
+      field_id: 'f2',
+      slug: 'low',
+      label: 'Low exposure',
+      position: 1,
+    }
+
+    const probeList = (name: string) =>
+      within(screen.getByRole('list', { name }))
+        .queryAllByRole('listitem')
+        .map((li) => li.textContent)
+
+    it("removes a deleted field AND that field's options from the shared lists", async () => {
+      const user = userEvent.setup()
+      mockListFields.mockResolvedValue([FIELD_ONE, FIELD_TWO])
+      mockListOptions.mockResolvedValue([OPTION_OF_ONE, OPTION_OF_TWO])
+      renderShell('/projects/p1/field-delete-probe')
+      expect(await screen.findByText('Priority tier')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe delete field f1' }))
+
+      await waitFor(() => expect(probeList('probe fields')).toEqual(['Exposure']))
+      // The option patch, and the whole reason this reducer touches two lists. Asserted as the
+      // EXACT list rather than as an absence: `['Low exposure']` fails both when the deleted
+      // field's option is still there and when the reducer took the survivor with it.
+      expect(probeList('probe options')).toEqual(['Low exposure'])
+    })
+
+    it("leaves another field's options alone when the deleted field owns none", async () => {
+      const user = userEvent.setup()
+      mockListFields.mockResolvedValue([FIELD_ONE, FIELD_TWO, FIELD_THREE])
+      mockListOptions.mockResolvedValue([OPTION_OF_ONE, OPTION_OF_TWO])
+      renderShell('/projects/p1/field-delete-probe')
+      expect(await screen.findByText('Reference')).toBeVisible()
+
+      await user.click(screen.getByRole('button', { name: 'probe delete field f3' }))
+
+      await waitFor(() => expect(probeList('probe fields')).toEqual(['Priority tier', 'Exposure']))
+      // The positive control for the test above: `f3` owns no options, so a correct filter is a
+      // no-op here. A reducer that cleared the option list, or filtered on something other than
+      // `field_id`, empties this list and only this test says so.
+      expect(probeList('probe options')).toEqual(['Low urgency', 'Low exposure'])
     })
   })
 
