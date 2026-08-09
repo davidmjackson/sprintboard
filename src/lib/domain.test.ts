@@ -7,11 +7,13 @@ import {
   DEFAULT_PROJECT_STATUSES,
   PROJECT_TYPES,
   PROJECT_TYPE_LABELS,
+  SPRINT_LENGTH_WEEKS,
   SPRINT_STATUSES,
   STATUS_CATEGORIES,
   STATUS_CATEGORY_LABELS,
   TICKET_TYPES,
   TICKET_TYPE_LABELS,
+  cadenceSummary,
   hasSprints,
   hasWipLimits,
   isCustomFieldType,
@@ -656,5 +658,54 @@ describe('type guards', () => {
     // 'in_review' is a status SLUG, never a category — it buckets into in_progress.
     expect(isStatusCategory('in_review')).toBe(false)
     expect(isStatusCategory('')).toBe(false)
+  })
+})
+
+describe('cadenceSummary (SPRIN-94)', () => {
+  it('names the length and the start weekday', () => {
+    expect(cadenceSummary({ sprint_length_weeks: 2, sprint_start_weekday: 1 })).toBe(
+      '2 weeks, starting Monday',
+    )
+  })
+
+  it('uses the singular for a one-week cadence', () => {
+    expect(cadenceSummary({ sprint_length_weeks: 1, sprint_start_weekday: 5 })).toBe(
+      '1 week, starting Friday',
+    )
+  })
+
+  // Every ISO weekday, so a transposed or off-by-one label table goes red. Monday must be
+  // 1 and Sunday 7 — matching Postgres `isodow` — because SPRIN-96 will do date arithmetic
+  // against these numbers and a shifted table would silently move every suggested sprint.
+  it.each([
+    [1, 'Monday'],
+    [2, 'Tuesday'],
+    [3, 'Wednesday'],
+    [4, 'Thursday'],
+    [5, 'Friday'],
+    [6, 'Saturday'],
+    [7, 'Sunday'],
+  ])('maps ISO weekday %i to %s', (iso, label) => {
+    expect(cadenceSummary({ sprint_length_weeks: 3, sprint_start_weekday: iso })).toBe(
+      `3 weeks, starting ${label}`,
+    )
+  })
+
+  // Unreachable through the database, which constrains the column to 1-7 — but reachable
+  // through this function, so the branch is covered rather than vacuous. A fallback that
+  // threw, or that silently rendered "undefined", would be worse than a plain number.
+  it('falls back to the ISO number for a weekday outside 1-7', () => {
+    expect(cadenceSummary({ sprint_length_weeks: 2, sprint_start_weekday: 9 })).toBe(
+      '2 weeks, starting day 9',
+    )
+  })
+})
+
+describe('SPRINT_LENGTH_WEEKS (SPRIN-94)', () => {
+  // Pinned against the database's own range check. If migration A's constraint and this
+  // list ever disagree, the picker SPRIN-97 builds from it offers a value the database
+  // refuses, or hides one it allows.
+  it('is exactly the range projects_sprint_length_weeks_range permits', () => {
+    expect([...SPRINT_LENGTH_WEEKS]).toEqual([1, 2, 3, 4])
   })
 })

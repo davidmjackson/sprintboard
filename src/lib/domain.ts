@@ -624,6 +624,49 @@ export function hasWipLimits(project: Pick<Project, 'project_type'>): boolean {
   return project.project_type === 'kanban'
 }
 
+/** The two cadence columns and nothing else — the narrowest shape a cadence reader needs. */
+export type SprintCadence = Pick<Project, 'sprint_length_weeks' | 'sprint_start_weekday'>
+
+/**
+ * ISO weekdays, 1 = Monday … 7 = Sunday, in display order. The numbering matches Postgres
+ * `isodow` deliberately: `projects.sprint_start_weekday` is stored on that scale, so no
+ * translation layer exists between the database and this list to get wrong.
+ *
+ * Here rather than in a `<select>` for the same reason the four board column names were
+ * never inlined in a component — one list, one place, and SPRIN-97's picker builds from it.
+ */
+export const SPRINT_WEEKDAYS = [
+  { iso: 1, label: 'Monday' },
+  { iso: 2, label: 'Tuesday' },
+  { iso: 3, label: 'Wednesday' },
+  { iso: 4, label: 'Thursday' },
+  { iso: 5, label: 'Friday' },
+  { iso: 6, label: 'Saturday' },
+  { iso: 7, label: 'Sunday' },
+] as const
+
+/** The sprint lengths a project may choose, mirroring `projects_sprint_length_weeks_range`. */
+export const SPRINT_LENGTH_WEEKS = [1, 2, 3, 4] as const
+
+/**
+ * A project's cadence in words: `'2 weeks, starting Monday'`.
+ *
+ * THE single expression of this sentence, so the read-only display here and SPRIN-97's form
+ * cannot describe the same cadence two different ways.
+ *
+ * The out-of-range fallback is not dead code being defensive for its own sake. The database
+ * constrains the column to 1–7, but this function's parameter is a plain `number`, so the
+ * branch is reachable from the client and is tested. Rendering the raw ISO number is the
+ * honest failure: it says what the data actually is, where a thrown error would take down a
+ * settings tab over a display string and `undefined` would lie quietly.
+ */
+export function cadenceSummary(cadence: SprintCadence): string {
+  const weeks = cadence.sprint_length_weeks
+  const day = SPRINT_WEEKDAYS.find((w) => w.iso === cadence.sprint_start_weekday)
+  const unit = weeks === 1 ? 'week' : 'weeks'
+  return `${weeks} ${unit}, starting ${day ? day.label : `day ${cadence.sprint_start_weekday}`}`
+}
+
 /** What the flat ticket-list tab is called, and what it says when it is empty. */
 export type TicketListLabels = { tab: string; empty: string }
 
