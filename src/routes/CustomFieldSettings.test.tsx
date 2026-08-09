@@ -7,7 +7,12 @@ import { CustomFieldSettings } from './CustomFieldSettings'
 import type { ProjectField, ProjectFieldOption } from '@/lib/domain'
 import { CUSTOM_FIELD_TYPES, CUSTOM_FIELD_TYPE_LABELS } from '@/lib/domain'
 import { AddFieldSchema, RenameFieldSchema } from '@/lib/field-schemas'
-import { createProjectField, renameProjectField } from '@/lib/project-fields'
+import {
+  countTicketsHoldingField,
+  createProjectField,
+  deleteProjectField,
+  renameProjectField,
+} from '@/lib/project-fields'
 import {
   countTicketsHoldingOption,
   createProjectFieldOption,
@@ -21,10 +26,18 @@ import type { ReadPhase } from '@/lib/project-reads'
 // helper a later story adds beside them — and an unmocked write here would reach the LIVE
 // database, silently, because `VITE_SUPABASE_URL` is a placeholder in this environment and the
 // rejection is handled. That is the ~90-requests-per-run hole SPRIN-90's review measured.
+//
+// SPRIN-93 task 4 adds the last two: `CustomFieldRow` now mounts the REAL
+// `CustomFieldDeleteControl`, which calls `countTicketsHoldingField` on every confirm it opens
+// and `deleteProjectField` on every confirm it commits. Left unmocked they are the identical
+// hole one module over — and the count is the worse of the two, because it runs on a mere dialog
+// open rather than on a deliberate destructive click.
 vi.mock('@/lib/project-fields', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-fields')>()),
   createProjectField: vi.fn(),
   renameProjectField: vi.fn(),
+  countTicketsHoldingField: vi.fn(),
+  deleteProjectField: vi.fn(),
 }))
 
 // SPRIN-92 task 9: a `select` field now mounts the REAL `CustomFieldOptions` beneath its row,
@@ -42,6 +55,8 @@ vi.mock('@/lib/project-field-options', async (orig) => ({
 
 const mockCreate = vi.mocked(createProjectField)
 const mockRename = vi.mocked(renameProjectField)
+const mockCountField = vi.mocked(countTicketsHoldingField)
+const mockDeleteField = vi.mocked(deleteProjectField)
 const mockCreateOption = vi.mocked(createProjectFieldOption)
 const mockRenameOption = vi.mocked(renameProjectFieldOption)
 const mockDeleteOption = vi.mocked(deleteProjectFieldOption)
@@ -109,6 +124,7 @@ function renderSettings(
     onOptionCreated?: (option: ProjectFieldOption) => void
     onOptionUpdated?: (option: ProjectFieldOption) => void
     onOptionDeleted?: (fieldId: string, slug: string) => void
+    onDeleted?: (id: string) => void
   } = {},
 ) {
   const handlers = {
@@ -118,9 +134,10 @@ function renderSettings(
     onOptionCreated: vi.fn(),
     onOptionUpdated: vi.fn(),
     onOptionDeleted: vi.fn(),
+    onDeleted: vi.fn(),
     ...props,
   }
-  const { container } = render(
+  const { container, rerender } = render(
     <CustomFieldSettings
       projectId="p1"
       fields={props.fields ?? FIELDS}
@@ -133,9 +150,32 @@ function renderSettings(
       onOptionCreated={handlers.onOptionCreated}
       onOptionUpdated={handlers.onOptionUpdated}
       onOptionDeleted={handlers.onOptionDeleted}
+      onDeleted={handlers.onDeleted}
     />,
   )
-  return { ...handlers, container }
+
+  /** Re-render with a different field list, everything else held constant — what the SHELL does
+   *  after `onFieldDeleted` filters the row out. Needed because the row `key` only becomes
+   *  observable when a row is REMOVED, which no test before SPRIN-93 ever did. */
+  const rerenderFields = (fields: ProjectField[]) =>
+    rerender(
+      <CustomFieldSettings
+        projectId="p1"
+        fields={fields}
+        phase={props.phase ?? 'loaded'}
+        options={props.options ?? []}
+        optionsPhase={props.optionsPhase ?? 'loaded'}
+        onRetry={handlers.onRetry}
+        onCreated={handlers.onCreated}
+        onUpdated={handlers.onUpdated}
+        onOptionCreated={handlers.onOptionCreated}
+        onOptionUpdated={handlers.onOptionUpdated}
+        onOptionDeleted={handlers.onOptionDeleted}
+        onDeleted={handlers.onDeleted}
+      />,
+    )
+
+  return { ...handlers, container, rerenderFields }
 }
 
 /** The row for a field, found by the name it renders. Scoping every DOM-text assertion to the
@@ -193,6 +233,8 @@ beforeEach(() => {
   mockRenameOption.mockReset()
   mockDeleteOption.mockReset()
   mockCountOption.mockReset()
+  mockCountField.mockReset()
+  mockDeleteField.mockReset()
 })
 
 describe('CustomFieldSettings', () => {
@@ -826,6 +868,150 @@ describe('CustomFieldSettings', () => {
       // Neither create nor update grew — a swap onto either would have.
       expect(onOptionCreated).toHaveBeenCalledTimes(1)
       expect(onOptionUpdated).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  /**
+   * SPRIN-93 task 4: the delete control on each row, and the `onDeleted` chain that carries the
+   * removal back out of this file.
+   *
+   * `onDeleted` is REQUIRED on all four components here, so a wire left unplugged at any hop is
+   * a `TS2741` rather than a silent no-op. That is what makes the second test below worth its
+   * weight: requiredness catches a MISSING wire and cannot catch a CROSSED one, and the crossings
+   * available here are not hypothetical — `onRetry` and `onRetryOptions` are `() => void`, and
+   * TypeScript assigns a zero-parameter function to a `(id: string) => void` slot without a
+   * murmur. A row wired `onDeleted={onRetryOptions}` compiles, lints, and reloads the shell
+   * instead of removing the field.
+   */
+  describe('deleting a field (SPRIN-93)', () => {
+    it('offers a delete control on each row, naming that row’s own field', () => {
+      renderSettings()
+
+      // Scoped to the row, and named for the field the row renders: a control handed a constant
+      // field (or the head of the list) satisfies one of these and never both.
+      expect(
+        within(rowFor('Customer ref')).getByRole('button', { name: 'Remove Customer ref' }),
+      ).toBeInTheDocument()
+      expect(
+        within(rowFor('Priority level')).getByRole('button', { name: 'Remove Priority level' }),
+      ).toBeInTheDocument()
+    })
+
+    // Beyond the task brief. The control reads its count lazily on the confirm's `open`
+    // transition, which `CustomFieldDelete.test.tsx` pins for ONE control; this pins the property
+    // that only shows up with a list — N rows must not mean N count queries per paint. Rendering
+    // is where it would bite, so rendering is where it is asserted.
+    it('reads no ticket counts merely by listing the fields', () => {
+      renderSettings({ fields: [CUSTOMER_REF, PRIORITY, SELECT_FIELD] })
+
+      expect(mockCountField).not.toHaveBeenCalled()
+      expect(mockDeleteField).not.toHaveBeenCalled()
+      // POSITIVE CONTROL: the controls that would have made those calls really did render, so
+      // the two absences above are about laziness rather than about an empty list.
+      expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(3)
+    })
+
+    /**
+     * THE ROW KEY IS LOAD-BEARING FOR THE FIRST TIME, AND THIS IS WHAT PINS IT.
+     *
+     * `key={field.id}` in `CustomFieldList` could be changed to the array index with the whole
+     * gate green — 1277 unit tests, lint and typecheck all pass. Before SPRIN-93 that was
+     * harmless, because no row had ever been REMOVED from this list: with only appends and
+     * renames, an identity key and an index key behave identically. Deleting a field is the
+     * first operation that tells them apart.
+     *
+     * Under an index key, removing a non-last row makes the survivor **reuse the deleted row's
+     * component instance**: the confirm dialog stays mounted, retitled to the surviving field,
+     * still holding the deleted field's ticket count, with an ENABLED destructive button. A
+     * reviewer drove exactly that to a real `deleteProjectField` call on a field the user never
+     * selected.
+     *
+     * The raw-DOM pair is not decoration: Radix leaves the closed dialog's subtree
+     * `aria-hidden`, and `queryByRole` EXCLUDES `aria-hidden` subtrees — so the role query alone
+     * would report "gone" for a dialog still mounted and still clickable.
+     */
+    it('closes the confirm when its own field is removed from the list', async () => {
+      const u = userEvent.setup()
+      mockCountField.mockResolvedValue(3)
+      const { rerenderFields } = renderSettings({ fields: [CUSTOMER_REF, PRIORITY] })
+
+      await u.click(
+        within(rowFor('Customer ref')).getByRole('button', { name: 'Remove Customer ref' }),
+      )
+      // POSITIVE CONTROL: the confirm really opened and really resolved its count, so its
+      // absence below is the removal doing something rather than the dialog never appearing.
+      const dialog = await screen.findByRole('alertdialog')
+      expect(within(dialog).getByText(/^3 tickets will lose this value\./)).toBeInTheDocument()
+
+      // What the shell does after `onFieldDeleted`: the same list, minus that field.
+      rerenderFields([PRIORITY])
+
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(document.querySelector('[role="alertdialog"]')).toBeNull()
+      // POSITIVE CONTROL: the surviving row is still rendered, so the assertions above are not
+      // passing because the whole list unmounted.
+      expect(
+        within(rowFor('Priority level')).getByRole('button', { name: 'Remove Priority level' }),
+      ).toBeInTheDocument()
+    })
+
+    /**
+     * THE HOP TEST. The field ID reaches the `onDeleted` **this component was handed**, through
+     * all four hops and the real `CustomFieldDeleteControl`.
+     *
+     * The SECOND row is the one deleted, so a chain that passed the head of the list would be
+     * caught rather than accidentally right. The sibling spies are asserted silent for the reason
+     * the options test above records: a crossed wire still lands on some callback, just the wrong
+     * one, so asserting only that `onDeleted` fired would survive the swap in either direction.
+     */
+    it('hands the deleted field’s id up to its own caller, and to no sibling callback', async () => {
+      const u = userEvent.setup()
+      mockCountField.mockResolvedValue(0)
+      mockDeleteField.mockResolvedValue({ ok: true, value: undefined })
+      const { onDeleted, onUpdated, onRetry, onOptionDeleted } = renderSettings()
+
+      await u.click(
+        within(rowFor('Priority level')).getByRole('button', { name: 'Remove Priority level' }),
+      )
+      const dialog = await screen.findByRole('alertdialog')
+      const confirm = within(dialog).getByRole('button', { name: 'Remove field' })
+      await waitFor(() => expect(confirm).toBeEnabled())
+      await u.click(confirm)
+
+      // The id of the row that was clicked — not the first row's, and not the whole field object.
+      await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(PRIORITY.id))
+      expect(onDeleted).toHaveBeenCalledTimes(1)
+      expect(mockDeleteField).toHaveBeenCalledWith(PRIORITY.id)
+      // `onRetry` is the crossing the compiler cannot see: `() => void` is assignable to
+      // `(id: string) => void`, so a row wired to it type-checks and quietly reloads instead.
+      expect(onRetry).not.toHaveBeenCalled()
+      expect(onUpdated).not.toHaveBeenCalled()
+      expect(onOptionDeleted).not.toHaveBeenCalled()
+    })
+
+    // A refused delete hands NOTHING up: the shell must not drop a row the database still holds.
+    // `CustomFieldDelete.test.tsx` pins the copy; what this file owns is that the chain stays
+    // silent, which a control wired to call `onDeleted` before checking the result would break.
+    it('hands nothing up when the delete is refused', async () => {
+      const u = userEvent.setup()
+      mockCountField.mockResolvedValue(0)
+      mockDeleteField.mockResolvedValue({ ok: false, error: 'stale' })
+      const { onDeleted } = renderSettings()
+
+      await u.click(
+        within(rowFor('Customer ref')).getByRole('button', { name: 'Remove Customer ref' }),
+      )
+      const dialog = await screen.findByRole('alertdialog')
+      const confirm = within(dialog).getByRole('button', { name: 'Remove field' })
+      await waitFor(() => expect(confirm).toBeEnabled())
+      await u.click(confirm)
+
+      // POSITIVE CONTROL: the refusal really was rendered, so the absence below is about the
+      // chain declining to fire rather than about a click that never landed.
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        /^This field no longer exists — refresh the page to see the current list\.$/,
+      )
+      expect(onDeleted).not.toHaveBeenCalled()
     })
   })
 })

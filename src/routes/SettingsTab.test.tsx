@@ -8,7 +8,12 @@ import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectField, ProjectFieldOption, ProjectStatus } from '@/lib/domain'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
-import { createProjectField, renameProjectField } from '@/lib/project-fields'
+import {
+  countTicketsHoldingField,
+  createProjectField,
+  deleteProjectField,
+  renameProjectField,
+} from '@/lib/project-fields'
 import {
   countTicketsHoldingOption,
   createProjectFieldOption,
@@ -20,10 +25,16 @@ import {
 // this tab, and the real writes reach PostgREST. `useTaggedRead` is not involved here, so an
 // unmocked write would not merely be slow — it would be a genuine outbound request from a unit
 // test, the exact defect SPRIN-90's review measured at ~90 per run in `ProjectShell.test.tsx`.
+//
+// SPRIN-93 adds the two the delete control calls. `countTicketsHoldingField` fires on the
+// confirm's `open` transition and `deleteProjectField` on its commit, so leaving either real
+// would put a live PostgREST request behind a button this file clicks.
 vi.mock('@/lib/project-fields', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-fields')>()),
   createProjectField: vi.fn(),
   renameProjectField: vi.fn(),
+  countTicketsHoldingField: vi.fn(),
+  deleteProjectField: vi.fn(),
 }))
 
 // SPRIN-92 task 9, fix round 1: the same reasoning one table over. A `select` field's row now
@@ -115,6 +126,11 @@ function renderTab(
     optionsPhase?: ReadPhase
     onFieldCreated?: (field: ProjectField) => void
     onFieldUpdated?: (field: ProjectField) => void
+    onFieldDeleted?: (id: string) => void
+    // SPRIN-93. Overridable only so the crossed-wire test below can hand in its OWN spy: this
+    // callback shares `onFieldDeleted`'s exact signature, which is what makes the swap invisible
+    // to the compiler and worth a test.
+    onStatusDeleted?: (id: string) => void
     onOptionCreated?: (option: ProjectFieldOption) => void
     onOptionUpdated?: (option: ProjectFieldOption) => void
     onOptionDeleted?: (fieldId: string, slug: string) => void
@@ -146,6 +162,7 @@ function renderTab(
     // write tests at the end of this file are what actually close that.
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
+    onFieldDeleted: vi.fn(),
     // SPRIN-92 task 9, fix round 1 (Important): the identical swap risk one table over —
     // `onOptionCreated`/`onOptionUpdated` are stubs by default; the write tests further down
     // pass their own and assert them.
@@ -181,6 +198,8 @@ describe('SettingsTab', () => {
     // test is inserted anywhere earlier in the file.
     vi.mocked(createProjectField).mockReset()
     vi.mocked(renameProjectField).mockReset()
+    vi.mocked(countTicketsHoldingField).mockReset()
+    vi.mocked(deleteProjectField).mockReset()
   })
 
   it("hands the project's own status rows to the list", () => {
@@ -524,6 +543,50 @@ describe('SettingsTab custom fields', () => {
 
     // The mirror of the add test: the renamed row goes to UPDATE, and create stays untouched.
     expect(onFieldCreated).not.toHaveBeenCalled()
+  })
+
+  /**
+   * THE CROSSED-WIRE TEST (SPRIN-93).
+   *
+   * `onFieldDeleted` is required at every hop, so a MISSING wire is a `TS2741` — that is what
+   * Task 4's required prop buys. Requiredness cannot catch a CROSSED one, and this tab reads
+   * `onStatusDeleted` off the SAME context object with the IDENTICAL signature,
+   * `(id: string) => void`. `onDeleted={onStatusDeleted}` compiles, lints and typechecks clean,
+   * and would silently delete-from-the-status-list a field id that is not a status id. This file
+   * has already paid for that class once — SPRIN-92's `optionsPhase={fieldsPhase}`, the sixth
+   * instance — so the assertion is on the IDENTITY of the function that arrives, not merely that
+   * one did: the field spy must fire AND the same-signature sibling must not.
+   *
+   * `CustomFieldSettings.test.tsx` closes the seam below this one — it hands `onDeleted` in
+   * itself, so it passes just as well when `SettingsTab` forwards the wrong callback.
+   */
+  it("hands the context's own onFieldDeleted down, never a same-signature sibling", async () => {
+    const u = userEvent.setup()
+    const FIELD = {
+      id: 'f1',
+      project_id: 'p1',
+      slug: 'delivery_date',
+      name: 'Ship by',
+      type: 'date',
+    } as unknown as ProjectField
+    vi.mocked(countTicketsHoldingField).mockResolvedValue(0)
+    vi.mocked(deleteProjectField).mockResolvedValue({ ok: true, value: undefined })
+    const onFieldDeleted = vi.fn()
+    const onStatusDeleted = vi.fn()
+    renderTab({ fields: [FIELD], onFieldDeleted, onStatusDeleted })
+
+    await u.click(screen.getByRole('button', { name: 'Remove Ship by' }))
+    const dialog = await screen.findByRole('alertdialog')
+    const confirm = within(dialog).getByRole('button', { name: 'Remove field' })
+    // The confirm unlocks only once the count is known, so this waits for the read rather than
+    // clicking a disabled button and asserting nothing.
+    await waitFor(() => expect(confirm).toBeEnabled())
+    await u.click(confirm)
+
+    await waitFor(() => expect(onFieldDeleted).toHaveBeenCalledWith('f1'))
+    expect(vi.mocked(deleteProjectField)).toHaveBeenCalledWith('f1')
+    // The half that kills the swap: the sibling this tab could have crossed with never fired.
+    expect(onStatusDeleted).not.toHaveBeenCalled()
   })
 })
 

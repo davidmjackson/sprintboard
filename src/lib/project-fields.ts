@@ -205,3 +205,50 @@ export async function renameProjectField(
   if (error) return { ok: false, error: writeError(error) }
   return { ok: true, value: toProjectField(data) }
 }
+
+/**
+ * Delete a custom field definition (AC1, AC3). Its value rows go with it via `tfv_field_fk` and
+ * `tfv_type_fk`, and a `select` field's option rows via `pfo_field_fk` — all three cascades were
+ * built by stories 3 and 5, so this function creates no schema behaviour of its own.
+ *
+ * Cascading rather than refusing is the AC: there is no in-app way to bulk-clear values, so a
+ * field that ever held one would otherwise be permanently undeletable.
+ *
+ * The affected row count is checked EXPLICITLY, like `deleteProjectFieldOption` and
+ * `deleteProjectStatus`, rather than leaning on `.single()`'s incidental zero-row error. RLS
+ * FILTERS a delete rather than raising on it, so a cross-tenant or already-deleted row comes back
+ * as a successful ZERO-row delete unless something counts. Stating it makes the guard survive
+ * anyone swapping the terminator — a one-word change with nothing else to notice.
+ */
+export async function deleteProjectField(id: string): Promise<FieldWriteResult<void>> {
+  const { data, error } = await supabase.from('project_fields').delete().eq('id', id).select('id')
+
+  if (error) return { ok: false, error: writeError(error) }
+  if ((data ?? []).length !== 1) return { ok: false, error: 'stale' }
+  return { ok: true, value: undefined }
+}
+
+/**
+ * How many tickets hold a value for this field (AC2 — shown BEFORE the user commits).
+ *
+ * THROWS rather than resolving to zero on a failed read, and treats a MISSING count the same way,
+ * for the reason AC4 states outright: **zero is what UNLOCKS the destructive action**, so a
+ * failed count reported as zero would offer a delete whose blast radius the user was told was
+ * nil. Same rule as `ticketCountsByStatus` and `countTicketsHoldingOption`.
+ *
+ * The null check is `=== null` rather than falsy: a genuine count of zero is the single most
+ * important answer this function gives, and `if (!count)` would turn it into the error path.
+ *
+ * No `distinct` and no join: `ticket_field_values_pkey` is `(ticket_id, field_id)`, so there is
+ * exactly one row per ticket per field and a row count for a `field_id` IS the ticket count.
+ */
+export async function countTicketsHoldingField(fieldId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('ticket_field_values')
+    .select('*', { head: true, count: 'exact' })
+    .eq('field_id', fieldId)
+
+  if (error) throw new Error(`Could not count tickets holding that field: ${error.message}`)
+  if (count === null) throw new Error('Could not count tickets holding that field: no count')
+  return count
+}

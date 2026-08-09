@@ -41,6 +41,32 @@ import {
 const SCHEMA_PATH = join(import.meta.dirname, '..', '..', 'docs', 'sprintboard_phase1_schema.sql')
 const SCHEMA = readFileSync(SCHEMA_PATH, 'utf8')
 
+const MIGRATIONS_DIR = join(import.meta.dirname, '..', '..', 'docs', 'migrations')
+
+/**
+ * The `grant`/`revoke` statements naming one table, normalised and sorted.
+ *
+ * **Comments are stripped FIRST, and that is the whole trick.** Both the schema doc and the
+ * migrations argue about grants in prose — the SPRIN-93 migration's header quotes the exact
+ * WRONG form (`revoke …; grant delete …`) in order to warn against it — so a matcher that read
+ * comments would compare documentation rather than SQL, and would go red on a correct file
+ * because of a sentence. This project has already reddened CI once by scanning prose.
+ *
+ * Statements are split on `;`, whitespace-collapsed and lowercased, so the two files may format
+ * and comment themselves however they like and still be compared on what they DO.
+ */
+function grantStatements(sql: string, table: string): string[] {
+  const onTable = new RegExp(`\\bon ${table}\\b`)
+  return sql
+    .split('\n')
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n')
+    .split(';')
+    .map((statement) => statement.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter((statement) => /^(grant|revoke)\b/.test(statement) && onTable.test(statement))
+    .sort()
+}
+
 /** The DDL body of one `create table` block. Scoping matters: `status` exists on
  *  both sprints and tickets, so an unscoped search silently reads the wrong one. */
 function tableBody(table: string): string {
@@ -177,6 +203,52 @@ describe('the schema parser can still see the whole truth', () => {
         'and the assertions below would pass vacuously. Teach checkConstraintValues() ' +
         'to apply ALTERs before trusting them again.',
     ).toEqual([])
+  })
+
+  /**
+   * THE SCHEMA DOC'S GRANT BLOCK MUST STATE WHAT THE MIGRATION APPLIES (SPRIN-93).
+   *
+   * Nothing else in this repo reads a `grant` or `revoke` line out of the schema doc. The live
+   * database is built from `docs/migrations/*.sql` and **the doc is never applied**, so no live
+   * assertion can observe doc drift at any point in the lifecycle — a reviewer deleted
+   * `grant delete on project_fields to authenticated;` from the doc outright and the entire
+   * gate stayed green.
+   *
+   * That is not hypothetical: this table family has drifted THREE times. SPRIN-91's INSERT
+   * grant never reached the doc (found by SPRIN-93, which is why this test exists); session 62
+   * found two grant blocks missing entirely on `ticket_field_values` and `project_field_options`.
+   * A rebuild from the drifted doc produced a `project_fields` that `authenticated` could not
+   * insert into at all — every "add a custom field" a 42501.
+   *
+   * SPRIN-93 then wrote "the two cannot drift again independently" into the doc and its own
+   * design spec. **That sentence was enforced by nothing**, which is this project's recorded
+   * footgun — a prose-only invariant — committed while fixing the third instance of the very
+   * drift it claimed to prevent. This test is what makes the sentence true.
+   *
+   * The `toBeGreaterThan(0)` is the guard on the guard, the same shape the RLS test below uses:
+   * if the statement matcher ever stops matching, both sides collapse to `[]` and the equality
+   * passes while comparing nothing at all.
+   */
+  it('states the same project_fields grants as the migration that applied them', () => {
+    const migration = readFileSync(
+      join(MIGRATIONS_DIR, 'sprin-93-project-fields-delete.sql'),
+      'utf8',
+    )
+    const fromMigration = grantStatements(migration, 'project_fields')
+    const fromDoc = grantStatements(SCHEMA, 'project_fields')
+
+    expect(
+      fromMigration.length,
+      'The grant-statement matcher found nothing in the migration. It has stopped matching, ' +
+        'so the equality below would compare two empty lists and pass vacuously.',
+    ).toBeGreaterThan(0)
+
+    expect(
+      fromDoc,
+      'docs/sprintboard_phase1_schema.sql no longer states the same project_fields grants as ' +
+        'docs/migrations/sprin-93-project-fields-delete.sql. A rebuild from the doc would ' +
+        'produce a DIFFERENT database from the one the migrations built.',
+    ).toEqual(fromMigration)
   })
 
   /**

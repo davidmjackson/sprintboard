@@ -1,0 +1,111 @@
+-- SPRIN-93 — delete a custom field (epic SPRIN-71, story 6 of 6).
+--
+-- GRANTS ONLY. No table, column, constraint, index, policy or function is created, altered or
+-- dropped by this file. Everything else story 6 needs already exists and was verified from the
+-- live catalogue on 2026-08-09 rather than taken from the epic design (which said this story
+-- needed no migration at all, and which was wrong about story 2 in exactly the same way):
+--
+--   * `fields_owner_delete` was written by story 1 (migration A) and is unchanged here. It
+--     already uses the `(select auth.uid())` form, so this migration adds NO new
+--     `auth_rls_initplan` advisor WARN. Verified against pg_policies.
+--   * The cascades AC3 needs are already in place, built by stories 3 and 5:
+--       - `tfv_field_fk (field_id, project_id)` → project_fields (id, project_id) on delete cascade
+--       - `tfv_type_fk  (field_id, field_type)` → project_fields (id, type)       on delete cascade
+--       - `pfo_field_fk (field_id, project_id)` → project_fields (id, project_id) on delete cascade
+--     So deleting a field takes its value rows AND its option rows with it, with nothing added
+--     here. AC3 is a property of the schema stories 3 and 5 built, not of this file.
+--
+-- WHY CASCADE RATHER THAN REFUSE: there is no in-app way to bulk-clear values, so a field that
+-- held any value would otherwise be permanently undeletable. That is the strand-the-user failure
+-- this epic already rejected once, for hard WIP limits.
+--
+-- =====================================================================================
+-- THE WHOLE INTENDED GRANT STATE, RESTATED — David's decision, 2026-08-09.
+-- =====================================================================================
+--
+-- The alternative considered and rejected was a bare `grant delete on project_fields to
+-- authenticated;`. That form is mechanically incapable of cascading anything away and is in that
+-- narrow sense safer. It was rejected because it leaves the complete privilege set stated in no
+-- single file — which is precisely how docs/sprintboard_phase1_schema.sql came to be missing
+-- migration B's INSERT grant entirely (fixed in the same commit as this file). One file that
+-- states the whole truth beats three files that each state a third of it.
+--
+-- THE ORDER BELOW IS LOAD-BEARING. A table-level REVOKE **cascades** to column grants — "the
+-- corresponding column privileges (if any) are automatically revoked on each column of the
+-- table, as well" (PostgreSQL REVOKE reference). So the two restated grants are not decoration:
+-- writing `revoke insert, update, delete …; grant delete …` alone would silently strip BOTH the
+-- INSERT grant and `update (name)`, leaving a table nobody can add a field to or rename one on.
+--
+-- Migration B's own header predicted this exact mistake by name, one story ahead of it:
+--   "The dangerous edit is therefore not this migration but the NEXT one: story 6 grants DELETE,
+--    and an author who writes `revoke insert, update, delete …; grant delete …` there would
+--    silently drop BOTH `update (name)` and the INSERT grant below."
+--
+-- `select` is deliberately NOT in the revoke. `authenticated` needs it, and `anon` reads zero
+-- rows through `fields_owner_read` anyway (its EXISTS is false for a NULL auth.uid()).
+--
+-- `anon` is named in the revoke though it holds none of these three today (measured:
+-- relacl `anon=rDxtm/postgres`). Restating it costs nothing and documents that anon is intended
+-- to hold no write privilege on this table, so a later reader adding one has to do it visibly.
+
+revoke insert, update, delete on project_fields from authenticated, anon;
+
+-- Unchanged from migration B, restated because the revoke above cascaded it away. `created_at`
+-- stays withheld because it is half the SORT KEY, and a writable sort key would make
+-- `(created_at, slug)` a client convention rather than a database property; `id` stays withheld
+-- because a client that cannot supply a primary key cannot collide with one.
+grant insert (project_id, slug, name, type) on project_fields to authenticated;
+
+-- Unchanged from migrations A and B, restated for the same reason. UPDATE on `name` ALONE is what
+-- makes the name/slug division a DATABASE property rather than a convention: a patch touching
+-- `slug` or `type` earns 42501 before any policy is consulted, so no value row can be orphaned by
+-- a rename, and `field_type`'s denormalised copy on ticket_field_values stays sound.
+grant update (name) on project_fields to authenticated;
+
+-- =====================================================================================
+-- THE ONE NEW PRIVILEGE IN THIS FILE.
+-- =====================================================================================
+--
+-- TABLE-WIDE, because Postgres has no column-level DELETE — there is no narrower form to reach
+-- for. That makes `fields_owner_delete` the ONLY thing standing in front of it, which is why
+-- rls.integration.test.ts asserts a STRANGER'S delete removes ZERO ROWS rather than only that the
+-- owner's own delete works. RLS FILTERS a delete rather than raising on it, so a test asserting
+-- `error === null` would pass with the policy dropped outright.
+--
+-- Both sibling tables already carry a table-wide DELETE on identical reasoning
+-- (`grant delete on ticket_field_values`, `grant delete on project_field_options`), so this is
+-- the third instance of a settled pattern rather than a new judgement.
+--
+-- Its blast radius is the largest of the three: this delete cascades into ticket data through
+-- tfv_field_fk AND into option data through pfo_field_fk, so a single row removed here can remove
+-- rows from two other tables.
+grant delete on project_fields to authenticated;
+
+-- =====================================================================================
+-- VERIFICATION — run these AFTER the four statements above. Read-only.
+-- =====================================================================================
+--
+-- 1. TABLE-LEVEL. EXPECT authenticated to show `d` and NOT `a` or `w` (INSERT and UPDATE are
+--    COLUMN grants here and must not appear at table level). EXPECT anon to show no `a`, `w` or
+--    `d` at all. Before this migration authenticated read `rDxtm`; after it, `rdDxtm`.
+--
+--      select relname, relacl::text from pg_class where relname = 'project_fields';
+--
+-- 2. COLUMN-LEVEL — THE ONE THAT PROVES THE CASCADE DID NOT EAT ANYTHING. EXPECT EXACTLY FOUR
+--    ROWS: project_id=a, slug=a, name=aw, type=a. Anything fewer means a restated grant above was
+--    mistyped and the revoke's cascade took a privilege with it. This is the specific hazard the
+--    restate form carries, so it is the check that matters most.
+--
+--      select a.attname, a.attacl::text
+--        from pg_class c join pg_attribute a on a.attrelid = c.oid
+--       where c.relname = 'project_fields' and a.attnum > 0 and a.attacl is not null
+--       order by a.attnum;
+--
+-- 3. `pg_default_acl`, NOT information_schema. Its grant views return zero rows under a read-only
+--    role and read exactly like "no privileges" — measured on this project at SPRIN-90.
+--
+-- THE LIVE SUITE IS THE OTHER HALF OF THIS CHECK, and it needs no new test to be. The SPRIN-91
+-- assertions that an owner can INSERT a field and rename one already exist in
+-- rls.integration.test.ts and were written before this migration; if the restate above dropped
+-- either grant, they go red. They are this migration's regression detector, and they are the
+-- reason the restate form is affordable at all.

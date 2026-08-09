@@ -87,6 +87,10 @@ function ctxWith(fields: Partial<ProjectShellContext> = {}): ProjectShellContext
     onOptionDeleted: vi.fn(),
     onFieldCreated: vi.fn(),
     onFieldUpdated: vi.fn(),
+    // SPRIN-93. This harness builds a REAL `ProjectShellContext` rather than casting to one, so
+    // a new required member is a compile error here — which is the required prop working, not
+    // collateral damage.
+    onFieldDeleted: vi.fn(),
     onStatusCreated: vi.fn(),
     onStatusUpdated: vi.fn(),
     onStatusDeleted: vi.fn(),
