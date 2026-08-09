@@ -1123,18 +1123,47 @@ grant delete on project_field_options to authenticated;
 -- arwdDxtm. So this revoke is the statement that changes something — "we never granted it"
 -- was never true of any table here.
 --
--- Story 1 ships no write path, so insert and delete are revoked and NOT granted back;
--- stories 2 and 6 grant them, visibly, and a live test pins the current state so they
--- cannot do it silently. UPDATE(name) alone is granted, which also gives AC4's refusal test
--- a positive control on the same row — without one, a blanket row-level refusal would be
+-- Story 1 shipped no write path, so insert and delete were revoked and NOT granted back.
+-- Both have since been granted, visibly and one migration each: SPRIN-91 (story 2) granted
+-- INSERT on four columns, SPRIN-93 (story 6) granted DELETE, and live tests in
+-- rls.integration.test.ts pin the current state so neither could have done it silently.
+-- UPDATE(name) remains the only UPDATE privilege, which also gives AC4's refusal test a
+-- positive control on the same row — without one, a blanket row-level refusal would be
 -- indistinguishable from a working column privilege.
 --
--- The revoke is TABLE-WIDE with the column granted back afterwards, because the obvious
+-- THIS BLOCK WAS STALE UNTIL SPRIN-93. It recorded the revoke and `update (name)` alone and
+-- never gained SPRIN-91's INSERT grant, so a rebuild from this document produced a
+-- project_fields that `authenticated` could not add a field to at all — every "add a custom
+-- field" a 42501. The four statements below are now a literal copy of
+-- docs/migrations/sprin-93-project-fields-delete.sql, which restates the WHOLE grant state for
+-- exactly that reason: one file that states the whole truth beats three that each state a
+-- third of it. Keep them equal.
+--
+-- The revoke is TABLE-WIDE with the columns granted back afterwards, because the obvious
 -- form is a silent no-op (a column-level REVOKE cannot hole a table-level grant) and
 -- because a table-level REVOKE **cascades** to column grants. Any later migration widening
--- this set must RESTATE EVERY GRANTED COLUMN, not just add its new one.
+-- this set must RESTATE EVERY GRANTED COLUMN, not just add its new one. `select` is
+-- deliberately not in the revoke — see the paragraph below it.
 revoke insert, update, delete on project_fields from authenticated, anon;
-grant  update (name) on project_fields to authenticated;
+
+-- SPRIN-91. `created_at` stays withheld because it is half the SORT KEY, and a writable sort
+-- key would make `(created_at, slug)` a client convention rather than a database property;
+-- `id` stays withheld because a client that cannot supply a primary key cannot collide with
+-- one.
+grant insert (project_id, slug, name, type) on project_fields to authenticated;
+
+-- UPDATE on `name` ALONE is what makes the name/slug division a DATABASE property rather than
+-- a convention: a patch touching `slug` or `type` earns 42501 before any policy is consulted,
+-- so no value row can be orphaned by a rename, and `field_type`'s denormalised copy on
+-- ticket_field_values stays sound.
+grant update (name) on project_fields to authenticated;
+
+-- SPRIN-93. Table-wide, because Postgres has no column-level DELETE — so fields_owner_delete
+-- is the ONLY thing in front of it, which is why rls.integration.test.ts asserts a stranger's
+-- delete removes ZERO ROWS rather than only that the owner's own delete works. Its blast
+-- radius is the largest of the three tables holding one: this delete cascades into ticket data
+-- through tfv_field_fk AND into option data through pfo_field_fk.
+grant delete on project_fields to authenticated;
 
 -- SELECT is deliberately left as the default grant for both roles: authenticated needs it,
 -- and anon reads zero rows.
