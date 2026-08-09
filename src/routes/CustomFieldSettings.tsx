@@ -21,6 +21,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
+import { CustomFieldDeleteControl } from './CustomFieldDelete'
 import { CustomFieldOptions } from './CustomFieldOptions'
 import { GENERIC_CREATE_ERROR } from './CreateDialog'
 import { EditableText } from './EditableText'
@@ -239,12 +240,19 @@ function OptionsFailureNotice({ phase, onRetry }: { phase: ReadPhase; onRetry: (
  * loading or failed, it renders nothing of its own — `CustomFieldList` already rendered the ONE
  * section-level `OptionsFailureNotice` that explains why, and a per-row echo of the same
  * sentence is the duplication fix round 1 removed (see that notice's own docblock).
+ *
+ * **The DELETE control is unconditional and lives beside the type label** (SPRIN-93), unlike the
+ * rename, which is refused for no field, and unlike the options editor, which only a `select`
+ * field has. Its confirm — and the ticket count that gates it — belong to
+ * `CustomFieldDeleteControl`, not here: the count is read lazily on the confirm's `open`
+ * transition, so a project with twenty fields still issues zero count queries per paint.
  */
 function CustomFieldRow({
   field,
   options,
   optionsPhase,
   onUpdated,
+  onDeleted,
   onOptionCreated,
   onOptionUpdated,
   onOptionDeleted,
@@ -253,6 +261,7 @@ function CustomFieldRow({
   options: readonly ProjectFieldOption[]
   optionsPhase: ReadPhase
   onUpdated: (field: ProjectField) => void
+  onDeleted: (id: string) => void
   onOptionCreated: (option: ProjectFieldOption) => void
   onOptionUpdated: (option: ProjectFieldOption) => void
   onOptionDeleted: (fieldId: string, slug: string) => void
@@ -299,6 +308,7 @@ function CustomFieldRow({
         <span className="text-muted-foreground shrink-0 text-xs">
           {CUSTOM_FIELD_TYPE_LABELS[field.type]}
         </span>
+        <CustomFieldDeleteControl field={field} onDeleted={onDeleted} />
       </div>
       {field.type === 'select' && optionsPhase === 'loaded' ? (
         <CustomFieldOptions
@@ -322,9 +332,17 @@ function CustomFieldRow({
  * reads. This component never keeps a second copy to mutate, which is why a failed write
  * leaves the rendered list exactly as it was with no rollback code anywhere.
  *
- * Deleting a field is story 6 and there is no control for it here: `authenticated` holds no
- * DELETE on `project_fields` at all, so nothing on this surface could write one even by
- * mistake.
+ * **Deleting a field is SPRIN-93, and the control IS here now** — one per row, from
+ * `CustomFieldDeleteControl`. This docblock previously said the opposite on both counts: that
+ * the control was story 6's work still to come, and that `authenticated` held no DELETE on
+ * `project_fields` at all so nothing on this surface could write one even by mistake. That
+ * second half was the load-bearing one and it is now false — SPRIN-93's migration grants
+ * table-wide DELETE (Postgres has no column-level DELETE), which leaves `fields_owner_delete`
+ * as the only thing in front of it. Read `rls.integration.test.ts`'s field-delete block for
+ * what that policy is proven to do, rather than trusting a sentence here.
+ *
+ * `onDeleted` carries the removed field's ID, not the row — the shell filters two of its lists
+ * on it, because `pfo_field_fk` cascades the field's options away with it server-side.
  */
 export function CustomFieldSettings({
   projectId,
@@ -335,6 +353,7 @@ export function CustomFieldSettings({
   onRetry,
   onCreated,
   onUpdated,
+  onDeleted,
   onOptionCreated,
   onOptionUpdated,
   onOptionDeleted,
@@ -347,6 +366,7 @@ export function CustomFieldSettings({
   onRetry: () => void
   onCreated: (field: ProjectField) => void
   onUpdated: (field: ProjectField) => void
+  onDeleted: (id: string) => void
   onOptionCreated: (option: ProjectFieldOption) => void
   onOptionUpdated: (option: ProjectFieldOption) => void
   onOptionDeleted: (fieldId: string, slug: string) => void
@@ -371,6 +391,7 @@ export function CustomFieldSettings({
         onRetry={onRetry}
         onCreated={onCreated}
         onUpdated={onUpdated}
+        onDeleted={onDeleted}
         onOptionCreated={onOptionCreated}
         onOptionUpdated={onOptionUpdated}
         onOptionDeleted={onOptionDeleted}
@@ -414,6 +435,7 @@ function CustomFieldBody({
   onRetry,
   onCreated,
   onUpdated,
+  onDeleted,
   onOptionCreated,
   onOptionUpdated,
   onOptionDeleted,
@@ -426,6 +448,7 @@ function CustomFieldBody({
   onRetry: () => void
   onCreated: (field: ProjectField) => void
   onUpdated: (field: ProjectField) => void
+  onDeleted: (id: string) => void
   onOptionCreated: (option: ProjectFieldOption) => void
   onOptionUpdated: (option: ProjectFieldOption) => void
   onOptionDeleted: (fieldId: string, slug: string) => void
@@ -440,6 +463,7 @@ function CustomFieldBody({
         options={options}
         optionsPhase={optionsPhase}
         onUpdated={onUpdated}
+        onDeleted={onDeleted}
         onRetryOptions={onRetry}
         onOptionCreated={onOptionCreated}
         onOptionUpdated={onOptionUpdated}
@@ -475,6 +499,7 @@ function CustomFieldList({
   options,
   optionsPhase,
   onUpdated,
+  onDeleted,
   onRetryOptions,
   onOptionCreated,
   onOptionUpdated,
@@ -484,6 +509,7 @@ function CustomFieldList({
   options: readonly ProjectFieldOption[]
   optionsPhase: ReadPhase
   onUpdated: (field: ProjectField) => void
+  onDeleted: (id: string) => void
   onRetryOptions: () => void
   onOptionCreated: (option: ProjectFieldOption) => void
   onOptionUpdated: (option: ProjectFieldOption) => void
@@ -512,6 +538,7 @@ function CustomFieldList({
             options={options}
             optionsPhase={optionsPhase}
             onUpdated={onUpdated}
+            onDeleted={onDeleted}
             onOptionCreated={onOptionCreated}
             onOptionUpdated={onOptionUpdated}
             onOptionDeleted={onOptionDeleted}
