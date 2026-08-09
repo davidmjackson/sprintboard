@@ -20,9 +20,11 @@ export function CadenceSettings({ cadence }: { cadence: SprintCadence }) {
         Sprint cadence
       </h2>
       <p className="text-sm">{cadenceSummary(cadence)}</p>
-      <p className="text-muted-foreground text-sm">
-        New sprints are suggested from this. You can always change a sprint&rsquo;s dates.
-      </p>
+      {/* NO EXPLANATORY LINE, DELIBERATELY. The obvious sentence here — "new sprints are
+          suggested from this" — describes behaviour THIS STORY DOES NOT SHIP. The pre-fill
+          is SPRIN-96; until it lands the cadence is inert and this section only reports it.
+          Copy that promises an unbuilt feature is a false claim a user can read, which is
+          worse than a false comment. SPRIN-96 adds the sentence when it becomes true. */}
     </section>
   )
 }
