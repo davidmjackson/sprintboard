@@ -126,12 +126,15 @@ negative offset and a start date in the past. Adding 1 to the candidate before t
 makes the zero case mean "candidate itself qualifies" rather than needing a second branch.
 
 **No range guard on the two cadence values.** The database constrains them (`between 1 and 4`,
-`between 1 and 7`) and story 2's form only offers legal values. The function is total for any
-integer regardless — it never throws and never loops forever — so an out-of-range value produces
-a wrong-looking date rather than a crashed dialog. That is a deliberate non-guard, unlike
-`cadenceSummary`'s out-of-range fallback, which exists because there it has an *honest* thing to
-render (the raw number). A date has no honest fallback, so inventing one would only disguise the
-input.
+`between 1 and 7`), `Project` makes both fields non-optional, and story 2's form only offers
+legal values — so the function is total for every value that can actually reach it: it never
+throws and never loops forever for a real cadence, and an out-of-range-but-still-plausible value
+produces a wrong-looking date rather than a crashed dialog. (It is not total for an arbitrary
+integer — a `sprint_length_weeks` in the tens of millions overflows what `Date` can represent
+and throws — but no path a real user can take supplies one.) That is a deliberate non-guard,
+unlike `cadenceSummary`'s out-of-range fallback, which exists because there it has an *honest*
+thing to render (the raw number). A date has no honest fallback, so inventing one would only
+disguise the input.
 
 ---
 

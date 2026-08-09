@@ -47,8 +47,10 @@ export function CreateSprintDialog({
    * changes — and the most ordinary flow in this story changes it: create a sprint, then
    * create the next one. The second open would re-offer the dates of the first.
    *
-   * `reset` rather than two `setValue` calls: it replaces the whole draft, so a reopen after
-   * a cancelled attempt starts clean instead of keeping a half-typed name beside fresh dates.
+   * `reset` rather than two `setValue` calls: it replaces the whole draft in one call, keeping
+   * this payload the same shape as `useForm`'s own `defaultValues` above. A clean draft on
+   * reopen is not this function's job — `CreateDialog`'s `handleOpenChange` already calls
+   * `form.reset()` on every close, before `prefillDates` ever runs again.
    */
   function prefillDates() {
     const { startDate, endDate } = suggestSprintDates({

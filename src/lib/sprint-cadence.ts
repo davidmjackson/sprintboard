@@ -67,11 +67,14 @@ export function latestSprintEnd(sprints: readonly Sprint[]): string | null {
  * a cadence weekday below the candidate's would otherwise give a negative offset and a start
  * date in the past.
  *
- * No range guard on the cadence: the database constrains 1–4 and 1–7 and the settings form
- * offers nothing else. This stays total for any integer — it cannot throw or loop — so a bad
- * value shows as a visibly wrong date rather than a dialog that will not open. Unlike
- * `cadenceSummary`, there is no honest fallback to render here; inventing one would only
- * disguise the input.
+ * No range guard on the cadence: the database constrains 1–4 and 1–7, the settings form offers
+ * nothing else, and `Project` makes both fields non-optional — so every value that can actually
+ * reach here is total: it cannot throw or loop. (It is not total for an arbitrary integer — a
+ * `sprint_length_weeks` above roughly 1.43e7 pushes the end date past what `Date` can represent
+ * and throws, as do `NaN`/`undefined` in either field — but no path a real user can take
+ * supplies one.) A bad in-range value shows as a visibly wrong date rather than a dialog that
+ * will not open. Unlike `cadenceSummary`, there is no honest fallback to render here; inventing
+ * one would only disguise the input.
  */
 export function suggestSprintDates(input: {
   cadence: SprintCadence

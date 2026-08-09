@@ -6,7 +6,7 @@ import { MemoryRouter, Outlet, Route, Routes, useLocation, useNavigate } from 'r
 import { SprintsTab } from './SprintsTab'
 import type { ProjectShellContext, SprintsPhase, TicketsPhase } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
-import type { Project, ProjectStatus, Sprint, Ticket } from '@/lib/domain'
+import type { Project, ProjectStatus, Sprint, SprintCadence, Ticket } from '@/lib/domain'
 import { completeSprint, startSprint } from '@/lib/sprints'
 
 vi.mock('@/lib/sprints', () => ({ startSprint: vi.fn(), completeSprint: vi.fn() }))
@@ -16,12 +16,19 @@ const mockComplete = vi.mocked(completeSprint)
 // The dialog is exercised by its own suite; here it is a button that reports its props
 // and, on click, invokes `onCreated` with a fixture sprint — so the tab's hand-off to
 // the shell's `onSprintCreated` is exercised here, not just by the dialog's own tests.
+//
+// `cadence` is folded into the button's text too (S1 review finding): the tab passes
+// `cadence={project}` straight through, and until this reported it, nothing in this file
+// would have noticed if that were swapped for a hardcoded default — `project`'s own fixture
+// now differs from the schema default in both fields so a wrong wire shows up as wrong text.
 vi.mock('./CreateSprintDialog', () => ({
   CreateSprintDialog: ({
     existing,
+    cadence,
     onCreated,
   }: {
     existing: readonly Sprint[]
+    cadence: SprintCadence
     onCreated?: (sprint: Sprint) => void
   }) => (
     <button
@@ -39,7 +46,8 @@ vi.mock('./CreateSprintDialog', () => ({
         })
       }
     >
-      New sprint ({existing.length} existing)
+      New sprint ({existing.length} existing, cadence:{cadence.sprint_length_weeks}/
+      {cadence.sprint_start_weekday})
     </button>
   ),
 }))
@@ -55,8 +63,8 @@ const project = {
   name: 'Sprintboard',
   key: 'SPB',
   project_type: 'scrum',
-  sprint_length_weeks: 2,
-  sprint_start_weekday: 1,
+  sprint_length_weeks: 3,
+  sprint_start_weekday: 4,
 } as Project
 
 /** The same project delivered continuously. Built by spreading the fixture above so the two
@@ -367,10 +375,15 @@ describe('SprintsTab', () => {
     expect(screen.queryByText('No sprints yet.')).not.toBeInTheDocument()
   })
 
-  it('passes the loaded sprints to the create dialog for auto-naming', () => {
+  it('passes the loaded sprints and the project cadence to the create dialog', () => {
     renderTab({ sprints: [sprint(), sprint({ id: 's2' })] })
 
-    expect(screen.getByRole('button', { name: 'New sprint (2 existing)' })).toBeVisible()
+    // S1 review finding: `cadence:3/4` is the project fixture's cadence, not the schema
+    // default of `2/1` — the only shape that can tell "the prop reached the dialog" from
+    // "the dialog hardcoded the default".
+    expect(
+      screen.getByRole('button', { name: 'New sprint (2 existing, cadence:3/4)' }),
+    ).toBeVisible()
   })
 
   // The prepend itself now lives in the shell (it owns the list), so the tab's half of the
@@ -382,7 +395,7 @@ describe('SprintsTab', () => {
     renderTab({ sprints: [sprint({ id: 's1', name: 'Older sprint' })], onSprintCreated })
     const user = userEvent.setup()
 
-    await user.click(screen.getByRole('button', { name: 'New sprint (1 existing)' }))
+    await user.click(screen.getByRole('button', { name: 'New sprint (1 existing, cadence:3/4)' }))
 
     expect(onSprintCreated).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'new-sprint', name: 'Newly created' }),

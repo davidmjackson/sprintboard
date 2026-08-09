@@ -170,6 +170,27 @@ describe('CreateSprintDialog', () => {
     expect(screen.getByLabelText('End date')).toHaveValue('2026-08-02')
   })
 
+  // S1 review finding: every other test in this file (and in sprint-cadence.test.ts) reuses
+  // the schema-default cadence, which cannot tell "the prop reached the arithmetic" from "the
+  // arithmetic is hardcoded to the default" — three mutations proved exactly that, hardcoding
+  // the length, the weekday, or the whole prop and leaving every other test green. A cadence
+  // that differs from the default in BOTH fields is the only fixture that can catch all three.
+  it('pre-fills from a NON-DEFAULT cadence, proving the prop reaches the arithmetic (S1)', async () => {
+    render(
+      <CreateSprintDialog
+        projectId="p1"
+        cadence={{ sprint_length_weeks: 3, sprint_start_weekday: 4 }}
+        existing={[]}
+      />,
+    )
+    await open()
+
+    // Tuesday the 14th -> the next Thursday (weekday 4), and a 3-week sprint ends inclusively
+    // 3*7-1 = 20 days later. Verified against the calendar.
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-07-16')
+    expect(screen.getByLabelText('End date')).toHaveValue('2026-08-05')
+  })
+
   it('chains the pre-fill onto the latest sprint end date (AC3)', async () => {
     const existing = [sprint({ end_date: '2026-08-02T00:00:00+00:00' })]
     render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={existing} />)
