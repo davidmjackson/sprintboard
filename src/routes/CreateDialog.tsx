@@ -51,6 +51,12 @@ export type SubmitActions<T extends FieldValues> = {
  *
  * `onClosed` runs after the form reset, for a caller with extra state to clear alongside it.
  *
+ * `onOpened` runs on the open transition, for a caller whose form defaults depend on props
+ * that may have changed since mount. `useForm` captures `defaultValues` once and this shell's
+ * `form.reset()` restores exactly those, so a caller computing a default from live props has
+ * no other moment to recompute it — see `CreateSprintDialog`'s cadence pre-fill, where the
+ * second sprint a user creates is the case that goes wrong without it.
+ *
  * ## Why `onSubmit` gets guarded callbacks rather than a bare `close` (SPRIN-51)
  *
  * A submit's continuation runs whenever its promise resolves, against whatever dialog is
@@ -104,6 +110,7 @@ export function CreateDialog<T extends FieldValues>({
   submitLabel,
   form,
   onSubmit,
+  onOpened,
   onClosed,
   children,
 }: {
@@ -113,6 +120,7 @@ export function CreateDialog<T extends FieldValues>({
   submitLabel: string
   form: UseFormReturn<T>
   onSubmit: (values: T, actions: SubmitActions<T>) => void | Promise<void>
+  onOpened?: () => void
   onClosed?: () => void
   children: ReactNode
 }) {
@@ -127,13 +135,15 @@ export function CreateDialog<T extends FieldValues>({
   function handleOpenChange(next: boolean) {
     openGeneration.current += 1
     setOpen(next)
-    if (!next) {
-      form.reset()
-      // The latch is per-attempt, not permanent: a close/reopen clears it alongside the draft,
-      // with no call site needing to remember to.
-      setLatched(false)
-      onClosed?.()
+    if (next) {
+      onOpened?.()
+      return
     }
+    form.reset()
+    // The latch is per-attempt, not permanent: a close/reopen clears it alongside the draft,
+    // with no call site needing to remember to.
+    setLatched(false)
+    onClosed?.()
   }
 
   function submitActions(generation: number): SubmitActions<T> {

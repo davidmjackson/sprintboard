@@ -12,9 +12,11 @@ type Values = { thing: string }
 /** A stand-in for a real Create* dialog: one text field, nothing else. */
 function Harness({
   onSubmit = vi.fn(),
+  onOpened,
   onClosed,
 }: {
   onSubmit?: (values: Values, actions: SubmitActions<Values>) => void | Promise<void>
+  onOpened?: () => void
   onClosed?: () => void
 }) {
   const form = useForm<Values>({ defaultValues: { thing: '' } })
@@ -26,6 +28,7 @@ function Harness({
       submitLabel="Create thing"
       form={form}
       onSubmit={onSubmit}
+      onOpened={onOpened}
       onClosed={onClosed}
     >
       <FormField
@@ -226,6 +229,38 @@ describe('CreateDialog', () => {
     await open()
 
     expect(screen.getByRole('button', { name: 'Create thing' })).toBeEnabled()
+  })
+
+  it('fires onOpened on every open, so a caller can recompute defaults it captured at mount', async () => {
+    const onOpened = vi.fn()
+    render(<Harness onOpened={onOpened} onSubmit={(_values, { close }) => close()} />)
+
+    const user = await open()
+    expect(onOpened).toHaveBeenCalledTimes(1)
+
+    // Close it the way a successful create does, then open it again.
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await open()
+
+    // Twice, not once: a caller whose defaults depend on props that changed between the two
+    // opens has no other moment to recompute them.
+    expect(onOpened).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fire onOpened when the dialog closes', async () => {
+    const onOpened = vi.fn()
+    const onClosed = vi.fn()
+    render(
+      <Harness onOpened={onOpened} onClosed={onClosed} onSubmit={(_v, { close }) => close()} />,
+    )
+
+    const user = await open()
+    await user.click(screen.getByRole('button', { name: 'Create thing' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    expect(onClosed).toHaveBeenCalledTimes(1)
+    expect(onOpened).toHaveBeenCalledTimes(1)
   })
 })
 
