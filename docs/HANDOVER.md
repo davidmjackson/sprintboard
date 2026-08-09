@@ -14,11 +14,26 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:
 custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done** 2026-08-05) →
-**custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (74 — NEXT)** → **teams, roles
-and permissions (75 — the security boundary, deliberately last)**.
+**custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (74 — IN PROGRESS)** →
+**teams, roles and permissions (75 — the security boundary, deliberately last)**.
 
-**Three of five Rung 3 epics are complete.** The board holds exactly two open items, both epics,
-both undecomposed: SPRIN-74 and SPRIN-75. Neither has stories yet — that is the next planning job.
+**Three of five Rung 3 epics are complete, and the fourth is one story in.** SPRIN-74 is
+decomposed into four stories; **SPRIN-94 shipped 2026-08-09**. SPRIN-75 remains undecomposed and
+deliberately last.
+
+**THE SPRIN-74 STORY KEYS ARE NOT IN BUILD ORDER.** They were created in parallel and the board
+raced — the same trap epic SPRIN-71 hit. Story 2, the heavy one, drew the *highest* key:
+
+| Story | Key | State | Migration |
+|---|---|---|---|
+| 1 — see a project's sprint cadence | SPRIN-94 | **Done** | A, applied |
+| 2 — change the cadence (pays the SPRIN-82 wall) | **SPRIN-97** | To Do | B (grants) |
+| 3 — pre-fill the create-sprint dates | SPRIN-96 | To Do | — |
+| 4 — reject end-before-start in the database | SPRIN-95 | To Do | C |
+
+The design is `docs/superpowers/specs/2026-08-09-sprin-74-sprint-cadence-design.md`. **Read it
+before planning any of them** — it carries the rejected alternatives and the two corrections
+below.
 
 Epic 73 is complete: 81, 82, 83, 84, 85, **86** and 87 all done. `wip_limit` is no longer inert —
 SPRIN-86 renders it on the board, and the limit is **soft**: it warns, it never blocks.
@@ -65,6 +80,57 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 64 — epic SPRIN-74 **DECOMPOSED**, SPRIN-94 **MERGED** (PRs #104, #105, `1464227`)
+
+**Merged 2026-08-09.** `verify` green on the PR's own head `29ba664`: **77 test files**, gap **7**
+against `test:unit`'s 70, so the live suites really ran. Migration A applied by hand and verified
+from `pg_catalog`: both columns `not null` with defaults 2 and 1, both named range checks present,
+**0 table UPDATE grants and 0 column ACLs on `projects`** — nothing moved, which is the state
+SPRIN-97 will widen. Advisors unchanged at **16 performance / 1 security**.
+
+**TWO METHOD CORRECTIONS, both mine, both worth more than the feature.**
+
+1. **`information_schema` cannot answer a question about grants here.** The epic design's first
+   draft cited `information_schema.column_privileges` returning zero rows as proof that `projects`
+   carries no column grants. **That proves nothing.** Both `column_privileges` and
+   `role_table_grants` filter to grants the *querying* role is party to, and the read-only MCP user
+   is party to none of them — they return zero rows whatever the ACL holds. Re-derived from
+   `pg_attribute.attacl`, which is genuinely empty, so the conclusion survived and the method did
+   not. **SPRIN-97 leans on this fact far harder than SPRIN-94 did.** SPRIN-85's migration banner
+   records the same trap; this was its second sighting, found only because that banner was read.
+2. **A green wait-loop that never waited.** `gh pr checks` prints `no checks reported` in the window
+   before CI registers. A loop exiting on "output contains no `pending`" therefore exits instantly,
+   and the absence of a verdict looks exactly like a passing one. It nearly produced a third
+   "reported green, wasn't green" incident. **Require the check NAME present AND nothing pending.**
+
+**The review: 13 mutations planted, 11 killed, 0 Critical or Important.** Killed the ISO-weekday
+table shift, the pluralisation boundary, a `hasSprints`↔`hasWipLimits` gate swap, a gate hardcoded
+to `true`, broken `aria-labelledby`, an ignored cadence prop and a stray edit button.
+
+**The gap left open on purpose, and it is the third sighting of its class.** Nothing compares the
+schema doc's `CHECK` bounds to the applied migration: a reviewer made
+`docs/sprintboard_phase1_schema.sql` disagree with the live database and the whole gate stayed
+green. `domain.test.ts`'s doc-vs-migration matcher covers `project_fields` **grant statements**
+only — not DDL bounds, not this table. Not fixed here because a general doc-vs-DDL matcher is test
+infrastructure rather than one story's scope, and a bad one would *look* like coverage while
+providing none. Recorded in the epic spec, where SPRIN-97 will read it.
+
+**An unchecked cast was hiding the new columns.** `SettingsTab.test.tsx`'s fixture is
+`{ id, name, key, project_type } as Project`; the cast is why nothing complained when two columns
+appeared. Left alone, every existing Scrum Settings test would have rendered *"undefined weeks,
+starting day undefined"* and stayed green, since none assert on cadence text. The fixture now
+carries a real cadence.
+
+**Copy that promised an unbuilt feature was cut.** The section originally read *"New sprints are
+suggested from this"* — false until SPRIN-96 ships the pre-fill. User-facing copy asserting
+behaviour the app lacks is worse than a false comment, because users read it. No test broke when it
+was removed, which is the incidental finding: the sentence was unpinned.
+
+**Left undone:** `SPRINT_LENGTH_WEEKS` is exported with no consumer until SPRIN-97's picker, against
+the convention `domain.ts`'s own `hasWipLimits` docblock states. David's call to leave it — the test
+pinning it to `[1,2,3,4]` is what will stop the picker drifting from
+`projects_sprint_length_weeks_range`, and `knip` is not wired into `package.json` anyway.
 
 ### Session 63 — SPRIN-93 **MERGED**, epic SPRIN-71 **CLOSED** (PR #102, `44c7440`)
 
