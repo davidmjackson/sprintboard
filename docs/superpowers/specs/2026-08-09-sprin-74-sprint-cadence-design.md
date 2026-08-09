@@ -358,3 +358,22 @@ close, **split it — do not widen the max**, which reddens `verify-gate.test.mj
   which is the guard working, not an obstacle.
 - It does not touch the `auth_rls_initplan` advisor sweep. That belongs to SPRIN-75.
 - It does not change sprint naming, the one-active-sprint rule, or `completeSprint`.
+
+## Known gaps, recorded rather than fixed (SPRIN-94 review, 2026-08-09)
+
+A 13-mutation adversarial pass over SPRIN-94 killed 11 and found **no Critical or Important**
+defects. Two Minor gaps stand, both about the same thing and both inherited by later stories:
+
+- **Nothing compares the schema doc's CHECK bounds to the applied migration's.** A reviewer
+  changed `between 1 and 4` in `docs/sprintboard_phase1_schema.sql` so the doc and the live
+  database disagreed, and the whole gate stayed green. `domain.test.ts` has a doc-vs-migration
+  matcher, but it covers `project_fields` GRANT statements only — not DDL bounds, and not this
+  table. This is the same drift class session 63 found in the `project_fields` grant block and
+  the third sighting in this project.
+- **The migration's literal `default 2` / `default 1` are unguarded locally.** Only the live
+  suite observes them, and it cannot run locally. The migration's own banner discloses this,
+  so it is expected rather than silent.
+
+**Neither was fixed in SPRIN-94, deliberately**: a general doc-vs-DDL matcher is a piece of test
+infrastructure, not this story's scope, and building one badly is worse than the gap. Whoever
+widens the cadence range in a later story should know the doc will not argue with them.
