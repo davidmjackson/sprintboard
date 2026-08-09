@@ -216,12 +216,20 @@ projects, gated on `hasSprints`.
 **Build in this order.** Stories 2 and 3 both depend on story 1; story 4 is independent and
 could land at any point.
 
-| # | Story | Migration |
-|---|---|---|
-| 1 | See a project's sprint cadence | A |
-| 2 | Change the cadence | B (grants) |
-| 3 | Pre-fill the create-sprint dates from the cadence | — |
-| 4 | Reject a sprint that ends before it starts, in the database | C |
+**THE JIRA KEYS ARE NOT IN STORY ORDER.** They were created in parallel on 2026-08-09 and the
+board raced — the same thing that happened to epic SPRIN-71, where stories 3 and 4 drew the
+lowest numbers. Reading build order off the key numbers gives the wrong answer. Story 2, the
+heavy one, carries the *highest* key.
+
+| # | Story | Key | Migration |
+|---|---|---|---|
+| 1 | See a project's sprint cadence | **SPRIN-94** | A |
+| 2 | Change the cadence | **SPRIN-97** | B (grants) |
+| 3 | Pre-fill the create-sprint dates from the cadence | **SPRIN-96** | — |
+| 4 | Reject a sprint that ends before it starts, in the database | **SPRIN-95** | C |
+
+All four verified as children of SPRIN-74 via `parent = SPRIN-74`, not assumed from the
+create calls returning success.
 
 ### Story 1 — See a project's sprint cadence
 
