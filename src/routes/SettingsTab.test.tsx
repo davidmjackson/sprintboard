@@ -108,7 +108,21 @@ vi.mock('./StatusSettings', async (orig) => {
 // is `undefined === 'scrum'` → false, so leaving the field off would silently turn this whole
 // file into a suite about a project WITHOUT sprints the moment anything in this tab consults
 // the project type (SPRIN-83) — and SPRIN-84 refactors `StatusSettings` right here.
-const project = { id: 'p1', name: 'Sprintboard', key: 'SPB', project_type: 'scrum' } as Project
+//
+// SPRIN-94. `sprint_length_weeks`/`sprint_start_weekday` are added here rather than left off
+// the cast: this fixture is `as Project` over an object literal missing most columns, and
+// with `SettingsTab` now rendering `CadenceSettings` for every Scrum-project test in this
+// file, an undefined pair would render `"undefined weeks, starting day undefined"` on every
+// one of them. Per-test values (the region test below) spread over this base rather than
+// replace it.
+const project = {
+  id: 'p1',
+  name: 'Sprintboard',
+  key: 'SPB',
+  project_type: 'scrum',
+  sprint_length_weeks: 2,
+  sprint_start_weekday: 1,
+} as Project
 
 const STATUSES = [
   { id: 'st1', slug: 'triage', name: 'Triage', category: 'todo', position: 1, wip_limit: null },
@@ -289,6 +303,42 @@ describe('SettingsTab', () => {
 
     await u.click(screen.getByRole('button', { name: 'Retry' }))
     expect(ctx.onRetry).toHaveBeenCalled()
+  })
+})
+
+/**
+ * SPRIN-94 AC3/AC4: the cadence section is gated on `hasSprints`, shown for Scrum and
+ * withheld for Kanban. The Kanban test is deliberately proven non-vacuous in the task 4
+ * brief, by temporarily flipping the gate to `true` and confirming it fails — a test that
+ * can never fail pins nothing.
+ */
+describe('SettingsTab sprint cadence (SPRIN-94)', () => {
+  it('shows the sprint cadence for a Scrum project (SPRIN-94 AC3)', async () => {
+    renderTab({ project: { ...project, sprint_length_weeks: 3, sprint_start_weekday: 2 } })
+
+    const section = await screen.findByRole('region', { name: /sprint cadence/i })
+    expect(within(section).getByText('3 weeks, starting Tuesday')).toBeInTheDocument()
+  })
+
+  it('shows no cadence section for a Kanban project (SPRIN-94 AC4)', async () => {
+    renderTab({
+      project: {
+        ...project,
+        project_type: 'kanban',
+        sprint_length_weeks: 3,
+        sprint_start_weekday: 2,
+      },
+    })
+
+    // Wait for the tab to settle before asserting an absence, or this passes on a tab that
+    // has not rendered anything yet.
+    expect(await screen.findByRole('heading', { name: /custom fields/i })).toBeInTheDocument()
+
+    expect(screen.queryByRole('region', { name: /sprint cadence/i })).not.toBeInTheDocument()
+    // queryByRole EXCLUDES aria-hidden subtrees, so on its own it would pass on a section
+    // that renders and is merely hidden from the a11y tree. The raw DOM query is what makes
+    // this an assertion about the section not EXISTING.
+    expect(document.body.textContent).not.toContain('3 weeks, starting Tuesday')
   })
 })
 
