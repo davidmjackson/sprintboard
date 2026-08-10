@@ -14,22 +14,27 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:
 custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done** 2026-08-05) →
-**custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (74 — IN PROGRESS)** →
-**teams, roles and permissions (75 — the security boundary, deliberately last)**.
+**custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (SPRIN-74, done** 2026-08-10**)**
+→ **teams, roles and permissions (75 — the security boundary, deliberately last)**.
 
-**Three of five Rung 3 epics are complete, and the fourth is one story in.** SPRIN-74 is
-decomposed into four stories; **SPRIN-94 shipped 2026-08-09**. SPRIN-75 remains undecomposed and
-deliberately last.
+**FOUR of five Rung 3 epics are complete. SPRIN-75 is the only thing left on the board** —
+`project = SPRIN AND statusCategory != Done` returns exactly one issue, the epic itself. It has
+**no stories**, so it needs decomposing before any code, and it is the security boundary: a deep
+multi-agent review, and worth pricing the fan-out in money before launching it.
 
-**THE SPRIN-74 STORY KEYS ARE NOT IN BUILD ORDER.** They were created in parallel and the board
+**THE SPRIN-74 STORY KEYS WERE NOT IN BUILD ORDER.** They were created in parallel and the board
 raced — the same trap epic SPRIN-71 hit. Story 2, the heavy one, drew the *highest* key:
 
 | Story | Key | State | Migration |
 |---|---|---|---|
 | 1 — see a project's sprint cadence | SPRIN-94 | **Done** | A, applied |
-| 2 — change the cadence (pays the SPRIN-82 wall) | **SPRIN-97** | To Do | B (grants) |
-| 3 — pre-fill the create-sprint dates | SPRIN-96 | To Do | — |
-| 4 — reject end-before-start in the database | SPRIN-95 | To Do | C |
+| 2 — change the cadence (pays the SPRIN-82 wall) | **SPRIN-97** | **Done** | B (grants), applied |
+| 3 — pre-fill the create-sprint dates | SPRIN-96 | **Done** | — |
+| 4 — reject end-before-start in the database | SPRIN-95 | **Done** | C, applied |
+
+**The epic issue was transitioned by hand** after querying `parent = SPRIN-74 AND statusCategory
+!= Done` and getting zero rows — Jira does not close epics on its own, and SPRIN-57 sat in To Do
+for three sessions with every child Done because nobody did this.
 
 The design is `docs/superpowers/specs/2026-08-09-sprin-74-sprint-cadence-design.md`. **Read it
 before planning any of them** — it carries the rejected alternatives and the two corrections
@@ -80,6 +85,63 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 ## Session log
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
+
+### Session 68 — SPRIN-95 **MERGED**, epic SPRIN-74 **CLOSED** (PR #110, `d3a8f5f`)
+
+**Merged 2026-08-10.** `verify` green on the PR's own head `f26cd4a`: **79 test files, 1535 tests,
+0 skipped**, gap **7** against `test:unit`'s 72. Migration C applied by hand and verified from
+`pg_constraint`: `contype='c'`, `convalidated=true`, definition exactly
+`CHECK ((end_date >= start_date))`. Advisors unchanged at **16 performance / 1 security**, whole
+per-table breakdown matching. Epic SPRIN-74 transitioned by hand; **SPRIN-75 is now the only
+open issue on the board.**
+
+**The columns are `timestamptz`, which the epic design never said, and it changes the argument.**
+The check compares *instants*; the client's `refine` compares `'YYYY-MM-DD'` *calendar days*.
+Those are not the same comparison in general — they coincide for every value the app can produce
+because `toUtcMidnight` pins both operands to UTC midnight and `createSprint` is the only writer.
+And a `::date` variant is **impossible, not merely worse**: `pg_cast timestamptz → date` is
+`provolatile='s'` (STABLE, because it reads the session `TimeZone`) and Postgres refuses a
+non-IMMUTABLE expression in a `CHECK`.
+
+**AC4 turned out to be covered already**, at `CreateSprintDialog.test.tsx:117` — so the story owed
+*evidence* rather than a second test. Removing the `refine` reddened both covering tests; restored
+green. Writing a duplicate would have proven nothing.
+
+**THE SESSION'S REAL LESSON IS ABOUT THE GUARD I ADDED, NOT THE CONSTRAINT.** Review found that
+inverting the constraint in the migration, or deleting it from `docs/sprintboard_phase1_schema.sql`,
+both left the whole suite green — the live suite cannot see it, since the database is built from
+the migrations and the doc is applied to nothing. I added a `checkConstraints` matcher to
+`domain.test.ts`. **A second adversarial pass then found four Important defects in that matcher**,
+and every one was a false *green*: a literal-space separator that made a line-wrapped `alter table`
+invisible (the exact drift direction its own docblock called realistic); a `--` stripper that cut
+through string literals, throwing on a correct pair of files *and* silently swallowing an `alter`
+behind `comment on … is 'see -- note';`; a `create table` regex anchored on `\n);` that over-ran
+into `create table tickets`; and no DROP semantics, so a legitimate future drop could never go
+green. **A guard is code, and a guard with a false-green path is worse than no guard** — it
+manufactures confidence. It now *replays* migrations in order and its vacuity guard counts
+**operations** rather than survivors, because a replay that legitimately ends empty is otherwise
+indistinguishable from a broken parser.
+
+**Recorded, not fixed.** (1) The drift matcher is scoped to `sprints` only; the general case needs
+a per-table decision, because `projects` and `project_statuses` spell checks *unnamed* in the doc
+and *named* in the migrations, and `tickets` predates `docs/migrations/` entirely. (2)
+`toUtcMidnight` throws `RangeError` on a 5-digit year, which `<input type="date">` can produce; it
+throws before any request is issued, so it never reaches the constraint. (3) **`anon` holds
+`arwdDxtm` on `sprints`** — full CRUD at the grant layer, RLS the only barrier. Pre-existing and
+general to this schema, but SPRIN-75 must reckon with it.
+
+**Two environment facts that cost time.** `~/.bashrc` exports placeholder Supabase config
+(`VITE_SUPABASE_URL=https://example.supabase.co`), and Vite's `loadEnv` gives `process.env`
+priority over `.env.local` — so local live suites **fail hard** in `beforeAll` with `ENOTFOUND`
+rather than skipping, because `hasRlsCredentials` is true. Prefix with
+`env -u VITE_SUPABASE_URL -u VITE_SUPABASE_ANON_KEY`. And `clip.exe` transcodes using the calling
+console's codepage: the migration's em-dashes reached the SQL editor as mojibake. Nothing durable
+was affected — verified by reading the `comment on constraint` back — but `docs/migrations/` is a
+replay log meant to be re-pasted, so migrations are now **ASCII-only**.
+
+**Sessions 66 and 67 have no entry in this log** (it jumps 65 → 64) although SPRIN-96 merged in 67
+at `e88b8eb`. Their narrative survives in the agent-memory index and PR #109; it was not
+reconstructed here rather than guessed at.
 
 ### Session 65 — SPRIN-97 **MERGED**, the SPRIN-82 debt **PAID** (PR #107, `66647bf`)
 
