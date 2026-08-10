@@ -518,7 +518,16 @@ create table sprints (
 
   -- Redundant on its own (id is already the PK). Exists so tickets can point at
   -- a sprint with a COMPOSITE fk and prove it belongs to the same project.
-  constraint sprints_id_project_unique unique (id, project_id)
+  constraint sprints_id_project_unique unique (id, project_id),
+  -- SPRIN-95: a sprint may not end before it starts, mirroring the zod refine in
+  -- src/lib/sprint-schemas.ts so the rule holds at both edges. `>=`, so a one-day
+  -- sprint is legal. NO null guard is needed and none is wanted: the expression is
+  -- NULL when either side is, and a CHECK passes on NULL, so a half-dated sprint
+  -- stays legal. A `::date` variant is impossible — the timestamptz->date cast is
+  -- STABLE and a CHECK may not contain a non-IMMUTABLE expression; both columns are
+  -- written at UTC midnight by toUtcMidnight, so instant order and calendar-day
+  -- order coincide anyway. Named because the live tests assert the name.
+  constraint sprints_end_not_before_start check (end_date >= start_date)
 );
 
 -- Phase 1 lean rule: at most one active sprint per project

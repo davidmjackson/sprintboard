@@ -92,6 +92,94 @@ describe.skipIf(!hasRlsCredentials)('S6.1 sprint-creation contract', () => {
     expect(new Date(data!.end_date!).toISOString().slice(0, 10)).toBe('2026-08-03')
   })
 
+  /**
+   * SPRIN-95 AC1 — the DATABASE rejects an end date before its start, not only the client's
+   * zod `refine`. The CONSTRAINT NAME is asserted, not just the SQLSTATE: `sprints_status_check`
+   * also lives on this table, so a bare 23514 would pass on a violation this test is not about.
+   * Same discipline as projects.integration.test.ts's SPRIN-94 range tests.
+   */
+  it('rejects a sprint that ends before it starts (sprints_end_not_before_start -> 23514)', async () => {
+    const { data, error } = await a
+      .from('sprints')
+      .insert({
+        project_id: projectId,
+        name: 'Backwards',
+        start_date: '2026-08-03T00:00:00.000Z',
+        end_date: '2026-07-20T00:00:00.000Z',
+      })
+      .select('id')
+      .single()
+
+    expect(data).toBeNull()
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('sprints_end_not_before_start')
+  })
+
+  /**
+   * SPRIN-95 AC2 — a same-day sprint is legal, so the constraint is `>=` and not `>`. A
+   * regression guard on the constraint's reach: it is legal before the migration too, and it is
+   * what would catch a `>` shipped by mistake.
+   */
+  it('accepts a sprint whose start and end are the same instant (SPRIN-95 AC2)', async () => {
+    const day = '2026-07-20T00:00:00.000Z'
+    const { data, error } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Same day', start_date: day, end_date: day })
+      .select('id')
+      .single()
+
+    expect(error).toBeNull()
+
+    // Re-read through a SECOND query rather than trusting the row the insert echoed back: an
+    // insert that returned its own input would satisfy a bare `expect(error).toBeNull()`.
+    const { data: row, error: readErr } = await a
+      .from('sprints')
+      .select('start_date, end_date')
+      .eq('id', data!.id)
+      .single()
+
+    expect(readErr).toBeNull()
+    expect(new Date(row!.start_date!).toISOString()).toBe(day)
+    expect(new Date(row!.end_date!).toISOString()).toBe(day)
+  })
+
+  /**
+   * SPRIN-95 AC3 — `end_date >= start_date` is NULL when either side is null, and a CHECK
+   * passes on NULL, so a half-dated sprint stays legal in both directions. This is the guard on
+   * the constraint being written without a needless null branch — and on nobody later adding a
+   * `not null` to either column. (Neither date set is already covered by "only a name" above.)
+   */
+  it('accepts either date alone — a null end or a null start (SPRIN-95 AC3)', async () => {
+    const day = '2026-07-20T00:00:00.000Z'
+    const startOnly = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Start only', start_date: day })
+      .select('id')
+      .single()
+    const endOnly = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'End only', end_date: day })
+      .select('id')
+      .single()
+
+    expect(startOnly.error).toBeNull()
+    expect(endOnly.error).toBeNull()
+
+    // Re-read both rows, for the same reason AC2 does.
+    const { data: rows, error } = await a
+      .from('sprints')
+      .select('id, start_date, end_date')
+      .in('id', [startOnly.data!.id, endOnly.data!.id])
+
+    expect(error).toBeNull()
+    expect(rows).toHaveLength(2)
+    const byId = new Map(rows!.map((r) => [r.id, r]))
+    expect(new Date(byId.get(startOnly.data!.id)!.start_date!).toISOString()).toBe(day)
+    expect(byId.get(startOnly.data!.id)!.end_date).toBeNull()
+    expect(byId.get(endOnly.data!.id)!.start_date).toBeNull()
+    expect(new Date(byId.get(endOnly.data!.id)!.end_date!).toISOString()).toBe(day)
+  })
+
   it('allows two sprints with the same name — names are labels, not identifiers', async () => {
     // This is what makes count-based auto-naming safe: a collision is cosmetic.
     await a.from('sprints').insert({ project_id: projectId, name: 'Twin' })
