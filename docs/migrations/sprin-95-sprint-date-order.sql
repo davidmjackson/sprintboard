@@ -120,7 +120,7 @@ begin
 
   -- (iii) Validated against the rows that already existed.
   if not con.convalidated then
-    raise exception 'SPRIN-95: sprints_end_not_before_start is NOT VALID -- existing rows were never checked';
+    raise exception 'SPRIN-95: sprints_end_not_before_start is NOT VALID; existing rows were never checked';
   end if;
 
   -- (iv) Exactly the intended expression.
@@ -129,7 +129,7 @@ begin
     raise exception 'SPRIN-95: unexpected constraint definition: % (expected %)', actual, expected;
   end if;
 
-  raise notice 'SPRIN-95: ok -- sprints_end_not_before_start added and validated, no privilege moved';
+  raise notice 'SPRIN-95: ok: sprints_end_not_before_start added and validated, no privilege moved';
 end $$;
 
 commit;

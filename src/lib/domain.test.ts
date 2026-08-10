@@ -83,6 +83,230 @@ function grantStatements(sql: string, table: string): string[] {
     .sort()
 }
 
+/** A table reference as either file may spell it: bare, `public.`-qualified, or quoted. */
+function tableRef(table: string): string {
+  return `(?:public\\s*\\.\\s*)?"?${table}"?(?![\\w"])`
+}
+
+/**
+ * One token of SQL that a naive `--` stripper must not cut through: a dollar-quoted block, a
+ * single-quoted string literal, or a line comment. Ordered so the two LITERAL forms are matched
+ * (and kept) before `--` gets the chance to match inside one.
+ *
+ * `'(?:[^']|'')*'` is the whole reason this is a token scan rather than a line scan: SQL escapes
+ * a quote by DOUBLING it, so `'it''s'` is one literal and not two. The two alternatives are
+ * disjoint on their first character, so there is no ambiguity to backtrack over.
+ */
+const SQL_TOKEN = /(\$[A-Za-z_]*\$)[\s\S]*?\1|'(?:[^']|'')*'|--[^\n]*/g
+
+/**
+ * `sql` with its line comments removed and its string literals left intact.
+ *
+ * **`sql.replace(/--.*$/gm, '')` is NOT good enough, and it fails in both directions.** Measured
+ * on this repo at SPRIN-95:
+ *
+ * - **False RED, loudly.** Let the doc and a migration both legally state
+ *   `check (name <> '--')` — a perfectly ordinary constraint — and the naive stripper eats the
+ *   rest of that line. `balancedParens` then throws `Unbalanced parentheses in SQL from offset
+ *   …: (name <> '` and the gate dies on an internal exception, on a CORRECT pair of files.
+ * - **False GREEN, silently.** `comment on table sprints is 'see -- note'; alter table sprints
+ *   add constraint sy check (a > b);` returns NOTHING at all: the stripper treats the `--`
+ *   inside the string as a comment and swallows the whole `alter` behind it. That shape is live
+ *   here — the SPRIN-95 migration persists a `comment on constraint … on sprints is '…'`, so
+ *   one em-dash-free day away from this being real.
+ *
+ * **`$$`-QUOTED BLOCKS ARE PRESERVED VERBATIM, comments and all**, because that is exactly what
+ * Postgres's own outer lexer does: `$$…$$` is a single string literal to the parser, and the
+ * `--` lines inside a `do $$ … $$` body are comments only to PL/pgSQL, one level down. The
+ * honest consequence, stated rather than assumed: constraint-shaped PROSE inside a `do` block's
+ * comments would be read as SQL by the callers below. Measured 2026-08-10 — no `$$` body under
+ * `docs/` mentions `create table`/`alter table` for any table, so nothing reads a comment today.
+ */
+function stripSqlComments(sql: string): string {
+  return sql.replace(SQL_TOKEN, (token) => (token.startsWith('--') ? '' : token))
+}
+
+/**
+ * The text inside the parenthesis pair opening at `open`, brackets balanced.
+ *
+ * A lazy `\(([^)]*)\)` is NOT good enough here and the difference is silent: it stops at the
+ * first `)`, so `check (wip_limit is null or length(name) <= 40)` would be truncated mid-way
+ * and two files that state the same constraint would still compare equal on the truncated
+ * prefix. Throwing on an unbalanced run is the fail-loud half — a matcher that quietly
+ * returned a prefix is exactly the vacuous comparison the tests below exist to prevent.
+ */
+function balancedParens(sql: string, open: number): string {
+  let depth = 0
+  for (let i = open; i < sql.length; i += 1) {
+    if (sql[i] === '(') depth += 1
+    else if (sql[i] === ')') {
+      depth -= 1
+      if (depth === 0) return sql.slice(open + 1, i)
+    }
+  }
+  throw new Error(
+    `Unbalanced parentheses in SQL from offset ${open}: ${sql.slice(open, open + 60)}`,
+  )
+}
+
+/**
+ * Every stretch of SQL that can declare a constraint on one table.
+ *
+ * TWO SHAPES, because the two files genuinely use different ones and a matcher that read only
+ * one of them would compare a populated list against an empty one — or worse, two empty ones.
+ * `docs/sprintboard_phase1_schema.sql` states `sprints_end_not_before_start` INSIDE the
+ * `create table sprints (…)` block, because the doc is the rebuild-from-scratch artefact;
+ * `docs/migrations/sprin-95-sprint-date-order.sql` states the same constraint as
+ * `alter table sprints add constraint …`, because a migration edits a table that already
+ * exists. Same constraint, same database, two spellings.
+ *
+ * **EVERY SEPARATOR IS `\s+`, NEVER A LITERAL SPACE**, and that is a fix rather than a nicety —
+ * the same fix, for the same reason, that `grantStatements` above already carries as `\bon\s+`.
+ * With a hardcoded `' '` in front of the table name, ALL of `alter table␣␣sprints`,
+ * `alter table\tsprints`, `alter table\n  sprints` and `create table\n  sprints (` contribute
+ * NOTHING, so a migration wrapped across lines by a formatter — a shape prettier would produce
+ * and nothing in this repo forbids, since `docs/` is prettier-ignored — is invisible here and
+ * the drift test stays green while the doc says something the migrations never applied.
+ * `alter table if exists` is accepted for the same reason: it is legal SQL, and a spelling this
+ * function cannot read is a constraint this test silently stops guarding.
+ *
+ * **THE `create table` BODY IS TAKEN WITH `balancedParens`, NOT A LAZY `\n\);` REGEX.** The old
+ * form was anchored on the block closing as exactly `\n);`. Close it any other legal way —
+ * `\n  );`, `\n) ;`, `));` — and the lazy match ran ON, past the end of `sprints`, to the next
+ * `\n);` in the file: the end of `create table tickets`. Measured, that returned
+ * `[sprints_end_not_before_start, tickets_blocked_coherent]`, i.e. it failed to a WRONG list
+ * with a message blaming the doc, rather than to an empty one the vacuity guard would explain.
+ * Locating the header and balancing from its own opening paren has no such dependency, and is
+ * less code besides.
+ *
+ * KNOWN LIMIT, shared with `grantStatements`: an `alter table` scope ends at the first `;`, so a
+ * semicolon inside a string literal (`check (name <> ';')`) would truncate it. No file under
+ * `docs/` does that, and the failure is loud (`balancedParens` throws) rather than silent.
+ */
+function constraintScopes(sql: string, table: string): string[] {
+  const ref = tableRef(table)
+  const header = new RegExp(
+    `\\bcreate\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${ref}\\s*\\(`,
+    'i',
+  ).exec(sql)
+  const alters = [
+    ...sql.matchAll(
+      new RegExp(
+        `\\balter\\s+table\\s+(?:if\\s+exists\\s+)?(?:only\\s+)?${ref}([\\s\\S]*?);`,
+        'gi',
+      ),
+    ),
+  ]
+  return [
+    ...(header === null ? [] : [balancedParens(sql, header.index + header[0].length - 1)]),
+    ...alters.flatMap((m) => (m[1] === undefined ? [] : [m[1]])),
+  ]
+}
+
+/**
+ * One constraint operation, in the order the SQL states it: a named check constraint being
+ * DECLARED, or a constraint of any kind being DROPPED by name.
+ */
+type ConstraintOp = { readonly drop: string } | { readonly add: string; readonly text: string }
+
+/**
+ * A `drop constraint <name>` (the `if exists` form included) OR a `constraint <name> check (`
+ * declaration, whichever comes first. ONE regex rather than two passes, because order matters
+ * WITHIN a file as well as between files: `docs/migrations/sprin-81-project-type-kanban.sql:37-40`
+ * drops `projects_project_type_check` and re-adds it four lines later, so a pass that collected
+ * every drop before every add would replay that file backwards and lose the constraint entirely.
+ */
+const CONSTRAINT_OP =
+  /\bdrop\s+constraint\s+(?:if\s+exists\s+)?"?(\w+)"?|\bconstraint\s+"?(\w+)"?\s+check\s*\(/gi
+
+/** The constraint operations one SQL file states about one table, in source order. */
+function checkConstraintOps(sql: string, table: string): ConstraintOp[] {
+  return constraintScopes(stripSqlComments(sql), table).flatMap((scope) =>
+    [...scope.matchAll(CONSTRAINT_OP)].map((m) =>
+      m[1] === undefined
+        ? {
+            add: m[2]!.toLowerCase(),
+            text: `constraint ${m[2]} check (${balancedParens(scope, m.index + m[0].length - 1)})`
+              .replace(/\s+/g, ' ')
+              .trim()
+              .toLowerCase(),
+          }
+        : { drop: m[1].toLowerCase() },
+    ),
+  )
+}
+
+/**
+ * The NAMED check constraints one table is left with after replaying `sources` in order, each
+ * normalised to `constraint <name> check (<expr>)`, lowercased, whitespace-collapsed and sorted
+ * — plus the number of operations the replay actually observed.
+ *
+ * THE SIBLING OF `grantStatements`, and it exists for the same reason, found the same way.
+ * Two mutations survived the entire unit suite at SPRIN-95: changing `>=` to `>` in
+ * docs/migrations/sprin-95-sprint-date-order.sql, and deleting the constraint line outright
+ * from docs/sprintboard_phase1_schema.sql. Both left every test green, and the LIVE suite
+ * cannot see either — the live database is built from the migrations, and the doc is never
+ * applied to anything. So a rebuild from the doc would produce a `sprints` table that happily
+ * accepts a sprint ending before it starts, with the whole gate green.
+ *
+ * **IT IS A REPLAY, NOT A CUMULATIVE `flatMap`, and without that a CORRECT pair of files could
+ * not go green.** The migrations directory is an append-only log of applied artefacts, so a
+ * later file may legally UNDO an earlier one — `docs/migrations/sprin-81-project-type-kanban.sql`
+ * really does drop and re-add `projects_project_type_check`. Summing every file's declarations
+ * and ignoring its drops means a future `alter table sprints drop constraint
+ * sprints_end_not_before_start;`, paired with the doc correctly deleting the line, goes RED with
+ * no resolution short of rewriting history. Replaying `add` as an insert and `drop` as a removal
+ * makes the accumulated set what the log actually produces.
+ *
+ * **`operations` IS THE VACUITY GUARD, and it counts OPS rather than surviving constraints on
+ * purpose.** The guard's job is to notice that the matcher has stopped matching, so that the
+ * caller's equality is not comparing two empty lists it produced by accident. A non-empty result
+ * cannot serve: a replay that legitimately ends with nothing (the drop above) is indistinguishable
+ * from a broken parser by its output alone, and only the count separates them.
+ *
+ * **Comments are stripped FIRST — via `stripSqlComments`, not a line regex — and it is not
+ * decoration.** The SPRIN-95 migration's header argues about the constraint in prose and quotes
+ * `check (end_date::date >= start_date::date)` to explain why that form is impossible. A matcher
+ * that read comments would compare documentation rather than SQL, and would find the constraint
+ * "present" in a file that had stopped applying it.
+ *
+ * CHECKS THE FILE SPELLS WITHOUT A NAME ARE NOT COLLECTED. This is a property of the FILE, not
+ * of the database: `sprints.status` carries a bare `check (status in (…))` in the doc, and in
+ * the live catalog that same constraint is named `sprints_status_check` — Postgres generated the
+ * name. No migration under `docs/migrations` ever applied it (it predates the directory), so
+ * collecting it would fail the comparison on a correct pair of files. Named constraints are the
+ * ones this codebase treats as client-visible API — the live tests assert them by name — so they
+ * are the ones worth pinning. **THE CONSEQUENCE, which is the price of that choice: a check a
+ * migration adds WITHOUT naming it, and which the doc never restates, is invisible to this test.
+ * Name your constraints.**
+ *
+ * TWO NORMALISATION LOSSES, both accepted rather than fixed, both capable of surprising a reader:
+ *
+ * - **A trailing `not valid` is dropped.** Only the text inside the `check (…)` parentheses is
+ *   captured, so a migration's `… check (a >= b) not valid` compares EQUAL to a validated `… check
+ *   (a >= b)` in the doc. Whether the existing rows were checked is pinned by the migration's own
+ *   `convalidated` assertion, not by this.
+ * - **Whitespace is collapsed but never inserted.** `check (a>=b)` and `check (a >= b)` are the
+ *   same constraint to Postgres and DIFFERENT strings here, so a purely cosmetic reformat of one
+ *   file is a false red. The remedy is to reformat both, which is cheap; tokenising SQL to avoid
+ *   it is not.
+ */
+function replayCheckConstraints(
+  sources: readonly string[],
+  table: string,
+): { constraints: string[]; operations: number } {
+  const applied = new Map<string, string>()
+  let operations = 0
+  for (const sql of sources) {
+    for (const op of checkConstraintOps(sql, table)) {
+      operations += 1
+      if ('drop' in op) applied.delete(op.drop)
+      else applied.set(op.add, op.text)
+    }
+  }
+  return { constraints: [...applied.values()].sort(), operations }
+}
+
 /** The DDL body of one `create table` block. Scoping matters: `status` exists on
  *  both sprints and tickets, so an unscoped search silently reads the wrong one. */
 function tableBody(table: string): string {
@@ -380,6 +604,68 @@ describe('the schema parser can still see the whole truth', () => {
         'projects with no update privilege at all — the cadence form would 42501 on every ' +
         'save. The revoke must come first.',
     ).toBeLessThan(grantedAt)
+  })
+
+  /**
+   * THE SAME DRIFT AGAIN, ON CHECK CONSTRAINTS RATHER THAN GRANTS (SPRIN-95).
+   *
+   * The two tests above pin what the database PERMITS. This one pins what it REFUSES, and
+   * nothing else in the repo did. Two mutations survived all 1376 tests when this story was
+   * reviewed: `>=` → `>` in docs/migrations/sprin-95-sprint-date-order.sql, and deleting the
+   * `constraint sprints_end_not_before_start …` line from the schema doc. Neither is
+   * observable live — the live database is built from the migrations, the doc is applied to
+   * nothing — so the doc could silently stop stating a constraint the database enforces, and
+   * a rebuild from it would accept a sprint that ends before it starts.
+   *
+   * SCOPED TO `sprints` ON PURPOSE, and the reason is per-table rather than general — an earlier
+   * draft of this docblock said "several tables carry constraints that predate docs/migrations
+   * entirely", which is true of exactly ONE of them. Measured 2026-08-10:
+   *
+   * - `tickets` genuinely predates the directory: `tickets_blocked_coherent` is stated in the doc
+   *   and applied by no migration, because it shipped with S1.1.
+   * - `projects` and `project_statuses` do NOT predate it. They fail to balance for a different
+   *   reason — a NAMING divergence. The doc spells those checks UNNAMED
+   *   (`docs/sprintboard_phase1_schema.sql:72` and `:144-145`) while the migrations that applied
+   *   them name them (`sprin-81`, and `sprin-79:120`), so the two sides describe the same
+   *   database in two spellings and only one of them is collectable here.
+   *
+   * Each needs its own decision — repair the doc's spelling, or teach the matcher to pair a named
+   * constraint with an unnamed one — so it is filed separately rather than half-done here.
+   *
+   * MIGRATIONS ARE GLOBBED, NOT NAMED. A hardcoded filename inverts the control against the
+   * drift that actually happens — the migration is the applied artefact and the doc is the
+   * transcript, so migration-leads-doc-lags is the realistic failure. With a fixed list, a
+   * later migration that alters a `sprints` check is invisible here. Same reasoning, at
+   * length, as the `projects` test above.
+   */
+  it('states the same sprints check constraints as the migrations that applied them', () => {
+    // REPLAYED IN SORTED FILENAME ORDER, which is the order they were applied in. See
+    // `replayCheckConstraints`: the directory is an append-only log, so a later file may legally
+    // drop what an earlier one added, and a cumulative sum would never let that pair go green.
+    const migrations = readdirSync(MIGRATIONS_DIR)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .map((file) => readFileSync(join(MIGRATIONS_DIR, file), 'utf8'))
+    const fromMigrations = replayCheckConstraints(migrations, 'sprints')
+    const fromDoc = replayCheckConstraints([SCHEMA], 'sprints')
+
+    expect(
+      fromMigrations.operations,
+      'No named check constraint on sprints was added OR dropped by ANY file under ' +
+        'docs/migrations. The check-constraint matcher has stopped matching, so the equality ' +
+        'below would compare two empty lists and pass vacuously. Note this counts OPERATIONS, ' +
+        'not survivors: a replay that legitimately ends with none is a real result, and only ' +
+        'the count tells it apart from a broken parser.',
+    ).toBeGreaterThan(0)
+
+    expect(
+      fromDoc.constraints,
+      'docs/sprintboard_phase1_schema.sql no longer states the same NAMED check constraints on ' +
+        'sprints as the migrations under docs/migrations that applied them. A rebuild from the ' +
+        'doc would produce a DIFFERENT database — and on this table that means a sprint may end ' +
+        'before it starts, which no live test can see because the live database is built from ' +
+        'the migrations rather than from the doc.',
+    ).toEqual(fromMigrations.constraints)
   })
 
   /**
