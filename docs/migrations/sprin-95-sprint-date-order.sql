@@ -1,6 +1,6 @@
 -- =============================================================================
 -- SPRIN-95  Reject a sprint that ends before it starts
---           (Rung 3 epic SPRIN-74, story 4 — "Migration C" in the epic design)
+--           (Rung 3 epic SPRIN-74, story 4 -- "Migration C" in the epic design)
 --
 -- ONE NAMED CHECK CONSTRAINT. Nothing else moves: no column, no grant, no index,
 -- no RLS change. `src/lib/sprint-schemas.ts` already refuses `endDate < startDate`
@@ -16,7 +16,7 @@
 --
 -- WHY A PLAIN COMPARISON AND NOT `::date`. The columns are timestamptz, so the
 -- check compares INSTANTS while the client's refine compares 'YYYY-MM-DD'
--- CALENDAR DAYS. Those are not the same comparison in general — but they are the
+-- CALENDAR DAYS. Those are not the same comparison in general -- but they are the
 -- same for every value this application can produce, because `toUtcMidnight` in
 -- src/lib/sprint-dates.ts pins both columns to T00:00:00.000Z on write and
 -- `createSprint` is the only writer of either column in src/ (no edit-sprint path
@@ -27,18 +27,18 @@
 -- A `::date` VARIANT IS NOT MERELY WORSE, IT IS IMPOSSIBLE. The timestamptz->date
 -- cast is STABLE (measured above), and Postgres refuses a non-IMMUTABLE expression
 -- in a CHECK, so `check (end_date::date >= start_date::date)` cannot be created at
--- all. It is STABLE precisely because it reads the session TimeZone — which is also
+-- all. It is STABLE precisely because it reads the session TimeZone -- which is also
 -- why it would have been the wrong semantics even if it were allowed.
 --
 -- NO NULL GUARD, DELIBERATELY. `end_date >= start_date` evaluates to NULL when
 -- either side is null, and a CHECK PASSES on NULL. A sprint with no dates, or with
--- only one, stays legal — matching CreateSprintSchema, where every field is
+-- only one, stays legal -- matching CreateSprintSchema, where every field is
 -- optional. `or end_date is null or start_date is null` would change no outcome and
 -- read as though it did. AC3's live test pins this in both directions.
 --
 -- NAMED, NOT LEFT TO POSTGRES. Constraint names are client-visible API in this
 -- codebase (src/lib/project-statuses.ts and its siblings parse them out of error
--- messages), and AC1's live test asserts THIS name rather than a bare 23514 —
+-- messages), and AC1's live test asserts THIS name rather than a bare 23514 --
 -- necessarily so: `sprints_status_check` also lives on this table, so a bare
 -- SQLSTATE would pass on a violation that test is not about. A generated name would
 -- make the assertion a guess. Same reasoning as SPRIN-94's two range checks.
@@ -57,7 +57,7 @@
 -- RUN: paste this ENTIRE file into the Supabase SQL editor and run it once.
 -- If any statement errors, NOTHING lands.
 --
--- RE-RUN: NOT idempotent — `add constraint` errors if the name already exists, and
+-- RE-RUN: NOT idempotent -- `add constraint` errors if the name already exists, and
 -- the transaction then rolls the whole thing back. That is the safe failure.
 -- `if not exists` was deliberately NOT used: it would let a re-run silently skip the
 -- add and then verify a schema nobody applied.
@@ -81,7 +81,7 @@ comment on constraint sprints_end_not_before_start on sprints is
 --    Its honest limit, restated rather than assumed (SPRIN-82, SPRIN-85 and
 --    SPRIN-94's files make the same disclosure): it runs INSIDE the transaction
 --    that just did the work, so it reads back its OWN writes. It is not independent
---    verification — what it catches is somebody editing the `alter` above and not
+--    verification -- what it catches is somebody editing the `alter` above and not
 --    this block. The independent verification is the three live tests added to
 --    src/test/sprints.integration.test.ts, which run against the applied schema.
 --
@@ -89,7 +89,7 @@ comment on constraint sprints_end_not_before_start on sprints is
 --      i)   the constraint exists on public.sprints
 --      ii)  it is a CHECK (contype = 'c') and not some other constraint reusing
 --           the name
---      iii) it is convalidated — i.e. the existing rows were checked, not merely
+--      iii) it is convalidated -- i.e. the existing rows were checked, not merely
 --           the future ones (this is what a stray NOT VALID would cost)
 --      iv)  its definition is EXACTLY the intended expression, so an edit to the
 --           statement above that changes the semantics is caught rather than
@@ -120,7 +120,7 @@ begin
 
   -- (iii) Validated against the rows that already existed.
   if not con.convalidated then
-    raise exception 'SPRIN-95: sprints_end_not_before_start is NOT VALID — existing rows were never checked';
+    raise exception 'SPRIN-95: sprints_end_not_before_start is NOT VALID -- existing rows were never checked';
   end if;
 
   -- (iv) Exactly the intended expression.
@@ -129,7 +129,7 @@ begin
     raise exception 'SPRIN-95: unexpected constraint definition: % (expected %)', actual, expected;
   end if;
 
-  raise notice 'SPRIN-95: ok — sprints_end_not_before_start added and validated, no privilege moved';
+  raise notice 'SPRIN-95: ok -- sprints_end_not_before_start added and validated, no privilege moved';
 end $$;
 
 commit;
