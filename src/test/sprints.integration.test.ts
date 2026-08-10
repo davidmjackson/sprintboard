@@ -92,6 +92,161 @@ describe.skipIf(!hasRlsCredentials)('S6.1 sprint-creation contract', () => {
     expect(new Date(data!.end_date!).toISOString().slice(0, 10)).toBe('2026-08-03')
   })
 
+  /**
+   * SPRIN-95 AC1 — the DATABASE rejects an end date before its start, not only the client's
+   * zod `refine`. The CONSTRAINT NAME is asserted, not just the SQLSTATE: `sprints_status_check`
+   * also lives on this table, so a bare 23514 would pass on a violation this test is not about.
+   * Same discipline as projects.integration.test.ts's SPRIN-94 range tests.
+   */
+  it('rejects a sprint that ends before it starts (sprints_end_not_before_start -> 23514)', async () => {
+    const { data, error } = await a
+      .from('sprints')
+      .insert({
+        project_id: projectId,
+        name: 'Backwards',
+        start_date: '2026-08-03T00:00:00.000Z',
+        end_date: '2026-07-20T00:00:00.000Z',
+      })
+      .select('id')
+      .single()
+
+    expect(data).toBeNull()
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('sprints_end_not_before_start')
+  })
+
+  /**
+   * SPRIN-95 AC2 — a same-day sprint is legal, so the constraint is `>=` and not `>`. A
+   * regression guard on the constraint's reach: it is legal before the migration too, and it is
+   * what would catch a `>` shipped by mistake.
+   */
+  it('accepts a sprint whose start and end are the same instant (SPRIN-95 AC2)', async () => {
+    // A date NO other test in this file writes. It used to be '2026-07-20T00:00:00.000Z',
+    // which is exactly the start_date the "round-trips a UTC-midnight date" test above
+    // inserts into this same project — so retargeting the re-read below at that row left
+    // `expect(row.start_date).toBe(day)` still passing, and half the re-read discriminated
+    // against nothing. A re-read is only evidence if it can name the row it did NOT find.
+    const day = '2026-09-14T00:00:00.000Z'
+    const { data, error } = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Same day', start_date: day, end_date: day })
+      .select('id')
+      .single()
+
+    expect(error).toBeNull()
+
+    // Re-read through a SECOND query rather than trusting the row the insert echoed back: an
+    // insert that returned its own input would satisfy a bare `expect(error).toBeNull()`.
+    const { data: row, error: readErr } = await a
+      .from('sprints')
+      .select('start_date, end_date')
+      .eq('id', data!.id)
+      .single()
+
+    expect(readErr).toBeNull()
+    expect(new Date(row!.start_date!).toISOString()).toBe(day)
+    expect(new Date(row!.end_date!).toISOString()).toBe(day)
+  })
+
+  /**
+   * SPRIN-95 AC3 — `end_date >= start_date` is NULL when either side is null, and a CHECK
+   * passes on NULL, so a half-dated sprint stays legal in both directions. (Neither date set is
+   * already covered by "only a name" above.)
+   *
+   * WHAT THIS GUARDS, stated as narrowly as it is true: that nobody later adds a `not null` to
+   * either column. Both are nullable today, and a `not null` on either would earn 23502 on one
+   * of these two inserts.
+   *
+   * WHAT IT DOES NOT GUARD, though this docblock used to claim it did: "the constraint being
+   * written without a needless null branch". No insert can tell those two forms apart —
+   * `null >= x` and `(null >= x or null is null or x is null)` BOTH cause a CHECK to pass, so
+   * this test is green either way. Only reading the constraint's own definition discriminates,
+   * which is what the migration's `pg_get_constraintdef` assertion does.
+   */
+  it('accepts either date alone — a null end or a null start (SPRIN-95 AC3)', async () => {
+    const day = '2026-07-20T00:00:00.000Z'
+    const startOnly = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Start only', start_date: day })
+      .select('id')
+      .single()
+    const endOnly = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'End only', end_date: day })
+      .select('id')
+      .single()
+
+    expect(startOnly.error).toBeNull()
+    expect(endOnly.error).toBeNull()
+
+    // Re-read both rows, for the same reason AC2 does.
+    const { data: rows, error } = await a
+      .from('sprints')
+      .select('id, start_date, end_date')
+      .in('id', [startOnly.data!.id, endOnly.data!.id])
+
+    expect(error).toBeNull()
+    expect(rows).toHaveLength(2)
+    const byId = new Map(rows!.map((r) => [r.id, r]))
+    expect(new Date(byId.get(startOnly.data!.id)!.start_date!).toISOString()).toBe(day)
+    expect(byId.get(startOnly.data!.id)!.end_date).toBeNull()
+    expect(byId.get(endOnly.data!.id)!.start_date).toBeNull()
+    expect(new Date(byId.get(endOnly.data!.id)!.end_date!).toISOString()).toBe(day)
+  })
+
+  /**
+   * SPRIN-95 — the path where the constraint actually EARNS ITS KEEP: the only one of the four
+   * with no client-side guard standing in front of it.
+   *
+   * Every other SPRIN-95 test here is an INSERT, and an insert is the path the client's zod
+   * `refine` already guards: `CreateSprintDialog` never issues the request, so no UI reaches the
+   * constraint that way. **PostgREST plainly does** — the AC1 test three tests above sends a
+   * backwards insert straight through it and collects its 23514, which is the whole reason that
+   * test can exist. An earlier draft of this docblock said the insert path was "unreachable",
+   * flatly contradicting the test above it; the true claim is narrower and is about the UI.
+   *
+   * An UPDATE has no UI edge at all, which is the difference. Measured on the live database 2026-08-10,
+   * `pg_class.relacl` for `public.sprints` is `authenticated=arwdDxtm` — the `w` is table-wide
+   * UPDATE — and `sprints_owner` is a single `for all` policy, so any authenticated user can
+   * PATCH `start_date`/`end_date` on their own sprint straight through PostgREST. There is no
+   * edit-sprint UI and therefore no `refine` anywhere in the way. This is the half of
+   * "validate at both edges" that has no other edge.
+   *
+   * The re-read is the second half of the claim: a refused write must leave the row exactly as
+   * it was, not apply and then complain. `expect(error).not.toBeNull()` alone cannot tell those
+   * apart.
+   */
+  it('rejects an UPDATE that moves the end date before the start (SPRIN-95)', async () => {
+    const start = '2026-10-05T00:00:00.000Z'
+    const end = '2026-10-19T00:00:00.000Z'
+    const created = await a
+      .from('sprints')
+      .insert({ project_id: projectId, name: 'Editable', start_date: start, end_date: end })
+      .select('id')
+      .single()
+    // Positive control: a valid, dated row really is there to update. Without it a broken
+    // insert would make the rejection below meaningless.
+    expect(created.error).toBeNull()
+
+    const { error } = await a
+      .from('sprints')
+      .update({ end_date: '2026-09-28T00:00:00.000Z' })
+      .eq('id', created.data!.id)
+
+    expect(error?.code).toBe('23514')
+    expect(error?.message).toContain('sprints_end_not_before_start')
+
+    const { data: row, error: readErr } = await a
+      .from('sprints')
+      .select('start_date, end_date')
+      .eq('id', created.data!.id)
+      .single()
+
+    expect(readErr).toBeNull()
+    expect(new Date(row!.start_date!).toISOString()).toBe(start)
+    expect(new Date(row!.end_date!).toISOString()).toBe(end)
+  })
+
   it('allows two sprints with the same name — names are labels, not identifiers', async () => {
     // This is what makes count-based auto-naming safe: a collision is cosmetic.
     await a.from('sprints').insert({ project_id: projectId, name: 'Twin' })
