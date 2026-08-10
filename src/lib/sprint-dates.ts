@@ -18,3 +18,9 @@ export function toUtcMidnight(isoDate: string): string {
 export function formatSprintDate(timestamptz: string): string {
   return new Date(timestamptz).toISOString().slice(0, 10)
 }
+
+/** Today as a UTC calendar day. The ONLY clock read in the cadence pre-fill — everything
+ *  downstream takes the day as a parameter, so it is testable without fake timers. */
+export function todayUtc(): string {
+  return formatSprintDate(new Date().toISOString())
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatSprintDate, toUtcMidnight } from './sprint-dates'
+import { formatSprintDate, todayUtc, toUtcMidnight } from './sprint-dates'
 
 describe('toUtcMidnight', () => {
   it('pins an ISO date to midnight UTC', () => {
@@ -25,5 +25,12 @@ describe('formatSprintDate', () => {
 
   it('renders the UTC day for a non-midnight timestamp', () => {
     expect(formatSprintDate('2026-07-20T23:30:00+00:00')).toBe('2026-07-20')
+  })
+})
+
+describe('todayUtc', () => {
+  it('is the UTC calendar day, in the same shape an <input type="date"> holds', () => {
+    expect(todayUtc()).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(todayUtc()).toBe(new Date().toISOString().slice(0, 10))
   })
 })

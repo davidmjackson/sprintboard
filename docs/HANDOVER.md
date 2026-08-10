@@ -1113,6 +1113,23 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   `project_id` equals the `projectId` prop**, so those two reads are indistinguishable. Unlike the
   three confounds SPRIN-87 broke, these are genuinely equal in production and separating them would
   encode an impossible state — declared rather than fixed.
+- **The UTC-safety of `sprint-cadence.ts` is unpinned in CI's own timezone** (SPRIN-96 review). The
+  production code is correct and the suite is green under UTC, New York and Auckland — but *no single
+  timezone kills both* local-time mutations, and CI runs the one where **neither** dies:
+  `getUTCDay()` → `getDay()` (`sprint-cadence.ts:25`) survives under `TZ=UTC` and a **positive**
+  offset, dying only under a negative one; dropping the `Z` and using `setDate`/`getDate`
+  (`:17–18`) survives under `TZ=UTC` and a **negative** offset, dying only under a positive one.
+  GitHub Actions runners default to UTC and nothing in `vite.config.ts` or `package.json` pins `TZ`,
+  so the module docblock's central claim — *"never a local-timezone accessor"* — has zero protection
+  at the gate. It died locally only by the accident of Europe/London being UTC+1 in August. Fix, if
+  wanted: flip `process.env.TZ` to one negative- and one positive-offset zone around the existing
+  weekday table (Node 20 honours a runtime change — verified). Latent regression risk, not a live bug.
+- **`todayUtc`'s unit test is self-referential** (SPRIN-96 review). `sprint-dates.test.ts` asserts
+  `todayUtc()` equals `new Date().toISOString().slice(0, 10)`, which *is* the implementation
+  restated. Replacing the body with a local-calendar construction survives under every timezone
+  tried; only a ±1-day shift dies, because that moves the value. It pins "returns today, in that
+  shape" and not "derives the day in UTC". Distinct from the note in PR #109, which discloses only
+  that the *dialog* suite mocks `todayUtc` to a constant.
 
 ## Settled — do not re-raise
 

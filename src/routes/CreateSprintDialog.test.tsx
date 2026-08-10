@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -11,6 +12,14 @@ vi.mock('@/lib/sprints', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/sprints')>()),
   createSprint: vi.fn(),
 }))
+
+vi.mock('@/lib/sprint-dates', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/sprint-dates')>()),
+  // 2026-07-14 is a Tuesday, so a Monday cadence must move the suggestion forward.
+  todayUtc: vi.fn(() => '2026-07-14'),
+}))
+
+const cadence = { sprint_length_weeks: 2, sprint_start_weekday: 1 }
 
 function sprint(overrides: Partial<Sprint> = {}): Sprint {
   return {
@@ -40,12 +49,16 @@ async function open() {
 describe('CreateSprintDialog', () => {
   it('creates a sprint with a typed name, goal and dates', async () => {
     const onCreated = vi.fn()
-    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={onCreated} />)
+    render(
+      <CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} onCreated={onCreated} />,
+    )
     const user = await open()
 
     await user.type(screen.getByLabelText('Name'), 'Hardening push')
     await user.type(screen.getByLabelText('Goal'), 'Ship the board')
+    await user.clear(screen.getByLabelText('Start date'))
     await user.type(screen.getByLabelText('Start date'), '2026-07-20')
+    await user.clear(screen.getByLabelText('End date'))
     await user.type(screen.getByLabelText('End date'), '2026-08-03')
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
 
@@ -62,8 +75,10 @@ describe('CreateSprintDialog', () => {
     expect(onCreated).toHaveBeenCalledWith(sprint())
   })
 
-  it('creates with every field blank — the name is optional', async () => {
-    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={vi.fn()} />)
+  it('creates with the name and goal blank, sending the suggested dates', async () => {
+    render(
+      <CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} onCreated={vi.fn()} />,
+    )
     const user = await open()
 
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
@@ -73,8 +88,8 @@ describe('CreateSprintDialog', () => {
         projectId: 'p1',
         name: undefined,
         goal: undefined,
-        startDate: undefined,
-        endDate: undefined,
+        startDate: '2026-07-20',
+        endDate: '2026-08-02',
         existing: [],
       }),
     )
@@ -82,7 +97,14 @@ describe('CreateSprintDialog', () => {
 
   it('passes the existing sprints through so the auto-name numbers correctly', async () => {
     const existing = [sprint(), sprint({ id: 's2' })]
-    render(<CreateSprintDialog projectId="p1" existing={existing} onCreated={vi.fn()} />)
+    render(
+      <CreateSprintDialog
+        projectId="p1"
+        cadence={cadence}
+        existing={existing}
+        onCreated={vi.fn()}
+      />,
+    )
     const user = await open()
 
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
@@ -93,10 +115,14 @@ describe('CreateSprintDialog', () => {
   })
 
   it('shows the field error and does not submit when the end date precedes the start', async () => {
-    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={vi.fn()} />)
+    render(
+      <CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} onCreated={vi.fn()} />,
+    )
     const user = await open()
 
+    await user.clear(screen.getByLabelText('Start date'))
     await user.type(screen.getByLabelText('Start date'), '2026-08-03')
+    await user.clear(screen.getByLabelText('End date'))
     await user.type(screen.getByLabelText('End date'), '2026-07-20')
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
 
@@ -105,7 +131,9 @@ describe('CreateSprintDialog', () => {
   })
 
   it('closes the dialog on a successful create', async () => {
-    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={vi.fn()} />)
+    render(
+      <CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} onCreated={vi.fn()} />,
+    )
     const user = await open()
 
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
@@ -119,7 +147,9 @@ describe('CreateSprintDialog', () => {
   it('keeps the dialog open and reports a failed create', async () => {
     vi.mocked(createSprint).mockResolvedValue({ ok: false, error: 'unknown' })
     const onCreated = vi.fn()
-    render(<CreateSprintDialog projectId="p1" existing={[]} onCreated={onCreated} />)
+    render(
+      <CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} onCreated={onCreated} />,
+    )
     const user = await open()
 
     await user.click(screen.getByRole('button', { name: 'Create sprint' }))
@@ -129,5 +159,112 @@ describe('CreateSprintDialog', () => {
     )
     expect(onCreated).not.toHaveBeenCalled()
     expect(screen.getByLabelText('Name')).toBeVisible()
+  })
+
+  it('pre-fills both dates from the cadence when there are no sprints yet (AC1, AC2, AC4)', async () => {
+    render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} />)
+    await open()
+
+    // Tuesday the 14th -> the next Monday, and a 2-week sprint ends inclusively 13 days later.
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-07-20')
+    expect(screen.getByLabelText('End date')).toHaveValue('2026-08-02')
+  })
+
+  // S1 review finding: every other test in this file (and in sprint-cadence.test.ts) reuses
+  // the schema-default cadence, which cannot tell "the prop reached the arithmetic" from "the
+  // arithmetic is hardcoded to the default" — three mutations proved exactly that, hardcoding
+  // the length, the weekday, or the whole prop and leaving every other test green. A cadence
+  // that differs from the default in BOTH fields is the only fixture that can catch all three.
+  it('pre-fills from a NON-DEFAULT cadence, proving the prop reaches the arithmetic (S1)', async () => {
+    render(
+      <CreateSprintDialog
+        projectId="p1"
+        cadence={{ sprint_length_weeks: 3, sprint_start_weekday: 4 }}
+        existing={[]}
+      />,
+    )
+    await open()
+
+    // Tuesday the 14th -> the next Thursday (weekday 4), and a 3-week sprint ends inclusively
+    // 3*7-1 = 20 days later. Verified against the calendar.
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-07-16')
+    expect(screen.getByLabelText('End date')).toHaveValue('2026-08-05')
+  })
+
+  it('chains the pre-fill onto the latest sprint end date (AC3)', async () => {
+    const existing = [sprint({ end_date: '2026-08-02T00:00:00+00:00' })]
+    render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={existing} />)
+    await open()
+
+    // The 2nd is a Sunday; the day after is the cadence Monday, so no week is skipped.
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-08-03')
+    expect(screen.getByLabelText('End date')).toHaveValue('2026-08-16')
+  })
+
+  it('saves an edited date rather than the suggested one (AC5)', async () => {
+    render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} />)
+    const user = await open()
+
+    await user.clear(screen.getByLabelText('End date'))
+    await user.type(screen.getByLabelText('End date'), '2026-07-26')
+    await user.click(screen.getByRole('button', { name: 'Create sprint' }))
+
+    await waitFor(() =>
+      expect(createSprint).toHaveBeenCalledWith(
+        expect.objectContaining({ startDate: '2026-07-20', endDate: '2026-07-26' }),
+      ),
+    )
+  })
+
+  it('saves an edited START date rather than the suggested one (AC5)', async () => {
+    // The mirror of the test above, and it is not redundant: the suggested start is
+    // '2026-07-20', so every other payload assertion in this file expects exactly the value
+    // the pre-fill would have produced anyway. Hardcoding `startDate: '2026-07-20'` in
+    // `onSubmit` survives all of them — measured. Only an edit to a NON-suggested day can
+    // tell "the user's value" apart from "the suggestion", which is the whole of AC5.
+    // '2026-07-21' keeps the end date ('2026-08-02') later than the start, so the ordering
+    // check does not fire and a payload actually reaches `createSprint`.
+    render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} />)
+    const user = await open()
+
+    await user.clear(screen.getByLabelText('Start date'))
+    await user.type(screen.getByLabelText('Start date'), '2026-07-21')
+    await user.click(screen.getByRole('button', { name: 'Create sprint' }))
+
+    await waitFor(() =>
+      expect(createSprint).toHaveBeenCalledWith(
+        expect.objectContaining({ startDate: '2026-07-21', endDate: '2026-08-02' }),
+      ),
+    )
+  })
+
+  it('recomputes the pre-fill on a REOPEN, against the sprint just created', async () => {
+    // The staleness case: `useForm` captures defaults once, so a pre-fill computed at mount
+    // would re-offer the dates of the sprint the user just made.
+    const created = sprint({ id: 's9', end_date: '2026-08-02T00:00:00+00:00' })
+    vi.mocked(createSprint).mockResolvedValue({ ok: true, sprint: created })
+
+    function Host() {
+      const [existing, setExisting] = useState<Sprint[]>([])
+      return (
+        <CreateSprintDialog
+          projectId="p1"
+          cadence={cadence}
+          existing={existing}
+          onCreated={(s) => setExisting((prev) => [...prev, s])}
+        />
+      )
+    }
+
+    render(<Host />)
+    const user = await open()
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-07-20')
+
+    await user.click(screen.getByRole('button', { name: 'Create sprint' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await open()
+
+    expect(screen.getByLabelText('Start date')).toHaveValue('2026-08-03')
+    expect(screen.getByLabelText('End date')).toHaveValue('2026-08-16')
   })
 })
