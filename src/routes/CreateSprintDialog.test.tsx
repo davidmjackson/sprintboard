@@ -216,6 +216,28 @@ describe('CreateSprintDialog', () => {
     )
   })
 
+  it('saves an edited START date rather than the suggested one (AC5)', async () => {
+    // The mirror of the test above, and it is not redundant: the suggested start is
+    // '2026-07-20', so every other payload assertion in this file expects exactly the value
+    // the pre-fill would have produced anyway. Hardcoding `startDate: '2026-07-20'` in
+    // `onSubmit` survives all of them — measured. Only an edit to a NON-suggested day can
+    // tell "the user's value" apart from "the suggestion", which is the whole of AC5.
+    // '2026-07-21' keeps the end date ('2026-08-02') later than the start, so the ordering
+    // check does not fire and a payload actually reaches `createSprint`.
+    render(<CreateSprintDialog projectId="p1" cadence={cadence} existing={[]} />)
+    const user = await open()
+
+    await user.clear(screen.getByLabelText('Start date'))
+    await user.type(screen.getByLabelText('Start date'), '2026-07-21')
+    await user.click(screen.getByRole('button', { name: 'Create sprint' }))
+
+    await waitFor(() =>
+      expect(createSprint).toHaveBeenCalledWith(
+        expect.objectContaining({ startDate: '2026-07-21', endDate: '2026-08-02' }),
+      ),
+    )
+  })
+
   it('recomputes the pre-fill on a REOPEN, against the sprint just created', async () => {
     // The staleness case: `useForm` captures defaults once, so a pre-fill computed at mount
     // would re-offer the dates of the sprint the user just made.
