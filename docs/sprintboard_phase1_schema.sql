@@ -1394,10 +1394,14 @@ create index project_members_user_id_idx on project_members (user_id);
 -- so STABLE does NOT let the planner hoist the call and evaluate it once per statement.
 -- Postgres invokes is_project_member/is_project_admin once per candidate row, same as
 -- every predicate in this file that takes a per-row argument; there is no
--- constant-argument call site anywhere in this schema. What STABLE actually buys: the
--- function is not treated as volatile, and it lets the `(select auth.uid())` inside the
--- body run as an InitPlan evaluated once per invocation, not once per row of that
--- invocation's own body.
+-- constant-argument call site anywhere in this schema. STABLE is still the honest
+-- marking -- correct because the function reads only database state that cannot change
+-- within the statement -- but it is not what keeps the internal uid read cheap. That is
+-- a property of the body's own shape: `(select auth.uid())` is an uncorrelated scalar
+-- subquery, so it is promoted to an InitPlan and evaluated once per invocation
+-- regardless of volatility marking -- the same promotion would happen if the function
+-- were VOLATILE. Both functions are also SECURITY DEFINER, and Postgres never inlines a
+-- SECURITY DEFINER sql function, so each invocation runs its own cached body plan.
 --
 -- These policies need no `(select auth.uid())` wrapper, but the reason is textual, not
 -- planning: the auth_rls_initplan advisor matches the literal text `auth.<fn>()` inside
@@ -1577,12 +1581,17 @@ create trigger on_project_created_admin
 -- multi-row table, a constant-argument call showed 1 -- confirming what a Var
 -- argument costs, not showing that any predicate here avoids it.
 --
--- What STABLE actually buys: the function is not treated as volatile, so the
--- planner may reuse a result within a scan where the argument repeats, and --
--- the part that matters for cost -- it lets the (select auth.uid()) inside the
--- body run as an InitPlan evaluated once PER INVOCATION of the function, rather
--- than once per row of the join inside that invocation's own body. It does not
--- buy whole-statement hoisting here, because the argument is never constant.
+-- STABLE is still the honest marking, and it is not a performance trick at this
+-- call site: it is correct because the function reads only database state that
+-- cannot change within the statement (project_members), nothing more. What
+-- actually keeps the internal uid read cheap is a property of the FUNCTION
+-- BODY'S SHAPE, not of STABLE: (select auth.uid()) is an uncorrelated scalar
+-- subquery, so it is promoted to an InitPlan and evaluated once per invocation
+-- regardless of how the function is marked -- the same promotion would happen
+-- if it were VOLATILE. All three functions are also SECURITY DEFINER, and
+-- Postgres never inlines a SECURITY DEFINER sql function, so each invocation
+-- runs that cached body plan rather than being substituted into the caller. Do
+-- not credit STABLE with anything about evaluation counts here.
 --
 -- The policy below still needs no (select auth.uid()) wrapper around this call,
 -- and the reason is the SAME one for all three predicates, not a planning

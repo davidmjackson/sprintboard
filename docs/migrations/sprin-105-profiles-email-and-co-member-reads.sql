@@ -112,12 +112,16 @@ update profiles p
 -- constant-argument call showed 1 -- confirming what a Var argument costs, not showing
 -- that any predicate here avoids it.
 --
--- What STABLE actually buys: the function is not treated as volatile, so the planner may
--- reuse a result within a scan where the argument repeats, and -- the part that matters
--- for cost -- it lets the (select auth.uid()) inside the body run as an InitPlan evaluated
--- once PER INVOCATION of the function, rather than once per row of the join inside that
--- invocation's own body. It does not buy whole-statement hoisting here, because the
--- argument is never constant.
+-- STABLE is still the honest marking, and it is not a performance trick at this call
+-- site: it is correct because the function reads only database state that cannot change
+-- within the statement (project_members), nothing more. What actually keeps the internal
+-- uid read cheap is a property of the FUNCTION BODY'S SHAPE, not of STABLE:
+-- (select auth.uid()) is an uncorrelated scalar subquery, so it is promoted to an
+-- InitPlan and evaluated once per invocation regardless of how the function is marked --
+-- the same promotion would happen if it were VOLATILE. All three functions are also
+-- SECURITY DEFINER, and Postgres never inlines a SECURITY DEFINER sql function, so each
+-- invocation runs that cached body plan rather than being substituted into the caller.
+-- Do not credit STABLE with anything about evaluation counts here.
 --
 -- The policies below still need no (select auth.uid()) wrapper around THESE calls, and
 -- the reason is the SAME one for all three predicates, not a planning story: the
