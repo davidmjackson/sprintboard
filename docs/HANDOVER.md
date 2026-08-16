@@ -17,10 +17,63 @@ custom statuses (**SPRIN-72, done**) → Kanban project type (**SPRIN-73, done**
 **custom fields (SPRIN-71, done** 2026-08-09**)** → **sprint cadence (SPRIN-74, done** 2026-08-10**)**
 → **teams, roles and permissions (75 — the security boundary, deliberately last)**.
 
-**FOUR of five Rung 3 epics are complete. SPRIN-75 is the only thing left on the board** —
-`project = SPRIN AND statusCategory != Done` returns exactly one issue, the epic itself. It has
-**no stories**, so it needs decomposing before any code, and it is the security boundary: a deep
-multi-agent review, and worth pricing the fan-out in money before launching it.
+**FOUR of five Rung 3 epics are complete. SPRIN-75 is the last, and as of 2026-08-16 it has
+STORIES and its first one is shipped.**
+
+### SPRIN-75 — the design David settled, 2026-08-16
+
+Binding on all seven remaining stories. Taken in conversation before any code:
+
+- **Two roles, `admin` and `member`, and BOTH read and write.** A read-only *viewer* was proposed
+  and **rejected**: a viewer makes read broader than write on the board tables, which re-arms the
+  SPRIN-64 trap where `completeSprint`'s guard is correct only because `sprints_owner` is a single
+  `for all` policy. Keeping read ≡ write is the property that makes this rewrite verifiable.
+- **Membership is granted by exact email**, which is why SPRIN-105 adds `profiles.email` and widens
+  `profiles_self`.
+- **`owner_id` stays** on `projects`, `not null`, as an audit record granting nothing. The `projects`
+  INSERT policy keeps `owner_id = auth.uid()` **purely to bootstrap** — otherwise creating a project
+  needs a membership that does not exist yet and every creation fails at insert time.
+- **Admins configure, members do board work.** Claude's call and open to veto:
+  `ticket_field_values` is board work, not configuration — setting a custom field's *value* is daily
+  member work, defining the *field* is the admin act.
+
+### The story keys are AGAIN not in build order
+
+Same parallel-creation race as SPRIN-71 and SPRIN-74. **Build in this order, not key order:**
+
+| # | Key | Story | State |
+|---|---|---|---|
+| 1 | **SPRIN-98** | Membership table, roles and admin seeding | **Done** 2026-08-16, migration applied |
+| 2 | SPRIN-105 | Co-members can see each other (`profiles` widening + `profiles.email`) | To Do |
+| 3 | SPRIN-100 | Board tables governed by membership (`sprints`, `tickets`, `counters`) | To Do |
+| 4 | SPRIN-101 | Projects table governed by membership | To Do |
+| 5 | SPRIN-99 | Config tables: admin-only writes, member reads | To Do |
+| 6 | SPRIN-102 | Add and remove members by email | To Do |
+| 7 | SPRIN-104 | Re-audit app-layer guards for zero-row-write blindness | To Do |
+| 8 | SPRIN-103 | Extend the isolation suite: role-vs-role and removed-member | To Do |
+
+Each Jira description carries its own traps. **SPRIN-102's has four concrete ones recorded as a
+comment** — read them before designing it.
+
+### What SPRIN-98 left in the schema
+
+`app_auth`, a schema PostgREST does **not** expose, holding two `STABLE SECURITY DEFINER`
+predicates (`is_project_member`, `is_project_admin`). They exist because a policy on
+`project_members` cannot query `project_members` — Postgres raises `infinite recursion detected in
+policy` — and routing through `projects` only defers that to SPRIN-101, where the two recurse
+mutually. Both read `auth.uid()` and **nothing else**, so a caller can only learn about themselves;
+**adding a `user_id` parameter to either signature destroys that property.**
+
+⚠ **A new function added to `app_auth` is born `EXECUTE`-to-`PUBLIC`**, and `authenticated` holds
+permanent `USAGE` there. `alter default privileges` was tried and would not stick — the editor
+reported success and `pg_default_acl` stayed empty, root cause unestablished. **Revoke by hand in
+the same migration.** The warning and its verification query are at the head of
+`docs/migrations/sprin-98-project-members.sql`.
+
+⚠ **Reachable since SPRIN-98 landed:** a sole admin can delete their own membership row, leaving a
+project no one can administer — `members_admin_insert` then refuses everyone and `members_read`
+returns nothing. SPRIN-102 owns the guard and must **repair** existing cases, not merely prevent new
+ones. Do **not** implement it as a row trigger counting siblings; that breaks the delete cascade.
 
 **THE SPRIN-74 STORY KEYS WERE NOT IN BUILD ORDER.** They were created in parallel and the board
 raced — the same trap epic SPRIN-71 hit. Story 2, the heavy one, drew the *highest* key:
