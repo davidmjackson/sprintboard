@@ -104,9 +104,14 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   a live assertion that the column is genuinely writable. Deny by default, widen visibly.
 
 **The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
-Every policy on every table resolves to `owner_id = auth.uid()`. Teams, roles and permissions
-means rewriting *all* of them to a membership check — the security boundary of the whole app.
-The safety net is already built: the two-user isolation suite runs live against the real
+Most tables still resolve every policy to `owner_id = auth.uid()`, and rewriting *all* of those
+to a membership check is still the security boundary of the whole app — that scope has not
+shrunk. **Two tables are already rewritten**, ahead of the rest, as stories inside this same
+epic: `project_members` (SPRIN-98, four policies resolving through
+`app_auth.is_project_member`/`is_project_admin`) and `profiles` (SPRIN-105, four verb-split
+policies where SELECT resolves through `app_auth.shares_project_with` and the three write verbs
+stay `id = (select auth.uid())`). Teams, roles and permissions means rewriting every remaining
+table the same way. The safety net is already built: the two-user isolation suite runs live against the real
 database on every PR, so a mistake in that migration goes **red**. Do not weaken it — and
 note that keeping it green is not enough. **Extend it.** Owner-vs-stranger stops being the
 only case; member-vs-non-member, role-vs-role and removed-member each need coverage, or the
@@ -117,8 +122,8 @@ being `for all`. Under a membership model where **read is broader than write**, 
 silently stops holding **and the isolation suite would not flag it.** Re-audit every
 app-layer guard that leans on a policy's breadth, not only the policies themselves.
 
-**SPRIN-105 got there first for one table.** `profiles` no longer resolves to `owner_id =
-auth.uid()` — read is `id = (select auth.uid()) or app_auth.shares_project_with(profiles.id)`,
+**The `profiles` half of that, in detail.** Read is
+`id = (select auth.uid()) or app_auth.shares_project_with(profiles.id)`,
 so visibility is co-membership: mine, plus anyone I share a project with. Writes did not
 widen — insert/update/delete are still each self-only, split from the old single `for all`
 policy into four verb-scoped ones so the widened read could not smuggle a widened write in
