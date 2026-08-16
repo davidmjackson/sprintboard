@@ -440,6 +440,15 @@ describe('npm test really collects the live integration suites', () => {
     'src/test/projects.integration.test.ts',
     'src/test/tickets.integration.test.ts',
     'src/test/sprints.integration.test.ts',
+    // SPRIN-98. Registering the suite here is the WHOLE control, and it was missed on
+    // the first pass: the story moved CLAUDE.md's prose tripwire from "seven more files"
+    // to "eight" and left this array at seven. Measured consequence — adding
+    // '**/project-members.integration.test.ts' to vite.config.ts's `exclude` dropped
+    // collection to 79 files and 7 live suites while this file still reported 41/41.
+    // One line removed the entire membership boundary from `npm test` and `verify`
+    // stayed green. `it.each` below is an "at least these" assertion, so an unregistered
+    // suite is invisible to it BY CONSTRUCTION — the array is not a list, it is the gate.
+    'src/test/project-members.integration.test.ts',
   ]
 
   const collected = (() => {

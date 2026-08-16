@@ -1329,9 +1329,16 @@ commit;
 --
 -- It lives in `app_auth`, NOT `public`, because PostgREST publishes every public
 -- function as an RPC — the same hazard recorded at seed_project_statuses above.
--- `app_auth` is not in the exposed-schema list, and the proof is mechanical:
--- regenerating database.types.ts lists `reorder_project_statuses` alone. If either
--- function ever appears in that file, the schema has been exposed.
+--
+-- HOW WE KNOW `app_auth` IS NOT EXPOSED, and how we DON'T. The first version of this
+-- comment claimed the proof was mechanical: regenerating database.types.ts lists
+-- `reorder_project_statuses` alone, so the helpers are unreachable. That is a
+-- NON-SEQUITUR. The generator emits `public` regardless of the exposed list, so a
+-- non-public schema is absent either way — `graphql_public` IS exposed and is also
+-- absent from that file. The real check is live and asserted in
+-- project-members.integration.test.ts: a request carrying `Accept-Profile: app_auth`
+-- earns 406 / PGRST106 `Invalid schema: app_auth`. That flips the moment the schema
+-- is added to the exposed list; the types file never would have.
 --
 -- BOTH FUNCTIONS READ auth.uid() AND NOTHING ELSE, so a caller can only ever learn
 -- about THEMSELVES. That is what makes the definer privilege affordable, and it is
@@ -1412,12 +1419,26 @@ create policy members_admin_delete on project_members
 --   table  authenticated=rdDxtm   — no `a`, no `w`; anon absent entirely
 --   column project_id=a  user_id=a  role=aw
 --
--- `grant update (role)` ALONE is what makes "a membership row can never be
--- re-pointed at a different user or project" a DATABASE property: a patch touching
--- project_id or user_id earns 42501 before any policy is consulted. Unlike every
+-- `grant update (role)` ALONE closes the SET-list route: a patch touching project_id
+-- or user_id earns 42501 before any policy is consulted. It does NOT make the row
+-- immovable — an admin reaches the same end state with DELETE + INSERT, since both
+-- policies constrain only the project and neither mentions user_id. State it as the
+-- narrowing it is; an earlier draft overclaimed here. Unlike every
 -- other table here, anon holds NOTHING — so an anon read is refused by the
 -- privilege layer (42501, data null) rather than filtered to `[]` by a policy. That
 -- asymmetry is deliberate and is asserted live.
+--
+-- WHAT THE REVOKE DOES NOT COVER, named because this table's grants were rebuilt to
+-- be minimal and the audit line above enumerates `rdDxtm` without remarking on it:
+-- `revoke insert, update, delete` leaves authenticated holding TRUNCATE (the `D`),
+-- REFERENCES and TRIGGER. TRUNCATE is the one command RLS has no policy for, so all
+-- four policies are blind to it — one `truncate project_members` would erase every
+-- membership in the system. It is NOT reachable through PostgREST (which emits only
+-- SELECT/INSERT/UPDATE/DELETE plus RPCs, and no RPC here runs dynamic SQL), and every
+-- other table in this schema carries the same `D` for authenticated AND anon, so this
+-- is the house convention rather than a SPRIN-98 regression. Note the asymmetry
+-- anyway: the anon line one above uses the broad `revoke all` and this one does not.
+-- Tightening it across the schema belongs to SPRIN-75's sweep, not to one table.
 revoke all on project_members from anon;
 revoke insert, update, delete on project_members from authenticated;
 grant insert (project_id, user_id, role) on project_members to authenticated;

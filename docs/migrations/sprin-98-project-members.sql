@@ -180,10 +180,22 @@ revoke insert, update, delete on project_members from authenticated;
 
 grant insert (project_id, user_id, role) on project_members to authenticated;
 
--- UPDATE on `role` ALONE is what makes "a membership row can never be re-pointed at a
--- different user or project" a DATABASE property rather than a client convention: a patch
--- touching project_id or user_id earns 42501 before any policy is consulted. Same
--- technique as SPRIN-92's `grant update (label)`.
+-- UPDATE on `role` ALONE. State the property PRECISELY, because the first draft of this
+-- comment overclaimed and the overclaim is the attractive one:
+--
+--   TRUE:  a single UPDATE statement cannot touch project_id or user_id. A patch
+--          touching either earns 42501 at the privilege layer, before any policy runs.
+--   FALSE: "a membership row can never be re-pointed at a different user or project".
+--          An admin reaches a byte-identical end state with DELETE + INSERT, and both
+--          halves are permitted: members_admin_delete's USING and members_admin_insert's
+--          WITH CHECK each constrain only the PROJECT, and say nothing about user_id.
+--          The live suite's own admin positive control performs exactly that sequence.
+--
+-- So this grant is a narrowing, not a prohibition. What it actually buys is that the
+-- SET-list route is closed, which keeps a single stray patch from silently moving a row.
+-- Same technique as SPRIN-92's `grant update (label)`; the difference is that there, no
+-- delete-then-insert equivalent existed. Anyone wanting the strong property needs a
+-- constraint or trigger, and it is not in this story.
 grant update (role) on project_members to authenticated;
 
 -- Postgres has no column-level DELETE, so this is table-wide and members_admin_delete is

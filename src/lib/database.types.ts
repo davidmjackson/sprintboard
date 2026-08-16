@@ -64,14 +64,20 @@
  * constrained only by `project_members_role_check` ('admin' | 'member'), so the narrowed
  * union belongs in `domain.ts` like every other text + check column.
  *
- * TWO things are deliberately absent here, and their absence is the evidence:
+ * TWO things are absent here. Only ONE of them means anything, and an earlier version of
+ * this comment got that exactly backwards — it is left corrected rather than deleted,
+ * because the wrong version is the tempting one.
  *
  *   - **The `app_auth` helper functions.** `Functions` lists `reorder_project_statuses`
- *     alone. PostgREST publishes only exposed schemas, so `app_auth.is_project_member`
- *     and `is_project_admin` being missing from a regeneration is a positive signal that
- *     the schema is genuinely unreachable over the API — which is the property the
- *     recursion fix depends on. If either ever APPEARS here, `app_auth` has been added to
- *     the exposed-schema list and two SECURITY DEFINER functions just became RPCs.
+ *     alone. It is TEMPTING to read that as proof PostgREST does not expose `app_auth`,
+ *     and this file said so. **It proves nothing.** The generator emits the `public`
+ *     schema regardless of what is exposed, so a non-`public` schema is absent whether or
+ *     not it is reachable. The disproof is in this same database: `graphql_public` IS
+ *     exposed and is likewise absent from this file. A tripwire that cannot fire is worse
+ *     than none, because it is believed. The real check is a live one —
+ *     `project-members.integration.test.ts` sends `Accept-Profile: app_auth` and asserts
+ *     PostgREST answers 406 / PGRST106 `Invalid schema`, which flips the instant the
+ *     schema is added to the exposed list.
  *   - **The `user_id` foreign key.** `Relationships` lists only `project_id`, because
  *     `auth.users` is outside `public` and the generator cannot see across. The cascade
  *     is real regardless — deleting a user still removes their memberships.

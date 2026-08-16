@@ -9,6 +9,7 @@ import {
   hasRlsCredentials,
   hasServiceRoleKey,
   signIn,
+  supabaseConfig,
   userId,
 } from './supabase-clients'
 
@@ -121,7 +122,7 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
 
     it('seeds the admin for B too, not just for whoever the suite happens to sign in first', async () => {
       // Without this, a trigger hardcoded to any single user would still pass the test
-      // above. The assertion is that the seed follows owner_id, not that a row appeared.
+      // above. But note what it still cannot see -- see the next test.
       const { data, error } = await b
         .from('project_members')
         .select('user_id, role')
@@ -130,6 +131,79 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
       expect(error).toBeNull()
       expect(data).toEqual([{ user_id: userBId, role: 'admin' }])
     })
+
+    it.skipIf(!hasServiceRoleKey)('seeds from owner_id, NOT from the caller', async () => {
+      // The two tests above CANNOT distinguish `new.owner_id` from `auth.uid()`, because
+      // projects_owner's WITH CHECK forces them equal for any RLS-bound insert and every
+      // fixture passes its own id as owner_id. That is the "fixture equals what the code
+      // computes" shape: replace the trigger body's new.owner_id with auth.uid() and both
+      // stay green.
+      //
+      // The service-role client is where the two come apart: it bypasses RLS and carries
+      // no `sub` claim, so auth.uid() is NULL. A trigger reading auth.uid() would attempt
+      // a null user_id and die on the not-null constraint; one reading owner_id seeds B.
+      const admin = adminClient()
+      const { data: project, error: pErr } = await admin
+        .from('projects')
+        .insert({ owner_id: userBId, name: 'Seeded for B by service role', key: runKey() })
+        .select('id')
+        .single()
+      if (pErr) throw new Error(`Fixture: service-role project insert failed: ${pErr.message}`)
+
+      try {
+        const { data, error } = await admin
+          .from('project_members')
+          .select('user_id, role')
+          .eq('project_id', project.id)
+
+        expect(error).toBeNull()
+        expect(data).toEqual([{ user_id: userBId, role: 'admin' }])
+      } finally {
+        // Delete unconditionally, before any assertion can throw past it.
+        await settled(admin.from('projects').delete().eq('id', project.id))
+      }
+    })
+
+    it.skipIf(!hasServiceRoleKey)(
+      'every project in the database has exactly one admin, and it is the owner',
+      async () => {
+        // AC3 -- the BACKFILL. Nothing else in this suite covers it: every fixture project
+        // is created inside beforeAll and gets its admin row from the TRIGGER, not the
+        // backfill. The migration's own DO block reads back its own INSERT inside the same
+        // transaction, which proves the statement ran and nothing more.
+        //
+        // A whole-table invariant rather than a fixture assertion, so it also catches a
+        // future story that adds a project-creation path bypassing the trigger.
+        //
+        // ONE REQUEST, NOT TWO -- and this is load-bearing, not tidiness. The first
+        // version read `projects` and then `project_members` separately and went RED on
+        // its first run against a project that, when re-queried a moment later, did not
+        // exist. Vitest runs test FILES in parallel: a sibling suite created a project
+        // (correctly seeded by the trigger) and its teardown deleted it BETWEEN the two
+        // reads, so the project appeared in snapshot one and its membership row was gone
+        // by snapshot two. The invariant was fine; the measurement was racy by
+        // construction, and against a shared database that is a flake generator. A single
+        // statement gets a single Postgres snapshot, so there is no window.
+        const admin = adminClient()
+
+        const { data: projects, error: pErr } = await admin
+          .from('projects')
+          .select('id, owner_id, project_members(user_id, role)')
+        expect(pErr).toBeNull()
+
+        const orphaned = (projects ?? []).filter(
+          (p) => !p.project_members.some((m) => m.role === 'admin'),
+        )
+        const adminIsNotOwner = (projects ?? []).filter(
+          (p) => !p.project_members.some((m) => m.role === 'admin' && m.user_id === p.owner_id),
+        )
+
+        expect(orphaned).toEqual([])
+        expect(adminIsNotOwner).toEqual([])
+        // Positive control: both assertions above are vacuously true on an empty table.
+        expect((projects ?? []).length).toBeGreaterThan(0)
+      },
+    )
   })
 
   describe('AC4 -- a stranger sees and touches nothing', () => {
@@ -152,6 +226,14 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
       // INSERT is governed by WITH CHECK, which RAISES. An empty-array assertion here
       // would be asserting the wrong mechanism entirely.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+
+      // 42501 has TWO authors on this table simultaneously: a revoked column INSERT grant
+      // and members_admin_insert's WITH CHECK. Both are live, so the code alone does not
+      // say which refused. Delete the column grant on migration line 181 and this test
+      // stays green while measuring the privilege layer instead of the policy. The
+      // wording is what separates them — a missing grant says `permission denied for
+      // table ...`, never this.
+      expect(error?.message).toMatch(/violates row-level security policy/)
 
       // ... and prove it did not land, read back with the client that CAN see the row.
       const { data } = await a
@@ -211,8 +293,10 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         .insert({ project_id: sharedProject, user_id: userBId, role: 'admin' })
 
       // 23505 would mean the row already existed and the policy was never consulted;
-      // 42501 is the refusal we are asserting.
+      // 42501 is the refusal we are asserting. Pin the AUTHOR too — see the note on the
+      // stranger-insert test above; the grant and the policy share this SQLSTATE.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(/violates row-level security policy/)
     })
 
     it('B, a non-admin member, cannot promote themselves', async () => {
@@ -283,29 +367,77 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
   })
 
   describe('the grant layer, which sits IN FRONT of the policies', () => {
-    it('even an admin cannot re-point a membership row at another user', async () => {
-      // `grant update (role)` and nothing else. This is refused by the PRIVILEGE layer
-      // before any policy is consulted, which is what makes it a database property rather
-      // than a client convention. Note it shares SQLSTATE 42501 with an RLS WITH CHECK
-      // violation -- the discriminator is that A is a legitimate admin here, so no policy
-      // would have objected.
-      const { error } = await a
+    it('a single UPDATE cannot touch user_id or project_id, even for an admin', async () => {
+      // NAMED PRECISELY, because the first version of this test was called "even an admin
+      // cannot re-point a membership row at another user" and that is NOT what holds. An
+      // admin reaches the same end state with DELETE + INSERT -- members_admin_delete and
+      // members_admin_insert each constrain only the PROJECT and say nothing about
+      // user_id -- and the admin positive control above performs exactly that sequence.
+      // What `grant update (role)` actually buys is that the SET-list route is closed.
+      //
+      // Refused by the PRIVILEGE layer before any policy is consulted. It shares SQLSTATE
+      // 42501 with an RLS WITH CHECK violation, so assert the wording: A is a legitimate
+      // admin here, so no policy would have objected and the message must name the table.
+      const { error: userErr } = await a
         .from('project_members')
         .update({ user_id: userBId })
         .eq('project_id', strangerProject)
         .eq('user_id', userAId)
 
-      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(userErr?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(userErr?.message).toMatch(/permission denied for table project_members/)
+
+      // THE SECOND ARM, which the first version omitted. The claim names two columns and
+      // only one was tested, so widening the grant to `update (role, project_id)` left the
+      // whole suite green -- while letting an admin of two projects MOVE a row between
+      // them (USING sees the old row, WITH CHECK the new, both pass) and strand the source
+      // project with zero admins and no way back.
+      const { error: projectErr } = await a
+        .from('project_members')
+        .update({ project_id: sharedProject })
+        .eq('project_id', strangerProject)
+        .eq('user_id', userAId)
+
+      expect(projectErr?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(projectErr?.message).toMatch(/permission denied for table project_members/)
     })
 
     it('anon holds no privilege on the table at all', async () => {
       // Deliberately UNLIKE the other tables in this schema, where anon receives an empty
       // array from an EXISTS that matches nothing. Membership is refused at the privilege
-      // layer instead, so the shape of the refusal differs on purpose. If this ever starts
-      // returning `{ data: [], error: null }`, a grant has been restored.
+      // layer instead, so the shape of the refusal differs on purpose.
       const { error } = await anonClient().from('project_members').select('user_id')
 
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+
+      // ASSERT THE AUTHOR, NOT JUST THE CODE. The code alone is vacuous here, and this
+      // was measured rather than reasoned: run `grant select on project_members to anon`
+      // and the call still fails 42501 — because anon lacks USAGE on app_auth, so the
+      // moment members_read is finally evaluated Postgres raises `permission denied for
+      // schema app_auth`, the SAME SQLSTATE. The test would stay green through exactly
+      // the grant it exists to detect. The message is what discriminates.
+      expect(error?.message).toMatch(/permission denied for table project_members/)
+    })
+
+    it('does not expose app_auth over PostgREST', async () => {
+      // The property the whole recursion fix rests on: app_auth holds two SECURITY
+      // DEFINER functions, and it is safe to hold them there ONLY while PostgREST cannot
+      // reach the schema.
+      //
+      // This replaces a tripwire that could never fire. An earlier version of
+      // database.types.ts claimed app_auth's absence from the generated `Functions` block
+      // proved non-exposure. It proves nothing — the generator emits `public` regardless,
+      // so a non-public schema is absent either way. `graphql_public` IS exposed in this
+      // project and is likewise absent from that file. This probe is the real check: it
+      // asks PostgREST directly, and flips the instant app_auth joins the exposed list.
+      const { url, anonKey } = supabaseConfig()
+      const res = await fetch(`${url}/rest/v1/project_members?select=user_id&limit=1`, {
+        headers: { apikey: anonKey, 'Accept-Profile': 'app_auth' },
+      })
+
+      expect(res.status).toBe(406)
+      const body = (await res.json()) as { code?: string }
+      expect(body.code).toBe('PGRST106')
     })
   })
 
