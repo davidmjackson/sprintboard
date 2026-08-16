@@ -9,6 +9,24 @@
 -- predicates. That is deliberate: it makes this diff reviewable on its own.
 --
 -- ============================================================================
+-- STATEMENT ORDER IS LOAD-BEARING -- do not "tidy" it
+-- ============================================================================
+-- The table is created BEFORE the two app_auth functions that read it, and those
+-- functions BEFORE the policies that call them. This looks arbitrary. It is not.
+--
+-- A `language sql` function body is fully PARSED AND ANALYSED at CREATE time, because
+-- check_function_bodies defaults to on. A forward reference to a table that does not yet
+-- exist fails the whole migration with:
+--
+--   ERROR: 42P01: relation "public.project_members" does not exist
+--
+-- A `language plpgsql` body is only SYNTAX-checked at create time, so the same forward
+-- reference would have been accepted and failed later, at first call. That asymmetry is
+-- why seed_project_admin (plpgsql, at the foot of this file) may reference the table from
+-- anywhere, while these two (sql) may not. The first draft of this migration got this
+-- wrong and was rejected by the database.
+--
+-- ============================================================================
 -- WHY THERE IS A SEPARATE SCHEMA AND TWO DEFINER FUNCTIONS
 -- ============================================================================
 -- A policy on project_members cannot ask "is the caller a member of this project?" by
@@ -34,7 +52,7 @@
 begin;
 
 -- ============================================================================
--- app_auth -- helper schema, deliberately NOT exposed to PostgREST
+-- 1. app_auth -- helper schema, deliberately NOT exposed to PostgREST
 -- ============================================================================
 create schema if not exists app_auth;
 
@@ -45,6 +63,36 @@ create schema if not exists app_auth;
 revoke all on schema app_auth from public;
 grant usage on schema app_auth to authenticated;
 
+-- ============================================================================
+-- 2. project_members -- BEFORE the functions that read it (see the note above)
+-- ============================================================================
+create table project_members (
+  project_id uuid not null references projects(id) on delete cascade,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+
+  -- TEXT plus a CHECK, never a Postgres ENUM. Widening a check is one line; altering an
+  -- enum type is a painful migration. CLAUDE.md calls converting these the single most
+  -- damaging change anyone could make to this schema. ticket.type, sprint.status and
+  -- project_type are all text + check for the same reason.
+  role       text not null,
+  created_at timestamptz not null default now(),
+
+  primary key (project_id, user_id),
+
+  constraint project_members_role_check check (role in ('admin', 'member'))
+);
+
+-- The primary key (project_id, user_id) already covers the project_id foreign key: the
+-- advisor's rule is that the fk's column list must be a PREFIX of some index's column
+-- list, and (project_id) is a prefix of (project_id, user_id). The user_id fk is NOT
+-- covered by anything, so without this index the story would add an
+-- unindexed_foreign_keys INFO. It also serves the query every later story wants -- "which
+-- projects does this user belong to" -- so it is a real index, not lint appeasement.
+create index project_members_user_id_idx on project_members (user_id);
+
+-- ============================================================================
+-- 3. The membership predicates -- AFTER the table, BEFORE the policies
+-- ============================================================================
 -- STABLE, not VOLATILE: the result cannot change within a statement, so the planner may
 -- cache it per row-set instead of re-running it per row. This is also why the policies
 -- below do not need the (select auth.uid()) wrapper that auth_rls_initplan asks for --
@@ -94,32 +142,8 @@ grant execute on function app_auth.is_project_member(uuid) to authenticated;
 grant execute on function app_auth.is_project_admin(uuid) to authenticated;
 
 -- ============================================================================
--- project_members
+-- 4. Policies -- AFTER the functions they call
 -- ============================================================================
-create table project_members (
-  project_id uuid not null references projects(id) on delete cascade,
-  user_id    uuid not null references auth.users(id) on delete cascade,
-
-  -- TEXT plus a CHECK, never a Postgres ENUM. Widening a check is one line; altering an
-  -- enum type is a painful migration. CLAUDE.md calls converting these the single most
-  -- damaging change anyone could make to this schema. ticket.type, sprint.status and
-  -- project_type are all text + check for the same reason.
-  role       text not null,
-  created_at timestamptz not null default now(),
-
-  primary key (project_id, user_id),
-
-  constraint project_members_role_check check (role in ('admin', 'member'))
-);
-
--- The primary key (project_id, user_id) already covers the project_id foreign key: the
--- advisor's rule is that the fk's column list must be a PREFIX of some index's column
--- list, and (project_id) is a prefix of (project_id, user_id). The user_id fk is NOT
--- covered by anything, so without this index the story would add an
--- unindexed_foreign_keys INFO. It also serves the query every later story wants -- "which
--- projects does this user belong to" -- so it is a real index, not lint appeasement.
-create index project_members_user_id_idx on project_members (user_id);
-
 alter table project_members enable row level security;
 
 -- No TO clause, matching every existing policy in this schema. Note the consequence,
@@ -145,7 +169,7 @@ create policy members_admin_delete on project_members
   using (app_auth.is_project_admin(project_members.project_id));
 
 -- ============================================================================
--- GRANTS
+-- 5. GRANTS
 -- ============================================================================
 -- The table is BORN with full CRUD for authenticated AND anon. "We never granted it" is
 -- not true and never was. The revoke is written TABLE-WIDE and the permitted columns
@@ -167,7 +191,7 @@ grant update (role) on project_members to authenticated;
 grant delete on project_members to authenticated;
 
 -- ============================================================================
--- SEEDING -- every project has an admin from the instant it exists
+-- 6. SEEDING -- every project has an admin from the instant it exists
 -- ============================================================================
 -- SECURITY DEFINER is FORCED, not stylistic. members_admin_insert requires the caller to
 -- already be an admin of the project, and at project-creation time nobody is. An invoker
@@ -200,7 +224,7 @@ create trigger on_project_created_admin
   for each row execute function seed_project_admin();
 
 -- ============================================================================
--- BACKFILL -- exactly one admin row per project that already exists
+-- 7. BACKFILL -- exactly one admin row per project that already exists
 -- ============================================================================
 insert into public.project_members (project_id, user_id, role)
 select p.id, p.owner_id, 'admin'
