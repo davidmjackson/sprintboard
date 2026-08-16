@@ -261,8 +261,15 @@ describe.skipIf(!hasServiceRoleKey)('profiles visibility is co-membership', () =
         .from('profiles')
         .insert({ id: eId, display_name: 'inserted by C' })
 
+      // SPRIN-105b revoked INSERT on this table from `authenticated` entirely, so the
+      // refusal now comes from the PRIVILEGE layer, before profiles_self_insert is ever
+      // consulted. Two controls share this SQLSTATE and only the message discriminates
+      // them: a privilege refusal says "permission denied for table profiles", an RLS
+      // WITH CHECK violation says "new row violates row-level security policy". This
+      // assertion deliberately matches the former -- if it ever reads the latter again,
+      // the grant has come back.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
-      expect(error?.message).toMatch(/row-level security/i)
+      expect(error?.message).toMatch(/permission denied/i)
     }, 30_000)
     // NOTE ON EXECUTION ORDER, since this test leans on it. E already has a profile row,
     // so this insert violates the primary key as well as the policy. Postgres evaluates
@@ -272,11 +279,18 @@ describe.skipIf(!hasServiceRoleKey)('profiles visibility is co-membership', () =
     // `crypto.randomUUID()` (a user who does not exist), where the ordering IS documented,
     // and say so in the review rather than silently loosening the matcher.
 
-    it('refuses to let a co-member delete their co-member, by deleting zero rows', async () => {
+    // Was "by deleting zero rows" until SPRIN-105b. DELETE is now revoked from
+    // `authenticated` outright, so this no longer reaches profiles_self_delete's USING
+    // clause to be filtered -- it is refused at the privilege layer and RAISES. The
+    // row-count shape and the privilege shape are different assertions and asserting the
+    // wrong one passes for the wrong reason, so this asserts both halves: the refusal,
+    // and that D's row is genuinely still there.
+    it('refuses to let a co-member delete their co-member', async () => {
       const refused = await cClient.from('profiles').delete().eq('id', dId).select('id')
 
-      expect(refused.error).toBeNull()
-      expect(refused.data).toEqual([])
+      expect(refused.data).toBeNull()
+      expect(refused.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(refused.error?.message).toMatch(/permission denied/i)
 
       const after = await admin.from('profiles').select('id').eq('id', dId)
       expect(after.data).toEqual([{ id: dId }])
@@ -296,16 +310,30 @@ describe.skipIf(!hasServiceRoleKey)('profiles visibility is co-membership', () =
     }, 30_000)
   })
 
-  // LAST, AND DELIBERATELY SO. This is the positive control for profiles_self_delete, and
-  // it destroys C's profile row -- so every assertion that reads C's profile must already
-  // have run. Vitest runs a file's tests in source order. If you add a test that reads C,
-  // add it ABOVE this one.
-  describe('the self-delete positive control', () => {
-    it('lets a user delete their own profile row', async () => {
+  // This block WAS the positive control for profiles_self_delete, and was last in the
+  // file because it destroyed C's profile row -- every test reading C had to run first.
+  // SPRIN-105b revoked DELETE from `authenticated`, so it destroys nothing now and the
+  // ordering constraint is gone. Left in place rather than moved, because its position
+  // is harmless and moving it would obscure why the ordering note existed.
+  //
+  // NOTE WHAT IS NOW UNPINNED: with the privilege revoked, profiles_self_delete can no
+  // longer be exercised from a client at all, so nothing tests it and nothing can. It is
+  // deliberate defence in depth -- it exists so that re-granting DELETE later cannot
+  // silently open a row-level hole at the same moment. A test asserting it would have to
+  // grant the privilege back to observe it, which would defeat the point.
+  describe('delete is refused outright', () => {
+    it('refuses to let a user delete even their OWN profile row', async () => {
       const { data, error } = await cClient.from('profiles').delete().eq('id', cId).select('id')
 
-      expect(error).toBeNull()
-      expect(data).toEqual([{ id: cId }])
+      expect(data).toBeNull()
+      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(/permission denied/i)
+
+      // The row survives. Read it back with a client that bypasses RLS, because a
+      // refusal that returned an error while still deleting the row would be the worst
+      // of both worlds and nothing above would notice.
+      const after = await admin.from('profiles').select('id').eq('id', cId)
+      expect(after.data).toEqual([{ id: cId }])
     }, 30_000)
   })
 })
