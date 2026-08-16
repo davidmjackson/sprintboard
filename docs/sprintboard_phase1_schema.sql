@@ -1304,3 +1304,147 @@ create policy tickets_owner on tickets
                    and p.owner_id = auth.uid()));
 
 commit;
+
+-- ============================================================
+-- SPRIN-98 — project_members (epic SPRIN-75, teams and roles)
+-- ============================================================
+-- Applied 2026-08-16. The FIRST table in this schema whose policies do not resolve
+-- to `owner_id = auth.uid()`. Everything above still does; SPRIN-100, SPRIN-101 and
+-- SPRIN-99 convert them, and until they do this table grants nothing to anyone —
+-- it is inert, populated, and waiting.
+--
+-- STATEMENT ORDER IS LOAD-BEARING. The table is created before the app_auth
+-- functions that read it, and those before the policies that call them. A
+-- `language sql` body is fully parsed and analysed at CREATE time
+-- (check_function_bodies defaults to on), so a forward reference fails the whole
+-- migration with 42P01. A `language plpgsql` body is only syntax-checked, which is
+-- why seed_project_admin may sit at the foot. The first draft got this wrong.
+--
+-- WHY A SEPARATE SCHEMA AND TWO DEFINER FUNCTIONS. A policy on project_members
+-- cannot ask "is the caller a member?" by selecting from project_members —
+-- Postgres raises `infinite recursion detected in policy`. Routing through
+-- `projects` only defers it: at SPRIN-101 the projects policy starts checking
+-- membership and the two recurse mutually. A SECURITY DEFINER function cuts the
+-- cycle because RLS is not applied to table references inside it.
+--
+-- It lives in `app_auth`, NOT `public`, because PostgREST publishes every public
+-- function as an RPC — the same hazard recorded at seed_project_statuses above.
+-- `app_auth` is not in the exposed-schema list, and the proof is mechanical:
+-- regenerating database.types.ts lists `reorder_project_statuses` alone. If either
+-- function ever appears in that file, the schema has been exposed.
+--
+-- BOTH FUNCTIONS READ auth.uid() AND NOTHING ELSE, so a caller can only ever learn
+-- about THEMSELVES. That is what makes the definer privilege affordable, and it is
+-- load-bearing: adding a user_id parameter to either signature turns a harmless
+-- self-query into an oracle about other people.
+
+create schema if not exists app_auth;
+revoke all on schema app_auth from public;
+grant usage on schema app_auth to authenticated;
+
+create table project_members (
+  project_id uuid not null references projects(id) on delete cascade,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  -- text + check, never an enum. Same rule as ticket.type, sprint.status and
+  -- project_type — widening a check is one line, altering an enum type is not.
+  role       text not null,
+  created_at timestamptz not null default now(),
+  primary key (project_id, user_id),
+  constraint project_members_role_check check (role in ('admin', 'member'))
+);
+
+-- The pk covers the project_id fk (a prefix of (project_id, user_id)); user_id has
+-- no cover without this. It also serves "which projects does this user belong to",
+-- which SPRIN-102 needs, so it is a real index rather than lint appeasement.
+create index project_members_user_id_idx on project_members (user_id);
+
+-- STABLE, so the uid read happens once per statement rather than per row — which is
+-- also why these policies do not need the `(select auth.uid())` wrapper that
+-- auth_rls_initplan asks for, and why this migration added no such warning.
+create or replace function app_auth.is_project_member(p_project_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (select 1 from public.project_members m
+                 where m.project_id = p_project_id
+                   and m.user_id = (select auth.uid()));
+$$;
+
+create or replace function app_auth.is_project_admin(p_project_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (select 1 from public.project_members m
+                 where m.project_id = p_project_id
+                   and m.user_id = (select auth.uid())
+                   and m.role = 'admin');
+$$;
+
+revoke execute on function app_auth.is_project_member(uuid) from public;
+revoke execute on function app_auth.is_project_admin(uuid) from public;
+grant  execute on function app_auth.is_project_member(uuid) to authenticated;
+grant  execute on function app_auth.is_project_admin(uuid) to authenticated;
+
+alter table project_members enable row level security;
+
+-- Any member reads; only an admin writes. No TO clause, matching every policy
+-- above — but note that on THIS table anon is stopped earlier, by the grants.
+create policy members_read on project_members
+  for select
+  using (app_auth.is_project_member(project_members.project_id));
+
+create policy members_admin_insert on project_members
+  for insert
+  with check (app_auth.is_project_admin(project_members.project_id));
+
+create policy members_admin_update on project_members
+  for update
+  using      (app_auth.is_project_admin(project_members.project_id))
+  with check (app_auth.is_project_admin(project_members.project_id));
+
+create policy members_admin_delete on project_members
+  for delete
+  using (app_auth.is_project_admin(project_members.project_id));
+
+-- GRANTS. Born with full CRUD for authenticated AND anon; the revoke is table-wide
+-- and the permitted columns granted back, because `revoke update (col)` against a
+-- table-wide grant is a SILENT NO-OP while a table-level revoke CASCADES.
+--
+-- Measured from the catalogue after apply, 2026-08-16:
+--   table  authenticated=rdDxtm   — no `a`, no `w`; anon absent entirely
+--   column project_id=a  user_id=a  role=aw
+--
+-- `grant update (role)` ALONE is what makes "a membership row can never be
+-- re-pointed at a different user or project" a DATABASE property: a patch touching
+-- project_id or user_id earns 42501 before any policy is consulted. Unlike every
+-- other table here, anon holds NOTHING — so an anon read is refused by the
+-- privilege layer (42501, data null) rather than filtered to `[]` by a policy. That
+-- asymmetry is deliberate and is asserted live.
+revoke all on project_members from anon;
+revoke insert, update, delete on project_members from authenticated;
+grant insert (project_id, user_id, role) on project_members to authenticated;
+grant update (role) on project_members to authenticated;
+grant delete on project_members to authenticated;
+
+-- SECURITY DEFINER is FORCED: members_admin_insert requires an admin, and at
+-- project-creation time nobody is one yet. An invoker function would deadlock the
+-- bootstrap exactly as seed_project_statuses would have. It cannot be abused — it
+-- fires only after a projects INSERT that already passed projects_owner's WITH
+-- CHECK, and reads new.owner_id, which that policy just constrained to auth.uid().
+create or replace function seed_project_admin()
+returns trigger language plpgsql
+security definer set search_path = ''
+as $$
+begin
+  insert into public.project_members (project_id, user_id, role)
+  values (new.id, new.owner_id, 'admin')
+  on conflict (project_id, user_id) do nothing;
+  return new;
+end;
+$$;
+
+revoke execute on function public.seed_project_admin() from public, anon, authenticated;
+
+-- Fires after on_project_created and before on_project_created_statuses, in name
+-- order. Nothing depends on that; the name states it rather than stumbling into it.
+create trigger on_project_created_admin
+  after insert on projects
+  for each row execute function seed_project_admin();

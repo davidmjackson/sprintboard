@@ -257,16 +257,36 @@ commit;
 -- ============================================================================
 -- AFTER APPLYING
 -- ============================================================================
--- Run get_advisors and compare against the MEASURED BASELINE, not against zero. As of
--- 2026-08-09 that baseline is 16 performance lints and 1 security WARN (leaked-password
--- protection). Re-derive it rather than trusting this line -- it has been stale in
--- CLAUDE.md before.
+-- ADVISOR DELTA, measured from the catalogue after this migration was applied
+-- (2026-08-16):
 --
--- This migration is expected to add ZERO new lints: project_members_user_id_idx covers
--- the only foreign key the primary key does not, and the policies call a STABLE function
--- rather than a bare auth.uid(), so auth_rls_initplan should not fire.
+--   security:    1 WARN (leaked-password protection) -- UNCHANGED from baseline.
+--   performance: 16 -> 17. ONE new lint.
 --
--- Verify from the catalog, not from the editor:
---   * pg_policies for the four policies on project_members
---   * pg_class.relacl / pg_attribute.attacl for the grants above
---   * one admin row per project
+-- THE PREDICTION WAS HALF RIGHT, AND THE HALF IT MISSED IS THE INTERESTING ONE. This
+-- file predicted ZERO new lints. Both mechanisms it named did work:
+--
+--   * NO new unindexed_foreign_keys. project_members_user_id_idx covers the user_id fk,
+--     and the pk covers project_id as a prefix. This is the trap SPRIN-88 and SPRIN-92
+--     both fell into, avoided here by applying the rule they re-derived: the fk's column
+--     list must be a PREFIX of some index's column list.
+--   * NO ninth auth_rls_initplan. The four policies call a STABLE function instead of a
+--     bare auth.uid(), so the uid read is not re-evaluated per row.
+--
+-- What it did not anticipate: a brand-new index that nothing has scanned yet earns an
+-- `unused_index` INFO -- project_members_user_id_idx itself. Dropping the index does NOT
+-- reach zero; it trades this INFO for the unindexed_foreign_keys INFO the index exists to
+-- prevent. One lint either way, and this way the index is genuinely useful to SPRIN-102's
+-- "which projects am I in". ACCEPTED, no change. It should clear itself once that query
+-- ships.
+--
+-- VERIFIED FROM THE CATALOG, not from the editor reporting "Success":
+--   * 4 policies on project_members; relrowsecurity = true; 2 indexes; 1 trigger
+--   * both app_auth functions prosecdef = true, provolatile = 's', search_path = ''
+--     with proacl {postgres, authenticated} -- PUBLIC revoked
+--   * seed_project_admin proacl {postgres, service_role} -- authenticated revoked too
+--   * table relacl authenticated=rdDxtm (no `a`, no `w`); anon ABSENT
+--   * column attacl project_id=a, user_id=a, role=aw
+--   * 3 projects -> 3 admin rows -> 0 projects without an admin
+--   * regenerated database.types.ts lists reorder_project_statuses ALONE under
+--     Functions, confirming app_auth is genuinely not exposed to PostgREST
