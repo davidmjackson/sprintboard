@@ -63,6 +63,40 @@ create schema if not exists app_auth;
 revoke all on schema app_auth from public;
 grant usage on schema app_auth to authenticated;
 
+-- READ THIS BEFORE ADDING ANY FUNCTION TO app_auth.
+--
+-- There are NO default privileges on this schema. Measured: pg_default_acl holds 24 rows
+-- across auth, extensions, graphql, graphql_public, public, realtime and storage, and
+-- ZERO for app_auth. Combined with the permanent `grant usage ... to authenticated` on
+-- the line above, that means:
+--
+--   *** A NEW FUNCTION HERE IS BORN EXECUTE-TO-PUBLIC AND IS IMMEDIATELY CALLABLE BY
+--       EVERY SIGNED-IN USER, UNLESS YOU REVOKE IT BY HAND IN THE SAME MIGRATION. ***
+--
+-- The two revokes further down this file are the pattern to copy. They sit ~75 lines from
+-- where a new function would go, which is exactly why this warning is HERE instead.
+--
+-- SPRIN-98 tried to make this deny-by-default with
+--   alter default privileges in schema app_auth revoke execute on functions from public;
+-- applied in the SQL editor as postgres, both with and without a transaction wrapper and
+-- with and without an explicit `for role`. The editor reported "Success. No rows
+-- returned" every time and pg_default_acl still held zero rows for app_auth afterwards,
+-- confirmed from the catalogue as postgres in the editor AND as supabase_read_only_user
+-- over the MCP. Root cause not established; the attempt was abandoned rather than
+-- guessed at, because a hand-revoke costs one line and is verifiable.
+--
+-- Note the reason it went undetected long enough to matter: ALTER DEFAULT PRIVILEGES
+-- touches no existing object and returns no rows, so a statement that did nothing looks
+-- IDENTICAL to one that worked. Its only witness is a pg_default_acl row, and PostgREST
+-- cannot read pg_catalog, so no CI check can ever see it. If anyone retries this, the
+-- verification query is:
+--
+--   select count(*), max(d.defaclacl::text)
+--     from pg_default_acl d join pg_namespace n on n.oid = d.defaclnamespace
+--    where n.nspname = 'app_auth' and d.defaclobjtype = 'f';
+--
+-- Expect 1 row with no bare "=X/" entry in the acl. Do not accept "Success" as evidence.
+
 -- ============================================================================
 -- 2. project_members -- BEFORE the functions that read it (see the note above)
 -- ============================================================================
