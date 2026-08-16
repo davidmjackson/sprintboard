@@ -37,10 +37,13 @@
 
 begin;
 
--- `for role postgres` is required, not decorative: default privileges are keyed on the
--- role that CREATES the object, and migrations here are applied through the SQL editor
--- as postgres. Written without it, this would silently key on the current role and
--- protect nothing when the next migration runs.
+-- `for role postgres` names the role whose CREATEs this applies to. Default privileges are
+-- keyed on the creating role, and omitting the clause defaults to the current role -- which
+-- in the Supabase SQL editor IS postgres, so today the two forms are identical. It is
+-- written explicitly as future-proofing (a migration applied by any other role would
+-- otherwise protect nothing), NOT because it changes behaviour now. An earlier draft of
+-- this comment called it "required, not decorative", which overstated it -- in a migration
+-- whose whole review theme was not overclaiming.
 alter default privileges for role postgres in schema app_auth
   revoke execute on functions from public;
 
@@ -60,6 +63,13 @@ commit;
 -- Expect one row, defaclobjtype = 'f' (functions), with PUBLIC absent from defaclacl.
 --
 -- Advisor expectation: NO change. This grants nothing and creates no object; it only
--- narrows what future objects are born with. Baseline at the time of writing is 17
+-- narrows what future objects are born with. Baseline at the time of writing is 16
 -- performance lints and 1 security WARN -- re-derive with get_advisors rather than
--- trusting this line.
+-- trusting this line, and see the note in sprin-98-project-members.sql about
+-- `unused_index` readings taken immediately after a migration.
+--
+-- NOTHING IN CI CAN SEE WHETHER THIS RAN. PostgREST cannot read pg_catalog, so the live
+-- suites cannot assert a pg_default_acl row, and there is no other gate. That makes this
+-- a guard whose gate is a human: if it is never applied, SPRIN-99/100/101 get exactly the
+-- open door described above and nothing goes red. Applying it is therefore part of
+-- SPRIN-98, not a nice-to-have deferred to whoever notices.

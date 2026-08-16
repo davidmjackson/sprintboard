@@ -6,6 +6,7 @@ import {
   adminClient,
   anonClient,
   assertCredentialsOrExplain,
+  assertServiceRoleOrExplain,
   hasRlsCredentials,
   hasServiceRoleKey,
   signIn,
@@ -14,6 +15,13 @@ import {
 } from './supabase-clients'
 
 assertCredentialsOrExplain()
+// NINE of this file's tests are `skipIf(!hasServiceRoleKey)` -- the member-vs-admin block,
+// the seed-follows-owner_id test and the backfill invariant all need a client that bypasses
+// RLS. Without this call a missing key silently drops more than half the suite while the
+// file still reports green. It IS caught today, but only by a throw in
+// signup.integration.test.ts, i.e. by a guard in someone else's file; this story leaned much
+// harder on the service role and should carry its own.
+assertServiceRoleOrExplain()
 
 /**
  * SPRIN-98 -- the membership boundary, live.
@@ -46,7 +54,18 @@ async function settled<T>(call: PromiseLike<T>): Promise<T | { data: null; error
   }
 }
 
-/** Postgres "insufficient privilege" -- the GRANT layer, not RLS. */
+/**
+ * Postgres "insufficient privilege". On THIS table it has two possible authors -- a revoked
+ * GRANT and an RLS WITH CHECK violation -- so every assertion of it below is paired with a
+ * message match naming which one refused.
+ *
+ * A DECLARED DEPARTURE, so it is not mistaken for carelessness. `projects.integration.test.ts`
+ * deliberately matches only `/permission denied/`, reasoning that the message prose belongs to
+ * Postgres rather than to us and a substring naming the control is enough. That is right where
+ * only one mechanism can raise the code. Here both can, and they differ only in the prose, so
+ * a substring that stops before the table name cannot discriminate. The cost is accepted: if
+ * Postgres ever rewords these, this file goes red and the sibling does not.
+ */
 const INSUFFICIENT_PRIVILEGE = '42501'
 
 describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
@@ -165,7 +184,7 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
     })
 
     it.skipIf(!hasServiceRoleKey)(
-      'every project in the database has exactly one admin, and it is the owner',
+      'every project has an admin, it is the owner, and no project has a second one',
       async () => {
         // AC3 -- the BACKFILL. Nothing else in this suite covers it: every fixture project
         // is created inside beforeAll and gets its admin row from the TRIGGER, not the
@@ -188,20 +207,34 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
 
         const { data: projects, error: pErr } = await admin
           .from('projects')
-          .select('id, owner_id, project_members(user_id, role)')
+          .select('id, owner_id, created_at, project_members(user_id, role)')
         expect(pErr).toBeNull()
 
-        const orphaned = (projects ?? []).filter(
-          (p) => !p.project_members.some((m) => m.role === 'admin'),
-        )
-        const adminIsNotOwner = (projects ?? []).filter(
-          (p) => !p.project_members.some((m) => m.role === 'admin' && m.user_id === p.owner_id),
-        )
+        const rows = projects ?? []
+        const admins = (p: (typeof rows)[number]) =>
+          p.project_members.filter((m) => m.role === 'admin')
 
-        expect(orphaned).toEqual([])
+        // THREE independent properties. An earlier version asserted only the first two,
+        // and the first was DEAD: `no admin at all` is a strict subset of `no admin equal
+        // to the owner`, so it could never be the assertion that fired.
+        const adminIsNotOwner = rows.filter((p) => !admins(p).some((m) => m.user_id === p.owner_id))
+        // CARDINALITY, which the test's old name claimed ("exactly one admin") and no
+        // assertion checked. A project with the owner as admin PLUS a stranger as admin
+        // passed happily -- which is precisely the leak SPRIN-102's add-member path could
+        // introduce, and precisely what this test would be relied on to catch.
+        const multipleAdmins = rows.filter((p) => admins(p).length !== 1)
+
         expect(adminIsNotOwner).toEqual([])
-        // Positive control: both assertions above are vacuously true on an empty table.
-        expect((projects ?? []).length).toBeGreaterThan(0)
+        expect(multipleAdmins).toEqual([])
+
+        // POSITIVE CONTROL, and it has to be sharper than `rows.length > 0`. This suite's
+        // own three fixture projects satisfy that, so a plain count would keep the test
+        // green while it silently stopped covering the BACKFILL at all -- the backfill is
+        // the only reason the test exists, and only rows predating the migration exercise
+        // it. Every fixture project is created inside beforeAll and seeded by the TRIGGER.
+        const MIGRATION_APPLIED = '2026-08-16'
+        const preMigration = rows.filter((p) => p.created_at < MIGRATION_APPLIED)
+        expect(preMigration.length).toBeGreaterThan(0)
       },
     )
   })
@@ -410,9 +443,12 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
 
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
 
-      // ASSERT THE AUTHOR, NOT JUST THE CODE. The code alone is vacuous here, and this
-      // was measured rather than reasoned: run `grant select on project_members to anon`
-      // and the call still fails 42501 — because anon lacks USAGE on app_auth, so the
+      // ASSERT THE AUTHOR, NOT JUST THE CODE. The code alone is vacuous here. Derived from
+      // the CATALOGUE, not measured -- proving it by experiment would mean running
+      // `grant select on project_members to anon` against the shared live database, which
+      // nothing in this project is allowed to do. What is measured is the input:
+      // `app_auth`'s nspacl is {postgres=UC, authenticated=U}, so anon has no USAGE. Grant
+      // anon SELECT and the call still fails 42501 -- because the
       // moment members_read is finally evaluated Postgres raises `permission denied for
       // schema app_auth`, the SAME SQLSTATE. The test would stay green through exactly
       // the grant it exists to detect. The message is what discriminates.
@@ -430,14 +466,29 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
       // so a non-public schema is absent either way. `graphql_public` IS exposed in this
       // project and is likewise absent from that file. This probe is the real check: it
       // asks PostgREST directly, and flips the instant app_auth joins the exposed list.
+      //
+      // WHY 406 DISCRIMINATES, measured against all four cases rather than assumed:
+      //   Accept-Profile: app_auth        -> 406 PGRST106  (unexposed -- what we assert)
+      //   Accept-Profile: public          -> 200           (so 406 is not universal)
+      //   Accept-Profile: graphql_public  -> 404 PGRST205  (EXPOSED non-public schema)
+      //   Accept-Profile: no_such_schema  -> 406 PGRST106
+      // The third line is the one that matters: an exposed schema answers 404, not 406, so
+      // adding app_auth to the exposed list turns this test red. A 404-based detector would
+      // NOT have worked -- it passes both before and after -- and one was proposed.
+      //
+      // The table name in the URL is decorative: the schema is rejected before the relation
+      // is resolved. It is left as project_members for readability.
       const { url, anonKey } = supabaseConfig()
       const res = await fetch(`${url}/rest/v1/project_members?select=user_id&limit=1`, {
         headers: { apikey: anonKey, 'Accept-Profile': 'app_auth' },
       })
 
       expect(res.status).toBe(406)
-      const body = (await res.json()) as { code?: string }
+      const body = (await res.json()) as { code?: string; hint?: string }
       expect(body.code).toBe('PGRST106')
+      // Stronger than the code alone: the hint ENUMERATES the exposed schemas, so this
+      // pins the whole list rather than just app_auth's absence from it.
+      expect(body.hint).toBe('Only the following schemas are exposed: public, graphql_public')
     })
   })
 

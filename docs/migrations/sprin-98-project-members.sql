@@ -270,13 +270,21 @@ commit;
 -- AFTER APPLYING
 -- ============================================================================
 -- ADVISOR DELTA, measured from the catalogue after this migration was applied
--- (2026-08-16):
+-- (2026-08-16). READ ALL THREE READINGS -- the middle one is the trap:
 --
 --   security:    1 WARN (leaked-password protection) -- UNCHANGED from baseline.
---   performance: 16 -> 17. ONE new lint.
+--   performance: 16 -> 17 immediately after apply, then BACK TO 16 within the hour.
 --
--- THE PREDICTION WAS HALF RIGHT, AND THE HALF IT MISSED IS THE INTERESTING ONE. This
--- file predicted ZERO new lints. Both mechanisms it named did work:
+-- The transient 17th was an `unused_index` INFO on project_members_user_id_idx: a
+-- brand-new index that nothing had scanned yet. Running this story's own live suite
+-- scanned it, and the INFO cleared on its own. So the NET delta is ZERO and the
+-- prediction below was right after all -- but only in the end state. A story that
+-- measured once, immediately after applying, would have recorded a permanent finding
+-- about a lint with a half-life, and an earlier version of this comment plus a whole
+-- CLAUDE.md paragraph did exactly that. MEASURE AGAIN LATER, especially for
+-- `unused_index`, which is a statement about traffic and not about schema.
+--
+-- Both mechanisms this file named did work:
 --
 --   * NO new unindexed_foreign_keys. project_members_user_id_idx covers the user_id fk,
 --     and the pk covers project_id as a prefix. This is the trap SPRIN-88 and SPRIN-92
@@ -284,13 +292,6 @@ commit;
 --     list must be a PREFIX of some index's column list.
 --   * NO ninth auth_rls_initplan. The four policies call a STABLE function instead of a
 --     bare auth.uid(), so the uid read is not re-evaluated per row.
---
--- What it did not anticipate: a brand-new index that nothing has scanned yet earns an
--- `unused_index` INFO -- project_members_user_id_idx itself. Dropping the index does NOT
--- reach zero; it trades this INFO for the unindexed_foreign_keys INFO the index exists to
--- prevent. One lint either way, and this way the index is genuinely useful to SPRIN-102's
--- "which projects am I in". ACCEPTED, no change. It should clear itself once that query
--- ships.
 --
 -- VERIFIED FROM THE CATALOG, not from the editor reporting "Success":
 --   * 4 policies on project_members; relrowsecurity = true; 2 indexes; 1 trigger
@@ -300,5 +301,17 @@ commit;
 --   * table relacl authenticated=rdDxtm (no `a`, no `w`); anon ABSENT
 --   * column attacl project_id=a, user_id=a, role=aw
 --   * 3 projects -> 3 admin rows -> 0 projects without an admin
---   * regenerated database.types.ts lists reorder_project_statuses ALONE under
---     Functions, confirming app_auth is genuinely not exposed to PostgREST
+--
+-- AND ONE THING THAT WAS LISTED HERE AS EVIDENCE AND IS NOT EVIDENCE. This checklist
+-- used to end with "regenerated database.types.ts lists reorder_project_statuses ALONE
+-- under Functions, confirming app_auth is genuinely not exposed to PostgREST". That is a
+-- NON-SEQUITUR: the type generator emits the `public` schema regardless of what is
+-- exposed, so a non-public schema is absent either way. `graphql_public` IS exposed in
+-- this project and is likewise absent from that file. The claim is struck rather than
+-- deleted because it is the tempting one and someone will re-derive it.
+--
+-- The real check is live, in project-members.integration.test.ts: a request carrying
+-- `Accept-Profile: app_auth` earns 406 / PGRST106 `Invalid schema`. Measured, and
+-- measured to DISCRIMINATE -- an exposed non-public schema (`graphql_public`) answers
+-- 404 / PGRST205 instead, so the assertion genuinely flips if app_auth is ever added to
+-- the exposed list.

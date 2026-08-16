@@ -127,21 +127,29 @@ most stories rather than a rare one.
 aspirational when written and has been false for some time — a story that took it literally
 would either chase pre-existing lints it did not cause or, worse, read a red result as its own
 regression. Re-measured **2026-08-16**: **1 security WARN** (leaked-password protection disabled)
-and **17 performance lints** (8 `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`,
-3 on `tickets`, 1 on `project_field_options`; 8 `auth_rls_initplan` WARNs across five tables; and
-1 `unused_index` INFO on `project_members_user_id_idx`).
+and **16 performance lints** (8 `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`,
+3 on `tickets`, 1 on `project_field_options`; and 8 `auth_rls_initplan` WARNs across five tables).
 This paragraph said **14** and **6 / 3+3** until SPRIN-97 re-derived it: the extra two arrived with
 SPRIN-92/93's tables (`pfo_field_fk` and `tfv_option_fk`) and nobody updated the line, which is the
 decay this file warns about two paragraphs down happening to the warning itself.
 
-**SPRIN-98 took performance from 16 to 17, and the new lint is a `unused_index`, not the
-`unindexed_foreign_keys` you would expect from a new table.** That is the index working:
-`project_members_user_id_idx` covers the one foreign key the primary key does not, so no fk
-INFO appeared — and a brand-new index that nothing has scanned yet is reported as unused
-instead. **Dropping it does not reach zero**, it trades one INFO for the other, so the index
-stays and the INFO is accepted. It should disappear on its own once SPRIN-102 queries "which
-projects am I in". Note also what did NOT appear: no ninth `auth_rls_initplan`, because the
-four new policies call a `STABLE` function rather than a bare `auth.uid()`. **Compare against that
+**SOME LINTS HAVE A HALF-LIFE, and this paragraph is the proof — it briefly said 17.**
+SPRIN-98 added `project_members`. Measured immediately after applying, performance went 16 → 17:
+an `unused_index` INFO on `project_members_user_id_idx`, because a brand-new index that nothing
+has scanned yet is by definition unused. Running that story's own live suite scanned it, and the
+INFO **cleared on its own within the hour**. Net delta zero.
+
+The story had already written the 17 into this file as a standing decision — *"accepted, no
+change"* — about a lint that no longer existed, two paragraphs below the warning about exactly
+that decay. So: **`unused_index` is a statement about TRAFFIC, not about schema.** Never record
+one as a baseline from a single reading taken straight after a migration; re-measure once the
+suite has run. `unindexed_foreign_keys` and `auth_rls_initplan` are structural and do not behave
+this way.
+
+What SPRIN-98 did *not* add is the interesting part, and it is durable: no new
+`unindexed_foreign_keys`, because `project_members_user_id_idx` covers the one foreign key the
+primary key does not; and no ninth `auth_rls_initplan`, because the four new policies call a
+`STABLE` function instead of a bare `auth.uid()`. **Compare against that
 baseline, not against zero** — the same discipline as the test-file tripwire above, where the
 GAP is the invariant and the absolute counts move with every story. Re-derive the numbers with
 `get_advisors` rather than trusting this paragraph; they are a timestamped observation.
