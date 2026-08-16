@@ -85,6 +85,25 @@
  * Column-level grants are invisible here too, as always: `Update` shows every column as
  * optional, but only `role` is actually granted to `authenticated`. A patch touching
  * `project_id` or `user_id` type-checks and then earns 42501 at runtime.
+ *
+ * SPRIN-105 added `profiles.email` — a mirror of `auth.users.email`, arriving as
+ * `string | null`. The nullability is deliberate rather than incidental: a `not null`
+ * would put signup itself behind the constraint, because `handle_new_user` writes this
+ * row before the user can authenticate, so an auth path that withheld an address would
+ * fail there and leave the user with no profile at all.
+ *
+ * Two things about that column are invisible here, and both bite at runtime. Its UNIQUE
+ * constraint (`profiles_email_key`) is not expressed, so two `.insert()`s carrying the
+ * same address type-check and the second earns 23505. And nothing in the type system
+ * says it is a MIRROR: no trigger re-syncs it if `auth.users.email` ever changes, so the
+ * column is only as trustworthy as the absence of an email-change path in the app —
+ * which matters, because SPRIN-102 uses it as an identity key.
+ *
+ * The story's other half is invisible for the usual reason, RLS. `profiles_read` now
+ * returns the caller's own row PLUS the rows of anyone they share a project with, where
+ * `profiles_self` returned their own row alone. The `Row` shape is byte-identical either
+ * way, so nothing here would change if that policy were widened to `using (true)`. The
+ * only evidence the widening is bounded is live, in `profiles.integration.test.ts`.
  */
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
@@ -101,16 +120,19 @@ export type Database = {
         Row: {
           created_at: string
           display_name: string | null
+          email: string | null
           id: string
         }
         Insert: {
           created_at?: string
           display_name?: string | null
+          email?: string | null
           id: string
         }
         Update: {
           created_at?: string
           display_name?: string | null
+          email?: string | null
           id?: string
         }
         Relationships: []

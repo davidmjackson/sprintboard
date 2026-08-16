@@ -136,22 +136,37 @@ export function anonClient(): SupabaseClient<Database> {
   })
 }
 
-/** A fresh, signed-in client. Sessions are not persisted: each client is one user. */
-export async function signIn(user: RlsUser): Promise<SupabaseClient<Database>> {
-  const { email, password } = RLS_USERS[user]
-  if (email === undefined || password === undefined) {
-    throw new Error(`No credentials for RLS test user ${user}.`)
-  }
-
+/**
+ * A fresh, signed-in client for arbitrary credentials. Sessions are not persisted:
+ * each client is one user.
+ *
+ * NOT wrapped in `apikeyOnlyFetch`. For a signed-in client the `Authorization`
+ * header carries the USER's access token, and stripping it would silently downgrade
+ * every request to the anon role — RLS would then hide the caller's own rows rather
+ * than raise. `supabase-clients.test.ts` goes red if anyone shares that wrapper here.
+ */
+export async function signInWithCredentials(
+  email: string,
+  password: string,
+): Promise<SupabaseClient<Database>> {
   const client = createClient<Database>(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
   })
 
   const { data, error } = await client.auth.signInWithPassword({ email, password })
-  if (error) throw new Error(`Sign-in failed for user ${user}: ${error.message}`)
-  if (!data.user) throw new Error(`Sign-in for user ${user} returned no user.`)
+  if (error) throw new Error(`Sign-in failed for ${email}: ${error.message}`)
+  if (!data.user) throw new Error(`Sign-in for ${email} returned no user.`)
 
   return client
+}
+
+/** A fresh, signed-in client for one of the two fixed RLS test users. */
+export async function signIn(user: RlsUser): Promise<SupabaseClient<Database>> {
+  const { email, password } = RLS_USERS[user]
+  if (email === undefined || password === undefined) {
+    throw new Error(`No credentials for RLS test user ${user}.`)
+  }
+  return signInWithCredentials(email, password)
 }
 
 /**

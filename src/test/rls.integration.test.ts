@@ -244,9 +244,23 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
     expect(userAId).not.toBe(userBId)
   })
 
-  // The signup trigger from S1.2, exercised for the first time.
+  // The signup trigger from S1.2, exercised for the first time. This is
+  // scoped to A's own row rather than an unscoped select: SPRIN-105 widened
+  // the profiles SELECT policy to "my own row OR anyone I share a project
+  // with", so an unscoped count over profiles is now a whole-table invariant
+  // whose answer depends on what sibling suites are doing concurrently — in
+  // particular, project-members.integration.test.ts's beforeAll fixture adds
+  // B to A's project as a co-member for the duration of that suite, making A
+  // and B mutually visible while both files run in parallel under Vitest.
+  // That is the policy working correctly, not flakiness, so this test's
+  // subject stays exactly what it always was — did handle_new_user create
+  // A's row — by asserting on A's id alone. The "did the policy widen too
+  // far" property now lives, race-free, in
+  // src/test/profiles.integration.test.ts's 'shows a member exactly
+  // themselves and their co-members', which uses its own throwaway users
+  // that no other file touches.
   it('each user has exactly one profile row, created by handle_new_user', async () => {
-    const { data, error } = await a.from('profiles').select('id')
+    const { data, error } = await a.from('profiles').select('id').eq('id', userAId)
     expect(error).toBeNull()
     expect(data).toHaveLength(1)
     expect(data![0]!.id).toBe(userAId)
@@ -483,10 +497,22 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
 
     // Every negative assertion above uses client `b`. An anonymous client would
     // also see nothing and pass all of them — proving nothing about isolation.
-    // This proves B's own JWT actually reaches PostgREST: B can see exactly
-    // their own profile row, and no one else's.
+    // This proves B's own JWT actually reaches PostgREST: B's own profile row
+    // comes back. It is scoped to B's id rather than an unscoped select
+    // because SPRIN-105 widened the profiles SELECT policy to "my own row OR
+    // anyone I share a project with": an unscoped select over profiles is now
+    // a whole-table invariant, and project-members.integration.test.ts's
+    // beforeAll fixture makes A and B co-members of a shared project for the
+    // duration of that suite, so an unscoped query here would correctly (not
+    // flakily) also return A's row while both files run in parallel under
+    // Vitest. That says nothing about this test's actual subject, which is
+    // B's identity reaching PostgREST, not how many rows are visible in
+    // total — the "did the policy widen too far" property lives, race-free,
+    // in src/test/profiles.integration.test.ts's 'shows a member exactly
+    // themselves and their co-members', which uses its own throwaway users
+    // that no other file touches.
     it("B's requests carry B's own identity (data-plane positive control)", async () => {
-      const { data, error } = await b.from('profiles').select('id')
+      const { data, error } = await b.from('profiles').select('id').eq('id', userBId)
       expect(error).toBeNull()
       expect(data).toEqual([{ id: userBId }])
     })

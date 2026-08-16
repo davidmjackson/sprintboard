@@ -25,7 +25,10 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
  * the whole dialog at the document level, so only the component holding `onEscapeKeyDown`
  * can decide whether a field's own edit or the add-deliverable draft should swallow it
  * instead of dismissing the dialog. Assignee is deliberately `{ Unassigned, current user }`
- * — Phase 1 is single-owner, and widening the profiles read would leak every user's email.
+ * — a full co-member picker (choose from anyone on the project) is a later story that
+ * this component does not attempt yet. It is no longer gated on profile-read visibility:
+ * SPRIN-105 widened the `profiles` SELECT policy to co-members, so the data needed for a
+ * real picker is available; only the UI to build one is missing.
  */
 export function TicketDetailDialog({
   ticket,

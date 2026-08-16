@@ -20,10 +20,31 @@ create extension if not exists "pgcrypto";  -- gen_random_uuid()
 -- ============================================================
 -- profiles  (mirrors auth.users)
 -- ============================================================
+-- COLUMN ORDER HERE MATCHES THE LIVE TABLE, and it differs from a plain read of this
+-- CREATE TABLE because it isn't how the table was actually built. `email` was added by
+-- SPRIN-105's migration as `alter table profiles add column email text`, well after this
+-- table (and created_at) already existed, so Postgres appended it physically at the end
+-- rather than in whatever position a fresh CREATE TABLE would suggest. The live order is
+-- id, display_name, created_at, email -- reproduced below rather than the SELECT-ordinal
+-- order a from-scratch script would naturally produce. Harmless: PostgREST returns rows
+-- as objects, not positional tuples, so no client code depends on this order. It matters
+-- only if this file is ever replayed against a fresh database, where it would recreate a
+-- schema-identical but column-order-different table -- worth knowing, not worth fixing.
 create table profiles (
   id           uuid primary key references auth.users(id) on delete cascade,
   display_name text,
-  created_at   timestamptz not null default now()
+  created_at   timestamptz not null default now(),
+  -- SPRIN-105 — a SEPARATE MIRROR of auth.users.email, not a reuse of
+  -- display_name. Nullable, deliberately: a `not null` would put signup itself
+  -- behind the constraint (a future auth path without an email would fail inside
+  -- handle_new_user and the user would get no profile row at all). Unique,
+  -- because SPRIN-102 grants project membership by exact email and a unique
+  -- constraint is what makes `.eq('email', x).single()` honest rather than
+  -- hopeful — Postgres treats NULLs as distinct in a unique index, so any number
+  -- of email-less profiles still coexist. display_name stays user-editable and
+  -- keeps its own coalesce(..., new.email) fallback below; email never is — it
+  -- can never become an identity key that a user can quietly change.
+  email        text unique
 );
 
 -- Auto-create a profile row on signup (runs as definer to bypass RLS at signup).
@@ -39,8 +60,10 @@ language plpgsql
 security definer set search_path = ''
 as $$
 begin
-  insert into public.profiles (id, display_name)
-  values (new.id, coalesce(new.raw_user_meta_data->>'display_name', new.email));
+  -- SPRIN-105 — email added alongside display_name. The two columns diverge from
+  -- the same source on purpose: display_name is editable, email is not.
+  insert into public.profiles (id, display_name, email)
+  values (new.id, coalesce(new.raw_user_meta_data->>'display_name', new.email), new.email);
   return new;
 end;
 $$;
@@ -803,11 +826,15 @@ alter table project_field_options enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
--- profiles: a user sees and edits only their own row
-create policy profiles_self on profiles
-  for all
-  using (id = auth.uid())
-  with check (id = auth.uid());
+-- profiles: SPRIN-105 replaces the single self-only policy below with four
+-- verb-split policies, widening SELECT to co-members and leaving every write
+-- self-only. The replacement statements live in the SPRIN-105 section near the
+-- foot of this file, after app_auth and project_members (SPRIN-98) exist --
+-- profiles_read calls app_auth.shares_project_with, which reads
+-- project_members, so it cannot be declared this early without a forward
+-- reference. RLS on profiles is enabled above (with every other table); between
+-- here and that section a fresh run of this file has no policy on profiles at
+-- all, which is fail-closed and therefore safe, not a gap.
 
 -- projects: owner only
 create policy projects_owner on projects
@@ -1365,9 +1392,32 @@ create table project_members (
 -- which SPRIN-102 needs, so it is a real index rather than lint appeasement.
 create index project_members_user_id_idx on project_members (user_id);
 
--- STABLE, so the uid read happens once per statement rather than per row — which is
--- also why these policies do not need the `(select auth.uid())` wrapper that
--- auth_rls_initplan asks for, and why this migration added no such warning.
+-- CORRECTED by SPRIN-105 (see that section, below) — this comment originally said
+-- "STABLE, so the uid read happens once per statement rather than per row", which is
+-- FALSE and is corrected here rather than in the shipped migration
+-- (docs/migrations/sprin-98-project-members.sql), which is a historical record of what
+-- was actually applied and is left alone. If the two read differently, this is why —
+-- it is a correction, not drift.
+--
+-- The real mechanism: every call site here passes project_members.project_id, a
+-- per-row column reference (a Var) from the table the policy filters, not a constant —
+-- so STABLE does NOT let the planner hoist the call and evaluate it once per statement.
+-- Postgres invokes is_project_member/is_project_admin once per candidate row, same as
+-- every predicate in this file that takes a per-row argument; there is no
+-- constant-argument call site anywhere in this schema. STABLE is still the honest
+-- marking -- correct because the function reads only database state that cannot change
+-- within the statement -- but it is not what keeps the internal uid read cheap. That is
+-- a property of the body's own shape: `(select auth.uid())` is an uncorrelated scalar
+-- subquery, so it is promoted to an InitPlan and evaluated once per invocation
+-- regardless of volatility marking -- the same promotion would happen if the function
+-- were VOLATILE. Both functions are also SECURITY DEFINER, and Postgres never inlines a
+-- SECURITY DEFINER sql function, so each invocation runs its own cached body plan.
+--
+-- These policies need no `(select auth.uid())` wrapper, but the reason is textual, not
+-- planning: the auth_rls_initplan advisor matches the literal text `auth.<fn>()` inside
+-- a policy expression, and these policy bodies contain a function call and no bare
+-- `auth.uid()` at all — auth.uid() appears only inside the function's own body. That is
+-- why this migration added no such warning, and it is unrelated to call count.
 create or replace function app_auth.is_project_member(p_project_id uuid)
 returns boolean language sql stable security definer set search_path = ''
 as $$
@@ -1469,3 +1519,198 @@ revoke execute on function public.seed_project_admin() from public, anon, authen
 create trigger on_project_created_admin
   after insert on projects
   for each row execute function seed_project_admin();
+
+-- ============================================================
+-- SPRIN-105 — profiles.email and co-member profile reads (epic SPRIN-75, story 2)
+-- ============================================================
+-- Applied 2026-08-16 -- hand-applied by David from
+-- docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql. Verified
+-- from the catalogue, not just the editor reporting "Success". Widens profiles
+-- from "my own row" to "my own row plus anyone I share a project with" for SELECT;
+-- every write stays self-only.
+--
+-- STATEMENT ORDER IS LOAD-BEARING, same reasoning as SPRIN-98 above.
+-- shares_project_with is `language sql`, so its body is fully parsed and
+-- analysed at CREATE time (check_function_bodies defaults to on) and it reads
+-- public.project_members — hence this whole section sits after project_members
+-- exists, not up at the original profiles table declaration. handle_new_user is
+-- `language plpgsql` and only syntax-checked, so its edit (above, at the
+-- original declaration) had no such constraint.
+--
+-- WHAT THIS WIDENS, STATED PLAINLY. Joining a project makes your email address
+-- visible to everyone else in that project. That is what Jira does and it is
+-- the point of the feature, but it is a real disclosure decision rather than an
+-- implementation detail. The boundary established here is: profile visibility
+-- is CO-MEMBERSHIP and nothing wider. Writes do not widen at all.
+--
+-- "JOINING" OVERSTATES IT -- read this before trusting the sentence above.
+-- Nothing in this schema requires the subject's consent to become a co-member.
+-- members_admin_insert constrains only project_id, not user_id, and
+-- seed_project_admin makes every project creator an admin of their own project
+-- on creation -- so ANY authenticated user can create a project and then INSERT
+-- an arbitrary user_id into project_members for it, with no action, consent or
+-- notification from that user. Once this migration lands, that insert makes the
+-- target's display_name and email readable by every other member of that
+-- project. The ONLY reason this is not exploitable today is that nothing in the
+-- app exposes a uuid oracle -- no search-by-uuid, no listing of every
+-- auth.users.id, nothing that hands an attacker a stranger's id to insert.
+-- SPRIN-102 ("add member by email") is exactly that oracle in reverse -- it
+-- turns "knows a uuid" into "knows an email address" -- and it is SPRIN-102,
+-- not this migration, that owns the decision of whether adding a member should
+-- require that member's consent. The paragraph above describes the intended,
+-- cooperative use of the feature, not an enforced boundary.
+--
+-- READ THIS BEFORE COPYING THE PATTERN. SPRIN-98's is_project_member and
+-- is_project_admin consult (select auth.uid()) and NOTHING ELSE, so a caller
+-- can only ever learn about themselves — adding a user_id parameter to either
+-- would turn a harmless self-query into an oracle about other people. That
+-- warning stands; shares_project_with is a THIRD function that does take
+-- another user's id, affordable here for a different, weaker, and precisely
+-- stateable reason:
+--   * one side of the join is pinned to (select auth.uid()) -- it answers "do I
+--     share a project with X", never "do X and Y share a project";
+--   * its answer is exactly co-extensive with the policy that calls it --
+--     anything it reveals about X, a select on X's profile row already
+--     reveals, so it opens no new channel;
+--   * it is not independently reachable -- app_auth is absent from the exposed
+--     schema list, so PostgREST publishes no RPC for it.
+-- Do not read this function as a precedent for "parameters are fine now" —
+-- a future predicate without all three properties needs its own argument.
+--
+-- STABLE, not VOLATILE, because the result cannot change within a statement --
+-- that marking is correct and stays. Do NOT read it as "the uid read happens
+-- once per statement", and do NOT read is_project_member/is_project_admin above
+-- as a counter-example either: NONE of the three predicates is hoisted. Every
+-- real call site -- shares_project_with(profiles.id) here, and
+-- is_project_member(project_members.project_id) /
+-- is_project_admin(project_members.project_id) above -- passes a per-row column
+-- reference (a Var) from the table the policy filters, not a literal. There is
+-- no constant-argument call site anywhere in this schema, so Postgres invokes
+-- every one of them once per candidate row. Measured with pg_get_userbyid as a
+-- stand-in probe: a Var-argument call showed 693 invocations against a
+-- multi-row table, a constant-argument call showed 1 -- confirming what a Var
+-- argument costs, not showing that any predicate here avoids it.
+--
+-- STABLE is still the honest marking, and it is not a performance trick at this
+-- call site: it is correct because the function reads only database state that
+-- cannot change within the statement (project_members), nothing more. What
+-- actually keeps the internal uid read cheap is a property of the FUNCTION
+-- BODY'S SHAPE, not of STABLE: (select auth.uid()) is an uncorrelated scalar
+-- subquery, so it is promoted to an InitPlan and evaluated once per invocation
+-- regardless of how the function is marked -- the same promotion would happen
+-- if it were VOLATILE. All three functions are also SECURITY DEFINER, and
+-- Postgres never inlines a SECURITY DEFINER sql function, so each invocation
+-- runs that cached body plan rather than being substituted into the caller. Do
+-- not credit STABLE with anything about evaluation counts here.
+--
+-- CORRECTED (third time -- see the "not this text" trap below). This paragraph
+-- used to claim the advisor matches the literal text `auth.<fn>()` and that
+-- NONE of these policy bodies contain it, with "the reason is the SAME one for
+-- all three predicates". Both claims are false, and profiles_read is the
+-- counter-example: its stored expression is `(id = (select auth.uid())) OR
+-- app_auth.shares_project_with(id)`, which plainly contains the text
+-- `auth.uid()`. Measured across the live catalogue: roughly thirteen policies
+-- contain that literal text and earn no warning, while the seven that DO warn
+-- are the ones containing an UNWRAPPED call.
+--
+-- The real rule: the advisor flags a policy expression containing an
+-- `auth.<fn>()` or `current_setting()` call that is NOT wrapped in a scalar
+-- subquery. Wrapping it in `(select ...)` is the documented fix and is exactly
+-- what clears the warning -- see CLAUDE.md's note on profiles_self.
+--
+-- THE REASON DIFFERS BETWEEN THE TWO FAMILIES, and "the same reason" is the
+-- error to avoid repeating:
+--   * members_read / members_admin_insert / members_admin_update /
+--     members_admin_delete (project_members, SPRIN-98, above) contain no
+--     auth.<fn>() call at all -- the uid read happens inside
+--     is_project_member's / is_project_admin's own function body, not in the
+--     policy expression.
+--   * profiles_read / profiles_self_insert / profiles_self_update /
+--     profiles_self_delete (this section) DO contain a call, and are clean
+--     because it is already wrapped: `(select auth.uid())`, not bare
+--     `auth.uid()`.
+--
+-- What stays true, re-verified with EXPLAIN: no call site here passes a
+-- constant (every call passes a Var -- profiles.id, project_members
+-- .project_id); STABLE does not cause the InitPlan promotion (that comes from
+-- the subquery being uncorrelated, and would happen under VOLATILE too);
+-- Postgres never inlines a SECURITY DEFINER sql function.
+create or replace function app_auth.shares_project_with(p_user_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.project_members mine
+    join public.project_members theirs on theirs.project_id = mine.project_id
+    where mine.user_id = (select auth.uid())
+      and theirs.user_id = p_user_id
+  );
+$$;
+
+-- A NEW FUNCTION IN app_auth IS BORN EXECUTE-TO-PUBLIC. There are no default
+-- privileges on this schema — SPRIN-98 tried to add them, the editor reported
+-- "Success" every time, and pg_default_acl still held zero rows for app_auth
+-- afterwards — so the hand-revoke below is the only thing standing between this
+-- function and every signed-in user. anon is deliberately absent: it holds
+-- USAGE on neither the schema nor, after the grants below, anything on profiles.
+revoke execute on function app_auth.shares_project_with(uuid) from public;
+grant  execute on function app_auth.shares_project_with(uuid) to authenticated;
+
+-- One `for all` becomes four, split by verb. The split PRESERVES CURRENT WRITE
+-- BEHAVIOUR VERB FOR VERB — `for all` already covered all four verbs, so
+-- writing them out separately narrows nothing. Self-DELETE stays permitted: it
+-- is a pre-existing footgun (delete your profile row and handle_new_user will
+-- not rebuild it, since it fires on auth.users INSERT alone), but narrowing it
+-- here would be a scope change smuggled in under a widening story. Left as
+-- found.
+--
+-- No TO clause, matching every other policy in this schema — the consequence,
+-- recorded because it has caused a misdiagnosis before, is that a policy
+-- without TO covers anon as well, so a 42501 on an anonymous request has two
+-- possible authors. The revoke below settles it on this table: anon holds
+-- nothing, so it is refused at the privilege layer before any policy runs.
+--
+-- (select auth.uid()), not bare auth.uid(): the old profiles_self was one of
+-- the eight auth_rls_initplan WARNs, and the wrapped form clears that one for
+-- free since the policy is being rewritten anyway. The sweep across the
+-- remaining tables still belongs to SPRIN-75, not here.
+--
+-- IF EXISTS, unlike the migration file's plain `drop policy`. This doc is meant
+-- to run top to bottom from an empty database, and the original
+-- `profiles_self` policy was removed from its declaration site above (see the
+-- comment there) rather than recreated only to be dropped here -- so by the
+-- time this statement runs in a fresh execution of this file, the policy never
+-- existed and a bare `drop policy` would fail with 42704. In the real,
+-- already-applied database the policy genuinely exists, which is exactly the
+-- case the actual migration file targets -- its bare `drop policy` is the
+-- correct, stronger statement there and must stay that way.
+drop policy if exists profiles_self on profiles;
+
+create policy profiles_read on profiles
+  for select
+  using (id = (select auth.uid()) or app_auth.shares_project_with(profiles.id));
+
+create policy profiles_self_insert on profiles
+  for insert
+  with check (id = (select auth.uid()));
+
+create policy profiles_self_update on profiles
+  for update
+  using      (id = (select auth.uid()))
+  with check (id = (select auth.uid()));
+
+create policy profiles_self_delete on profiles
+  for delete
+  using (id = (select auth.uid()));
+
+-- GRANTS. profiles was BORN with anon=arwdDxtm — full CRUD — like every table
+-- in this schema before its grants were deliberately narrowed; survivable while
+-- the table held only a display name, not what we want standing alone in front
+-- of a column of email addresses. This changes nothing OBSERVABLE (anon already
+-- saw zero rows, since id = auth.uid() is id = null for an anonymous caller,
+-- which filters everything) but changes the FAILURE SHAPE a test must assert
+-- on: a privilege refusal is 42501 with data === null, an RLS filter is
+-- error: null, data: []. Table-wide, not column-level, matching SPRIN-98's
+-- reasoning: `revoke ... (col)` against a table-wide grant is a silent no-op,
+-- while a table-level revoke cascades.
+revoke all on profiles from anon;

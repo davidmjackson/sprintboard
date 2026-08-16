@@ -1198,6 +1198,55 @@ membership model, and because the reasoning is easier to reconstruct now than la
   suite is already required to cover. The fix, if wanted, is a partial unique index scoped by
   project; it may not be worth it.
 
+## Owed to SPRIN-75, found by the SPRIN-105 migration
+
+**Co-membership is currently grantable UNILATERALLY, and SPRIN-105 is what turns that from a
+nuisance into a disclosure.** `members_admin_insert`'s `WITH CHECK` constrains only `project_id`,
+not `user_id`, and `seed_project_admin` (SPRIN-98) makes every project creator an admin of their
+own project on creation — so any authenticated user can create a project, then `INSERT` an
+arbitrary `user_id` into `project_members` for it, with no consent and no notification from that
+person. Before SPRIN-105 that insert was mostly harmless: it granted board access to a stranger,
+which is odd but not a disclosure. **After SPRIN-105 it also makes that stranger's `display_name`
+and `email` readable by every other member of the project**, because profile visibility is now
+co-membership.
+
+It is not reachable today only because nothing in the app currently discloses another user's uuid
+— verified across every column that could serve as one: `profiles.id`, `tickets.assignee_id`,
+`projects.owner_id` and `project_members.user_id` are all self- or co-member-scoped, so there is
+no search-by-uuid and no listing of every `auth.users.id` an attacker could reach for.
+**SPRIN-102's "add member by email" is exactly that oracle, turned around** — it converts "the
+attacker already knows a uuid" into "the attacker only needs to know an email address", which
+anyone might. The gap itself is **inherited from SPRIN-98** (the unconstrained `WITH CHECK` and
+the self-seeding admin both predate SPRIN-105); SPRIN-105 is what gives it a payload worth
+exploiting. **SPRIN-102 owns the consent decision** — whether adding a member should require that
+member to accept, and if not, what narrows the blast radius instead. The full argument is written
+into `docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql`'s header; do not re-derive
+it from scratch.
+
+## A whole-table invariant races parallel test files (SPRIN-105)
+
+`rls.integration.test.ts` asserted, at two points, that A and B EACH see **exactly one** profile
+row — an unscoped `select` over `profiles`, counting the result. Once SPRIN-105 widened
+`profiles`'s read policy to co-membership, both assertions went red: `project-members.integration
+.test.ts`'s own `beforeAll` fixture adds B to one of A's projects as a co-member, and **Vitest runs
+test FILES in parallel against one shared live database** — so by the time `rls.integration.test.ts`
+ran its count, the sibling suite's fixture was already live and A's real visible set was no longer
+one row. **This is the policy working correctly, not flakiness — do not chase it as a bug.**
+
+Both assertions are now scoped to their own subject's row before counting, rather than an unscoped
+table select. The property that actually needed testing — "did the read policy widen further than
+co-membership?" — moved to `profiles.integration.test.ts`'s **`shows a member exactly themselves
+and their co-members`**, which is race-free because it creates its own throwaway users that no
+other suite file touches.
+
+**The general rule, because SPRIN-99/100/101 will hit this again on other tables:** under a
+membership model, an unscoped `select` (or an unscoped row count) over any table another suite's
+fixtures can write into is a **whole-table invariant**, and its answer depends on what sibling
+suites are doing concurrently, not on your own file's setup alone. Every future story that widens a
+table's read boundary owes its assertions the same audit: does this count assume it is the only
+writer of this table right now? If another suite's fixture can add a row that changes the count,
+scope the assertion to rows the fixture itself created — never to the whole table.
+
 ## What CI cannot pin
 
 Anything PostgREST cannot read is invisible to the test suite, because the live suites reach the
@@ -1245,6 +1294,15 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   tried; only a ±1-day shift dies, because that moves the value. It pins "returns today, in that
   shape" and not "derives the day in UTC". Distinct from the note in PR #109, which discloses only
   that the *dialog* suite mocks `todayUtc` to a constant.
+- **`profiles.email` can drift from `auth.users.email`** (SPRIN-105). The column is backfilled once
+  and mirrored on every future signup via `handle_new_user`, but nothing re-syncs an *existing* row
+  when a user's email changes in `auth.users` — there is no email-change path anywhere in the app
+  today, so the sync trigger was deliberately not built. **SPRIN-102 must re-read this before
+  trusting the column as an identity key**, because "add member by email" is exactly the path that
+  would treat a stale mirror as authoritative. Alongside it: the mirror stores whatever
+  `auth.users` holds verbatim, so a **case-insensitive** lookup is a separate, undecided question —
+  it would need its own `lower(email)` index (the current unique constraint is on the raw value)
+  and its own decision about whether two differently-cased addresses should collide.
 
 ## Settled — do not re-raise
 
