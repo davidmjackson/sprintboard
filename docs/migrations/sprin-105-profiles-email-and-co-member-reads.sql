@@ -100,21 +100,31 @@ update profiles p
 -- "parameters are fine now".
 --
 -- STABLE, not VOLATILE, because the result cannot change within a statement -- that
--- volatility marking is correct and stays. But do NOT read it as "the uid read happens
--- once per statement" the way it does for is_project_member/is_project_admin: those are
--- called with a CONSTANT argument (a single project_id), so the planner can hoist the
--- call and evaluate it once. shares_project_with(profiles.id) is called with profiles.id,
--- a PER-ROW Var, so STABLE buys it nothing here -- Postgres invokes it once per candidate
--- row, and each invocation re-runs its own (select auth.uid()) InitPlan. Measured with
--- pg_get_userbyid as a stand-in probe: a Var-argument call showed 693 invocations against
--- a multi-row table, a constant-argument call showed 1.
+-- volatility marking is correct and stays. Do NOT read it as "the uid read happens once
+-- per statement", and do NOT read the two siblings (is_project_member, is_project_admin)
+-- as a counter-example either: NONE of the three predicates is hoisted. Every real call
+-- site -- shares_project_with(profiles.id) here, and is_project_member(project_members
+-- .project_id) / is_project_admin(project_members.project_id) in the SPRIN-98 policies --
+-- passes a per-row column reference (a Var) from the very table the policy filters, not a
+-- literal. There is no constant-argument call site anywhere in this schema, so Postgres
+-- invokes every one of them once per candidate row. Measured with pg_get_userbyid as a
+-- stand-in probe: a Var-argument call showed 693 invocations against a multi-row table, a
+-- constant-argument call showed 1 -- confirming what a Var argument costs, not showing
+-- that any predicate here avoids it.
 --
--- The policies below still need no (select auth.uid()) wrapper around THIS call, but for
--- a narrower reason than "it only runs once": the auth_rls_initplan advisor matches the
--- literal text `auth.<fn>()` inside a policy body, and this call site has no such text at
--- all (auth.uid() appears only inside shares_project_with's own already-wrapped body) --
--- and separately, a call whose argument is a per-row Var cannot be hoisted into a scalar
--- subquery regardless, so the wrapper would not change its evaluation count if added.
+-- What STABLE actually buys: the function is not treated as volatile, so the planner may
+-- reuse a result within a scan where the argument repeats, and -- the part that matters
+-- for cost -- it lets the (select auth.uid()) inside the body run as an InitPlan evaluated
+-- once PER INVOCATION of the function, rather than once per row of the join inside that
+-- invocation's own body. It does not buy whole-statement hoisting here, because the
+-- argument is never constant.
+--
+-- The policies below still need no (select auth.uid()) wrapper around THESE calls, and
+-- the reason is the SAME one for all three predicates, not a planning story: the
+-- auth_rls_initplan advisor matches the literal text `auth.<fn>()` inside a policy
+-- expression, and none of these three policy bodies contain that text at all -- each
+-- policy calls a function, and auth.uid() appears only inside that function's own
+-- already-wrapped body, never in the policy expression the advisor actually scans.
 --
 -- search_path pinned empty, every reference schema-qualified, matching the two siblings.
 create or replace function app_auth.shares_project_with(p_user_id uuid)
