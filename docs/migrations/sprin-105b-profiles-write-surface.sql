@@ -1,0 +1,101 @@
+-- SPRIN-105b -- narrow the profiles write surface (epic SPRIN-75, story 2, follow-up).
+--
+-- ASCII ONLY. clip.exe transcodes by the console codepage. Verify the applied state from
+-- the CATALOG afterwards, never from the editor reporting "Success".
+--
+-- ============================================================================
+-- WHY THIS EXISTS: A COMMENT WAS NOT A CONTROL
+-- ============================================================================
+-- SPRIN-105 added profiles.email and documented it, in four places, as a column a user
+-- can never change: "email never is [user-editable] -- it can never become an identity
+-- key that a user can quietly change." Nothing enforced that. Measured from the catalog:
+-- profiles.relacl was authenticated=arwdDxtm table-wide with ZERO column ACLs, and
+-- profiles_self_update's USING and WITH CHECK both constrain the ROW (id = auth.uid())
+-- and say nothing about which COLUMNS may be written.
+--
+-- Proved live, not inferred, by two PostgREST requests from an ordinary signed-in user:
+--
+--   1. .update({ email }) on the caller's OWN row SUCCEEDS. One row returned, and a
+--      service-role read-back confirmed the stored value actually changed.
+--   2. .delete() followed by .insert({ id, display_name, email }) reaches the SAME end
+--      state with an attacker-chosen address. This is why narrowing UPDATE alone would
+--      NOT have closed it, and it is the reason this migration touches INSERT too.
+--
+-- THREE CONSEQUENCES, the first of which is live TODAY and not a future risk:
+--
+--   * DENIAL OF REGISTRATION. profiles_email_key is UNIQUE and non-deferrable. Squat an
+--     address you do not own, and when its real owner signs up, handle_new_user's bare
+--     insert violates that constraint INSIDE an AFTER INSERT trigger on auth.users -- so
+--     the auth.users insert rolls back and the victim can never register. Reproduced:
+--     after squatting, createUser for that address returned no user. Note the shape:
+--     you cannot steal an address that already has a profile row (23505 protects it),
+--     only claim one that does not yet -- which is precisely the invite case.
+--   * IDENTITY SPOOF AT SPRIN-102. That story resolves membership by exact email. A
+--     squatted address means an admin adding victim@corp.com adds the ATTACKER, who then
+--     reads every co-member's email through the profiles_read policy SPRIN-105 shipped.
+--   * AN ENUMERATION ORACLE. 23505 vs success on a self-update discriminates registered
+--     addresses from unregistered ones.
+--
+-- The UNIQUE constraint is not the bug and is not being removed -- SPRIN-102 needs it.
+-- The bug is a caller-writable column underneath it.
+--
+-- ============================================================================
+-- WHAT THIS DOES, AND WHY A GRANT RATHER THAN A TRIGGER
+-- ============================================================================
+-- Profile rows become entirely trigger-managed: created by handle_new_user (SECURITY
+-- DEFINER, so it is unaffected by every revoke below), removed by cascade from
+-- auth.users. The only thing a user may write is their own display_name.
+--
+-- A BEFORE INSERT OR UPDATE trigger forcing email from auth.users was the considered
+-- alternative and would also have closed both routes. The grant is preferred because it
+-- is the instrument this schema already uses -- SPRIN-92 (grant update (label)), SPRIN-97
+-- (grant update on the two cadence columns), SPRIN-98 (grant update (role)) -- and
+-- because it fails CLOSED for any column added to this table later, whereas a trigger
+-- protects exactly the columns someone remembered to name in it.
+--
+-- Written TABLE-WIDE and re-granted per column, because `revoke update (col)` against a
+-- table-wide grant is a SILENT NO-OP while a table-level revoke CASCADES to column
+-- grants. This is the repo's recorded lesson; do not "simplify" it to a column revoke.
+--
+-- THE FOUR POLICIES STAY. They are now defence in depth rather than the only control:
+-- the privilege layer refuses these verbs before any policy is consulted. Keeping them
+-- means that re-granting a verb later cannot silently open a row-level hole at the same
+-- time. Note the consequence for tests -- a refused INSERT or DELETE here now earns 42501
+-- from the PRIVILEGE layer with a "permission denied for table profiles" message, NOT the
+-- "new row violates row-level security policy" message an RLS refusal produces. Two
+-- controls, one SQLSTATE: assertions must match on the message to say which one refused.
+
+begin;
+
+-- DELETE goes too, and that is a deliberate narrowing rather than an oversight.
+-- SPRIN-105 preserved self-delete verb-for-verb on the grounds that removing it would be
+-- a scope change smuggled into a widening story. That reasoning is superseded: self-
+-- delete is half of the forgery route above, and it was already a footgun in its own
+-- right, because handle_new_user fires on auth.users INSERT alone and so never rebuilds
+-- a profile row its owner deleted.
+revoke insert, update, delete on profiles from authenticated;
+
+-- The one column a user may write. display_name is a DISPLAY string: it starts life
+-- seeded from the email by handle_new_user's coalesce, and being user-editable is
+-- exactly why it can never serve as an identity key. email is the mirror; it is now
+-- writable by nobody but the definer trigger.
+grant update (display_name) on profiles to authenticated;
+
+commit;
+
+-- ============================================================================
+-- AFTER APPLYING -- verify from the CATALOG, not from "Success"
+-- ============================================================================
+--   * profiles relacl: authenticated loses a (INSERT), w (UPDATE) and d (DELETE) --
+--     expect authenticated=rDxtm. anon still ABSENT.
+--     MIND THE CASE: lowercase d is DELETE and IS revoked here; uppercase D is TRUNCATE
+--     and is NOT -- it survives in that string. RLS cannot police TRUNCATE, and the
+--     repo-wide sweep for it belongs to SPRIN-75, not to this story.
+--   * column attacl on profiles: display_name=w for authenticated, and NOTHING on
+--     email, id or created_at.
+--   * has_column_privilege('authenticated','public.profiles','email','UPDATE') = false.
+--   * The four policies are UNCHANGED and still present.
+--   * A signed-in user can still .update({ display_name }) their own row.
+--
+-- ADVISORS: expect no change. This migration adds no object, no index and no policy --
+-- 15 performance / 1 security, as measured after SPRIN-105.
