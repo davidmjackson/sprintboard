@@ -422,6 +422,21 @@ git commit -m "Add the SPRIN-105 migration: profiles.email and co-member reads"
 **THE FIXTURE MUST NOT USE USERS A OR B, AND THIS IS THE MOST IMPORTANT LINE IN THE TASK.**
 `rls.integration.test.ts:249` asserts A sees **exactly one** profile row, and `:489` asserts B sees exactly `[{ id: userBId }]`. Vitest runs suites in parallel against one shared database. Making A and B co-members — even briefly, even in a `beforeAll` that tears down — flips those two assertions red at random, on a branch whose code is fine. Three throwaway users created through the service role keep A and B's visibility exactly as it is, which keeps those assertions true **and** promotes them to the standing guard that this widening did not over-fire. If they ever go red, the predicate is wrong; do not weaken them.
 
+> **CORRECTED by SPRIN-105 (post-hoc, same story).** This is the plan's draft reasoning,
+> left as written — it is what motivated the fixture, and it was wrong about which
+> assertions end up doing the guarding. Commit 33c6c6f, later on this same branch, rewrote
+> both `rls.integration.test.ts:249` and `:489` into scoped `.eq('id', …)` selects, because
+> `project-members.integration.test.ts`'s own fixture makes A and B co-members while it
+> runs concurrently with `rls.integration.test.ts` — a sibling suite unrelated to this
+> file's fixture, not this suite's own users. Those two assertions are no longer a
+> whole-table count and are no longer "the standing guard that this widening did not
+> over-fire"; that guard now lives in `profiles.integration.test.ts`'s own `shows a member
+> exactly themselves and their co-members` test. "If they ever go red, the predicate is
+> wrong; do not weaken them" turned out to be exactly wrong about *those* two assertions —
+> they went red for an unrelated, correct reason, and weakening them (scoping the select)
+> was the right fix, not a compromise. The `git status`/`git log -p` sequence is the record
+> if the detail is needed again.
+
 **Guard the secrets this suite actually needs.** It needs `SUPABASE_SERVICE_ROLE_KEY` and the public config — it does **not** need `RLS_TEST_{A,B}`. So it gates on `hasServiceRoleKey` and calls `assertServiceRoleOrExplain()`. A missing key must never look like a pass.
 
 - [ ] **Step 1: Write the failing suite**
@@ -462,6 +477,15 @@ assertServiceRoleOrExplain()
  * even inside a beforeAll that tears down -- would flip those assertions red at random.
  * Three throwaway users leave A and B untouched, which keeps those two assertions true
  * and makes them the standing guard that this widening did not over-fire.
+ *
+ * CORRECTED by SPRIN-105 (post-hoc, same branch) -- this plan draft is left as written,
+ * but the last sentence above is what the implemented suite's docblock originally copied
+ * verbatim, and it was wrong. Commit 33c6c6f rescoped rls.integration.test.ts:249 and :489
+ * to per-user selects because of project-members.integration.test.ts's co-membership
+ * fixture, not because of anything this suite's own users do -- so they stopped being a
+ * whole-table count and stopped being "the standing guard" at all. The actual guard is
+ * this suite's own 'shows a member exactly themselves and their co-members' test. See
+ * src/test/profiles.integration.test.ts's docblock for the corrected version.
  */
 const PASSWORD = 'password123'
 
@@ -783,6 +807,15 @@ env -u VITE_SUPABASE_URL -u VITE_SUPABASE_ANON_KEY npx vitest run src/test/rls.i
 ```
 
 Expected: green. `rls.integration.test.ts:249` and `:489` are the "did not over-fire" guard — if either goes red, the predicate is wrong and the migration needs revisiting, not the test.
+
+> **CORRECTED by SPRIN-105 (post-hoc, same branch).** They did go red running this step, and
+> the predicate was not the problem: `project-members.integration.test.ts`'s own fixture makes
+> A and B co-members while it runs concurrently with `rls.integration.test.ts`, which is
+> exactly the "sibling suite doing something to A/B" case this plan didn't anticipate. Commit
+> 33c6c6f rescoped both assertions to `.eq('id', …)` selects instead of revisiting the
+> migration. The "did not over-fire" guard now lives in `profiles.integration.test.ts`'s own
+> `shows a member exactly themselves and their co-members` test, which uses throwaway users no
+> sibling suite touches.
 
 - [ ] **Step 6: Re-measure the advisors**
 

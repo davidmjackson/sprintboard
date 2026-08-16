@@ -123,12 +123,34 @@ update profiles p
 -- invocation runs that cached body plan rather than being substituted into the caller.
 -- Do not credit STABLE with anything about evaluation counts here.
 --
--- The policies below still need no (select auth.uid()) wrapper around THESE calls, and
--- the reason is the SAME one for all three predicates, not a planning story: the
--- auth_rls_initplan advisor matches the literal text `auth.<fn>()` inside a policy
--- expression, and none of these three policy bodies contain that text at all -- each
--- policy calls a function, and auth.uid() appears only inside that function's own
--- already-wrapped body, never in the policy expression the advisor actually scans.
+-- CORRECTED (third time -- see the "not this text" trap below). This paragraph used to
+-- claim the advisor matches the literal text `auth.<fn>()` and that NONE of these policy
+-- bodies contain it, with "the reason is the SAME one for all three predicates". Both
+-- claims are false, and profiles_read is the counter-example: its stored expression is
+-- `(id = (select auth.uid())) OR app_auth.shares_project_with(id)`, which plainly
+-- contains the text `auth.uid()`. Measured across the live catalogue: roughly thirteen
+-- policies contain that literal text and earn no warning, while the seven that DO warn
+-- are the ones containing an UNWRAPPED call.
+--
+-- The real rule: the advisor flags a policy expression containing an `auth.<fn>()` or
+-- `current_setting()` call that is NOT wrapped in a scalar subquery. Wrapping it in
+-- `(select ...)` is the documented fix and is exactly what clears the warning -- see
+-- section 5's profiles_self rewrite below.
+--
+-- THE REASON DIFFERS BETWEEN THE TWO FAMILIES ON THIS TABLE, and "the same reason" is
+-- the error to avoid repeating:
+--   * members_read / members_admin_insert / members_admin_update / members_admin_delete
+--     (project_members, SPRIN-98) contain no auth.<fn>() call at all -- the uid read
+--     happens inside is_project_member's / is_project_admin's own function body, not in
+--     the policy expression.
+--   * profiles_read / profiles_self_insert / profiles_self_update / profiles_self_delete
+--     (this migration) DO contain a call, and are clean because it is already wrapped:
+--     `(select auth.uid())`, not bare `auth.uid()`.
+--
+-- What stays true, re-verified with EXPLAIN: no call site here passes a constant (every
+-- call passes a Var -- profiles.id, project_members.project_id); STABLE does not cause
+-- the InitPlan promotion (that comes from the subquery being uncorrelated, and would
+-- happen under VOLATILE too); Postgres never inlines a SECURITY DEFINER sql function.
 --
 -- search_path pinned empty, every reference schema-qualified, matching the two siblings.
 create or replace function app_auth.shares_project_with(p_user_id uuid)

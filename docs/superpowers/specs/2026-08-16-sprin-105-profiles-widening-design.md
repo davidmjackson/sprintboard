@@ -234,6 +234,17 @@ one** profile row. Those two share no project, so both remain true — and they 
 standing guard that this widening did not over-fire. Do not weaken them; if they go red,
 the predicate is wrong.
 
+> **CORRECTED by SPRIN-105 (post-hoc, same story).** They went red, and not because A and
+> B ever became co-members of each other's projects — `project-members.integration.test.ts`
+> makes A and B co-members of **its own** fixture project while it runs concurrently with
+> `rls.integration.test.ts`, under Vitest's parallel suite execution. That is a correct
+> consequence of the widened SELECT policy, not a broken predicate, so "if they go red, the
+> predicate is wrong" was the wrong call to make in advance. Commit 33c6c6f weakened exactly
+> the two assertions this paragraph said not to weaken, by scoping them to `.eq('id', …)`,
+> and that was the right fix. The "did not over-fire" guard was relocated, not preserved: it
+> now lives in `profiles.integration.test.ts`'s own `shows a member exactly themselves and
+> their co-members` test, which uses throwaway users no sibling suite can touch.
+
 **The tripwire moves.** `npm test` currently collects **eight** more files than
 `test:unit`. This story adds the ninth live suite, so the gap becomes **9**, and
 `CLAUDE.md` must record that in the same commit — a gap that silently *shrinks* is the

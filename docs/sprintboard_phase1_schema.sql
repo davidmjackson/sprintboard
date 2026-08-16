@@ -20,9 +20,20 @@ create extension if not exists "pgcrypto";  -- gen_random_uuid()
 -- ============================================================
 -- profiles  (mirrors auth.users)
 -- ============================================================
+-- COLUMN ORDER HERE MATCHES THE LIVE TABLE, and it differs from a plain read of this
+-- CREATE TABLE because it isn't how the table was actually built. `email` was added by
+-- SPRIN-105's migration as `alter table profiles add column email text`, well after this
+-- table (and created_at) already existed, so Postgres appended it physically at the end
+-- rather than in whatever position a fresh CREATE TABLE would suggest. The live order is
+-- id, display_name, created_at, email -- reproduced below rather than the SELECT-ordinal
+-- order a from-scratch script would naturally produce. Harmless: PostgREST returns rows
+-- as objects, not positional tuples, so no client code depends on this order. It matters
+-- only if this file is ever replayed against a fresh database, where it would recreate a
+-- schema-identical but column-order-different table -- worth knowing, not worth fixing.
 create table profiles (
   id           uuid primary key references auth.users(id) on delete cascade,
   display_name text,
+  created_at   timestamptz not null default now(),
   -- SPRIN-105 — a SEPARATE MIRROR of auth.users.email, not a reuse of
   -- display_name. Nullable, deliberately: a `not null` would put signup itself
   -- behind the constraint (a future auth path without an email would fail inside
@@ -33,8 +44,7 @@ create table profiles (
   -- of email-less profiles still coexist. display_name stays user-editable and
   -- keeps its own coalesce(..., new.email) fallback below; email never is — it
   -- can never become an identity key that a user can quietly change.
-  email        text unique,
-  created_at   timestamptz not null default now()
+  email        text unique
 );
 
 -- Auto-create a profile row on signup (runs as definer to bypass RLS at signup).
@@ -1513,10 +1523,10 @@ create trigger on_project_created_admin
 -- ============================================================
 -- SPRIN-105 — profiles.email and co-member profile reads (epic SPRIN-75, story 2)
 -- ============================================================
--- PENDING APPLICATION as of 2026-08-16 -- hand-applied by David from
--- docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql, not yet run.
--- Update this line to "Applied <date>" once it actually is. Widens profiles from
--- "my own row" to "my own row plus anyone I share a project with" for SELECT;
+-- Applied 2026-08-16 -- hand-applied by David from
+-- docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql. Verified
+-- from the catalogue, not just the editor reporting "Success". Widens profiles
+-- from "my own row" to "my own row plus anyone I share a project with" for SELECT;
 -- every write stays self-only.
 --
 -- STATEMENT ORDER IS LOAD-BEARING, same reasoning as SPRIN-98 above.
@@ -1593,13 +1603,38 @@ create trigger on_project_created_admin
 -- runs that cached body plan rather than being substituted into the caller. Do
 -- not credit STABLE with anything about evaluation counts here.
 --
--- The policy below still needs no (select auth.uid()) wrapper around this call,
--- and the reason is the SAME one for all three predicates, not a planning
--- story: the auth_rls_initplan advisor matches the literal text `auth.<fn>()`
--- inside a policy expression, and none of these three policy bodies contain
--- that text at all -- each policy calls a function, and auth.uid() appears only
--- inside that function's own already-wrapped body, never in the policy
--- expression the advisor actually scans.
+-- CORRECTED (third time -- see the "not this text" trap below). This paragraph
+-- used to claim the advisor matches the literal text `auth.<fn>()` and that
+-- NONE of these policy bodies contain it, with "the reason is the SAME one for
+-- all three predicates". Both claims are false, and profiles_read is the
+-- counter-example: its stored expression is `(id = (select auth.uid())) OR
+-- app_auth.shares_project_with(id)`, which plainly contains the text
+-- `auth.uid()`. Measured across the live catalogue: roughly thirteen policies
+-- contain that literal text and earn no warning, while the seven that DO warn
+-- are the ones containing an UNWRAPPED call.
+--
+-- The real rule: the advisor flags a policy expression containing an
+-- `auth.<fn>()` or `current_setting()` call that is NOT wrapped in a scalar
+-- subquery. Wrapping it in `(select ...)` is the documented fix and is exactly
+-- what clears the warning -- see CLAUDE.md's note on profiles_self.
+--
+-- THE REASON DIFFERS BETWEEN THE TWO FAMILIES, and "the same reason" is the
+-- error to avoid repeating:
+--   * members_read / members_admin_insert / members_admin_update /
+--     members_admin_delete (project_members, SPRIN-98, above) contain no
+--     auth.<fn>() call at all -- the uid read happens inside
+--     is_project_member's / is_project_admin's own function body, not in the
+--     policy expression.
+--   * profiles_read / profiles_self_insert / profiles_self_update /
+--     profiles_self_delete (this section) DO contain a call, and are clean
+--     because it is already wrapped: `(select auth.uid())`, not bare
+--     `auth.uid()`.
+--
+-- What stays true, re-verified with EXPLAIN: no call site here passes a
+-- constant (every call passes a Var -- profiles.id, project_members
+-- .project_id); STABLE does not cause the InitPlan promotion (that comes from
+-- the subquery being uncorrelated, and would happen under VOLATILE too);
+-- Postgres never inlines a SECURITY DEFINER sql function.
 create or replace function app_auth.shares_project_with(p_user_id uuid)
 returns boolean language sql stable security definer set search_path = ''
 as $$

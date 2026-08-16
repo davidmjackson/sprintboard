@@ -194,7 +194,18 @@ a policy: it is now **seven WARNs across five tables** — `projects` (`projects
 and `project_statuses` (`statuses_owner_read`, `statuses_owner_insert`, `statuses_owner_update`
 — three policies on that one table). It was eight across six tables until SPRIN-105 rewrote
 `profiles_self` in the wrapped form as a side effect of an unrelated policy split, which is
-why that table has dropped out of this list entirely. `project_fields`, `ticket_field_values`,
+why that table has dropped out of this list entirely.
+
+**CORRECTION, made explicit because this file's own ethos forbids a silent one:** the
+"six tables" figure just above replaces a **five-tables** figure this file previously stated
+for that same eight-WARN count (see the paragraph above measuring "8 `auth_rls_initplan`
+WARNs across five tables" before SPRIN-105 applied). Five was wrong — it undercounted by
+one, omitting `profiles` (`profiles_self`) from the table list while still counting its WARN
+in the total of eight. Six is the correct historical figure. That fix landed in the same
+commit as the "seven WARNs across five tables" re-measurement above and was not flagged as a
+correction at the time; it is flagged here instead of being left as silent drift.
+
+`project_fields`, `ticket_field_values`,
 `statuses_owner_delete` and now all four of `profiles`'s split policies already use the
 `(select auth.uid())` form, so the fix has working precedent in this schema — re-derive the
 list with `get_advisors` rather than trusting this paragraph, the same as the count above it.

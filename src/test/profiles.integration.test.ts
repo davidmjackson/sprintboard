@@ -26,11 +26,37 @@ assertServiceRoleOrExplain()
  *     negative below is paired with a POSITIVE control in the same shape.
  *
  * WHY THIS SUITE CREATES ITS OWN USERS INSTEAD OF USING A AND B.
- * rls.integration.test.ts asserts that A and B EACH see exactly one profile row. Vitest
- * runs suites in parallel against one shared database, so making A and B co-members --
- * even inside a beforeAll that tears down -- would flip those assertions red at random.
- * Three throwaway users leave A and B untouched, which keeps those two assertions true
- * and makes them the standing guard that this widening did not over-fire.
+ * CORRECTED -- this used to claim that keeping A and B untouched is what protects
+ * rls.integration.test.ts's "A and B each see exactly one profile row" assertions, and
+ * that "three throwaway users" was the mechanism doing that protecting. Both are wrong.
+ * Commit 33c6c6f on this branch rewrote those two rls.integration.test.ts assertions to
+ * scoped selects, so they no longer count the whole table and are no longer a guard this
+ * suite's fixture could threaten either way. They went red because of
+ * project-members.integration.test.ts's beforeAll fixture making A and B co-members of a
+ * shared project while it runs concurrently with rls.integration.test.ts -- a sibling
+ * suite entirely unrelated to anything this file does.
+ *
+ * The real reason this suite creates its own throwaway users (C, D and stranger E) is
+ * independence: Vitest runs suites in parallel against one shared database, so a suite
+ * that reused the long-lived A/B users would be exposed to whatever any sibling suite --
+ * this one or a future one -- does to A and B concurrently, and vice versa. Fresh users
+ * per run sidestep that regardless of what else is running.
+ *
+ * THE "DID THE POLICY WIDEN TOO FAR" GUARD LIVES IN THIS FILE, not in rls.integration
+ * .test.ts: it is the `shows a member exactly themselves and their co-members` test
+ * below. Its exactness -- asserting the precise set of visible profiles, not just that
+ * some rows come back -- is what would catch a predicate that widened past co-membership.
+ * If it goes red, the predicate is wrong; do not weaken it to a subset or containment
+ * check.
+ *
+ * A CONTROL WORTH NAMING SEPARATELY: this suite is gated on `SUPABASE_SERVICE_ROLE_KEY`
+ * (`describe.skipIf(!hasServiceRoleKey)`) rather than on `RLS_TEST_*`, so a missing key
+ * would let the `describe` block collect for the tripwire's file count while running zero
+ * tests inside it. `assertServiceRoleOrExplain()` above, called at module load, is what
+ * closes that gap: verified in `src/test/supabase-clients.ts`, it throws when
+ * `process.env.CI` is set and the key is absent, rather than silently warning. CI can
+ * therefore never report this suite green by skipping it. If a future edit removes that
+ * call, it is removing a control, not tidying dead code.
  */
 const PASSWORD = 'password123'
 
