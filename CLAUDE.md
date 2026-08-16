@@ -258,14 +258,19 @@ run that collects only the unit-test file count means exactly that, and must be 
 as a failure.
 
 **The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
-**seven more files** than `test:unit` — the seven `*.integration.test.ts` suites: RLS,
-keepalive, signup, login, project, and the cross-tenant write paths. That difference is
-what stays put. The absolute numbers do not: every story that adds a unit-test file moves
-both, and they have been wrong in this file twice in a single session
+**eight more files** than `test:unit` — the eight `*.integration.test.ts` suites: RLS,
+keepalive, signup, login, project, project-members, and the cross-tenant write paths. That
+difference is what stays put. The absolute numbers do not: every story that adds a unit-test
+file moves both, and they have been wrong in this file twice in a single session
 (44/37 → 45/38 → 46/39). At SPRIN-55 it is **50 vs 43** — down from 51/44, because that
 story deleted two threshold-test files and added one gate test. Treat that as a
 timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` rather than trusting this line.
+
+**The GAP itself moves when a story adds an integration suite** — SPRIN-98 took it from
+seven to eight. That is not a contradiction of the rule above: the invariant is that the
+gap equals the number of live suites, so a story adding one owes this line an update in
+the same commit. A gap that has silently *shrunk* is the failure this tripwire exists for.
 
 If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the
 live suites silently skipped and the run is a failure however green it looks.
