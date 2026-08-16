@@ -58,6 +58,33 @@
  * 1-7) are, like every other check constraint in this schema, invisible here: the
  * columns are unconstrained `number` on the client, and `SPRINT_LENGTH_WEEKS` /
  * `SPRINT_WEEKDAYS` in `domain.ts` are what keep a picker built on them honest.
+ *
+ * SPRIN-98 added the `project_members` table — the first table in this schema whose
+ * policies do NOT resolve to `owner_id = auth.uid()`. `role` arrives as plain `string`,
+ * constrained only by `project_members_role_check` ('admin' | 'member'), so the narrowed
+ * union belongs in `domain.ts` like every other text + check column.
+ *
+ * TWO things are absent here. Only ONE of them means anything, and an earlier version of
+ * this comment got that exactly backwards — it is left corrected rather than deleted,
+ * because the wrong version is the tempting one.
+ *
+ *   - **The `app_auth` helper functions.** `Functions` lists `reorder_project_statuses`
+ *     alone. It is TEMPTING to read that as proof PostgREST does not expose `app_auth`,
+ *     and this file said so. **It proves nothing.** The generator emits the `public`
+ *     schema regardless of what is exposed, so a non-`public` schema is absent whether or
+ *     not it is reachable. The disproof is in this same database: `graphql_public` IS
+ *     exposed and is likewise absent from this file. A tripwire that cannot fire is worse
+ *     than none, because it is believed. The real check is a live one —
+ *     `project-members.integration.test.ts` sends `Accept-Profile: app_auth` and asserts
+ *     PostgREST answers 406 / PGRST106 `Invalid schema`, which flips the instant the
+ *     schema is added to the exposed list.
+ *   - **The `user_id` foreign key.** `Relationships` lists only `project_id`, because
+ *     `auth.users` is outside `public` and the generator cannot see across. The cascade
+ *     is real regardless — deleting a user still removes their memberships.
+ *
+ * Column-level grants are invisible here too, as always: `Update` shows every column as
+ * optional, but only `role` is actually granted to `authenticated`. A patch touching
+ * `project_id` or `user_id` type-checks and then earns 42501 at runtime.
  */
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
@@ -171,6 +198,35 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: 'project_fields_project_id_fkey'
+            columns: ['project_id']
+            isOneToOne: false
+            referencedRelation: 'projects'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      project_members: {
+        Row: {
+          created_at: string
+          project_id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          project_id: string
+          role: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          project_id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'project_members_project_id_fkey'
             columns: ['project_id']
             isOneToOne: false
             referencedRelation: 'projects'
