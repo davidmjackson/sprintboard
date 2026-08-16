@@ -23,6 +23,17 @@ create extension if not exists "pgcrypto";  -- gen_random_uuid()
 create table profiles (
   id           uuid primary key references auth.users(id) on delete cascade,
   display_name text,
+  -- SPRIN-105 — a SEPARATE MIRROR of auth.users.email, not a reuse of
+  -- display_name. Nullable, deliberately: a `not null` would put signup itself
+  -- behind the constraint (a future auth path without an email would fail inside
+  -- handle_new_user and the user would get no profile row at all). Unique,
+  -- because SPRIN-102 grants project membership by exact email and a unique
+  -- constraint is what makes `.eq('email', x).single()` honest rather than
+  -- hopeful — Postgres treats NULLs as distinct in a unique index, so any number
+  -- of email-less profiles still coexist. display_name stays user-editable and
+  -- keeps its own coalesce(..., new.email) fallback below; email never is — it
+  -- can never become an identity key that a user can quietly change.
+  email        text unique,
   created_at   timestamptz not null default now()
 );
 
@@ -39,8 +50,10 @@ language plpgsql
 security definer set search_path = ''
 as $$
 begin
-  insert into public.profiles (id, display_name)
-  values (new.id, coalesce(new.raw_user_meta_data->>'display_name', new.email));
+  -- SPRIN-105 — email added alongside display_name. The two columns diverge from
+  -- the same source on purpose: display_name is editable, email is not.
+  insert into public.profiles (id, display_name, email)
+  values (new.id, coalesce(new.raw_user_meta_data->>'display_name', new.email), new.email);
   return new;
 end;
 $$;
@@ -803,11 +816,15 @@ alter table project_field_options enable row level security;
 alter table sprints           enable row level security;
 alter table tickets           enable row level security;
 
--- profiles: a user sees and edits only their own row
-create policy profiles_self on profiles
-  for all
-  using (id = auth.uid())
-  with check (id = auth.uid());
+-- profiles: SPRIN-105 replaces the single self-only policy below with four
+-- verb-split policies, widening SELECT to co-members and leaving every write
+-- self-only. The replacement statements live in the SPRIN-105 section near the
+-- foot of this file, after app_auth and project_members (SPRIN-98) exist --
+-- profiles_read calls app_auth.shares_project_with, which reads
+-- project_members, so it cannot be declared this early without a forward
+-- reference. RLS on profiles is enabled above (with every other table); between
+-- here and that section a fresh run of this file has no policy on profiles at
+-- all, which is fail-closed and therefore safe, not a gap.
 
 -- projects: owner only
 create policy projects_owner on projects
@@ -1469,3 +1486,113 @@ revoke execute on function public.seed_project_admin() from public, anon, authen
 create trigger on_project_created_admin
   after insert on projects
   for each row execute function seed_project_admin();
+
+-- ============================================================
+-- SPRIN-105 — profiles.email and co-member profile reads (epic SPRIN-75, story 2)
+-- ============================================================
+-- Applied 2026-08-16. Widens profiles from "my own row" to "my own row plus
+-- anyone I share a project with" for SELECT; every write stays self-only.
+--
+-- STATEMENT ORDER IS LOAD-BEARING, same reasoning as SPRIN-98 above.
+-- shares_project_with is `language sql`, so its body is fully parsed and
+-- analysed at CREATE time (check_function_bodies defaults to on) and it reads
+-- public.project_members — hence this whole section sits after project_members
+-- exists, not up at the original profiles table declaration. handle_new_user is
+-- `language plpgsql` and only syntax-checked, so its edit (above, at the
+-- original declaration) had no such constraint.
+--
+-- WHAT THIS WIDENS, STATED PLAINLY. Joining a project makes your email address
+-- visible to everyone else in that project. That is what Jira does and it is
+-- the point of the feature, but it is a real disclosure decision rather than an
+-- implementation detail. The boundary established here is: profile visibility
+-- is CO-MEMBERSHIP and nothing wider. Writes do not widen at all.
+--
+-- READ THIS BEFORE COPYING THE PATTERN. SPRIN-98's is_project_member and
+-- is_project_admin consult (select auth.uid()) and NOTHING ELSE, so a caller
+-- can only ever learn about themselves — adding a user_id parameter to either
+-- would turn a harmless self-query into an oracle about other people. That
+-- warning stands; shares_project_with is a THIRD function that does take
+-- another user's id, affordable here for a different, weaker, and precisely
+-- stateable reason:
+--   * one side of the join is pinned to (select auth.uid()) -- it answers "do I
+--     share a project with X", never "do X and Y share a project";
+--   * its answer is exactly co-extensive with the policy that calls it --
+--     anything it reveals about X, a select on X's profile row already
+--     reveals, so it opens no new channel;
+--   * it is not independently reachable -- app_auth is absent from the exposed
+--     schema list, so PostgREST publishes no RPC for it.
+-- Do not read this function as a precedent for "parameters are fine now" —
+-- a future predicate without all three properties needs its own argument.
+--
+-- STABLE, not VOLATILE: the result cannot change within a statement, so the uid
+-- read happens once, and the policy below needs no (select auth.uid()) wrapper
+-- around this particular call.
+create or replace function app_auth.shares_project_with(p_user_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.project_members mine
+    join public.project_members theirs on theirs.project_id = mine.project_id
+    where mine.user_id = (select auth.uid())
+      and theirs.user_id = p_user_id
+  );
+$$;
+
+-- A NEW FUNCTION IN app_auth IS BORN EXECUTE-TO-PUBLIC. There are no default
+-- privileges on this schema — SPRIN-98 tried to add them, the editor reported
+-- "Success" every time, and pg_default_acl still held zero rows for app_auth
+-- afterwards — so the hand-revoke below is the only thing standing between this
+-- function and every signed-in user. anon is deliberately absent: it holds
+-- USAGE on neither the schema nor, after the grants below, anything on profiles.
+revoke execute on function app_auth.shares_project_with(uuid) from public;
+grant  execute on function app_auth.shares_project_with(uuid) to authenticated;
+
+-- One `for all` becomes four, split by verb. The split PRESERVES CURRENT WRITE
+-- BEHAVIOUR VERB FOR VERB — `for all` already covered all four verbs, so
+-- writing them out separately narrows nothing. Self-DELETE stays permitted: it
+-- is a pre-existing footgun (delete your profile row and handle_new_user will
+-- not rebuild it, since it fires on auth.users INSERT alone), but narrowing it
+-- here would be a scope change smuggled in under a widening story. Left as
+-- found.
+--
+-- No TO clause, matching every other policy in this schema — the consequence,
+-- recorded because it has caused a misdiagnosis before, is that a policy
+-- without TO covers anon as well, so a 42501 on an anonymous request has two
+-- possible authors. The revoke below settles it on this table: anon holds
+-- nothing, so it is refused at the privilege layer before any policy runs.
+--
+-- (select auth.uid()), not bare auth.uid(): the old profiles_self was one of
+-- the eight auth_rls_initplan WARNs, and the wrapped form clears that one for
+-- free since the policy is being rewritten anyway. The sweep across the
+-- remaining tables still belongs to SPRIN-75, not here.
+drop policy profiles_self on profiles;
+
+create policy profiles_read on profiles
+  for select
+  using (id = (select auth.uid()) or app_auth.shares_project_with(profiles.id));
+
+create policy profiles_self_insert on profiles
+  for insert
+  with check (id = (select auth.uid()));
+
+create policy profiles_self_update on profiles
+  for update
+  using      (id = (select auth.uid()))
+  with check (id = (select auth.uid()));
+
+create policy profiles_self_delete on profiles
+  for delete
+  using (id = (select auth.uid()));
+
+-- GRANTS. profiles was BORN with anon=arwdDxtm — full CRUD — like every table
+-- in this schema before its grants were deliberately narrowed; survivable while
+-- the table held only a display name, not what we want standing alone in front
+-- of a column of email addresses. This changes nothing OBSERVABLE (anon already
+-- saw zero rows, since id = auth.uid() is id = null for an anonymous caller,
+-- which filters everything) but changes the FAILURE SHAPE a test must assert
+-- on: a privilege refusal is 42501 with data === null, an RLS filter is
+-- error: null, data: []. Table-wide, not column-level, matching SPRIN-98's
+-- reasoning: `revoke ... (col)` against a table-wide grant is a silent no-op,
+-- while a table-level revoke cascades.
+revoke all on profiles from anon;
