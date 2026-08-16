@@ -1490,8 +1490,11 @@ create trigger on_project_created_admin
 -- ============================================================
 -- SPRIN-105 — profiles.email and co-member profile reads (epic SPRIN-75, story 2)
 -- ============================================================
--- Applied 2026-08-16. Widens profiles from "my own row" to "my own row plus
--- anyone I share a project with" for SELECT; every write stays self-only.
+-- PENDING APPLICATION as of 2026-08-16 -- hand-applied by David from
+-- docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql, not yet run.
+-- Update this line to "Applied <date>" once it actually is. Widens profiles from
+-- "my own row" to "my own row plus anyone I share a project with" for SELECT;
+-- every write stays self-only.
 --
 -- STATEMENT ORDER IS LOAD-BEARING, same reasoning as SPRIN-98 above.
 -- shares_project_with is `language sql`, so its body is fully parsed and
@@ -1506,6 +1509,23 @@ create trigger on_project_created_admin
 -- the point of the feature, but it is a real disclosure decision rather than an
 -- implementation detail. The boundary established here is: profile visibility
 -- is CO-MEMBERSHIP and nothing wider. Writes do not widen at all.
+--
+-- "JOINING" OVERSTATES IT -- read this before trusting the sentence above.
+-- Nothing in this schema requires the subject's consent to become a co-member.
+-- members_admin_insert constrains only project_id, not user_id, and
+-- seed_project_admin makes every project creator an admin of their own project
+-- on creation -- so ANY authenticated user can create a project and then INSERT
+-- an arbitrary user_id into project_members for it, with no action, consent or
+-- notification from that user. Once this migration lands, that insert makes the
+-- target's display_name and email readable by every other member of that
+-- project. The ONLY reason this is not exploitable today is that nothing in the
+-- app exposes a uuid oracle -- no search-by-uuid, no listing of every
+-- auth.users.id, nothing that hands an attacker a stranger's id to insert.
+-- SPRIN-102 ("add member by email") is exactly that oracle in reverse -- it
+-- turns "knows a uuid" into "knows an email address" -- and it is SPRIN-102,
+-- not this migration, that owns the decision of whether adding a member should
+-- require that member's consent. The paragraph above describes the intended,
+-- cooperative use of the feature, not an enforced boundary.
 --
 -- READ THIS BEFORE COPYING THE PATTERN. SPRIN-98's is_project_member and
 -- is_project_admin consult (select auth.uid()) and NOTHING ELSE, so a caller
@@ -1524,9 +1544,24 @@ create trigger on_project_created_admin
 -- Do not read this function as a precedent for "parameters are fine now" —
 -- a future predicate without all three properties needs its own argument.
 --
--- STABLE, not VOLATILE: the result cannot change within a statement, so the uid
--- read happens once, and the policy below needs no (select auth.uid()) wrapper
--- around this particular call.
+-- STABLE, not VOLATILE, because the result cannot change within a statement --
+-- that marking is correct and stays. Do NOT read it as "the uid read happens
+-- once per statement" the way it does for is_project_member/is_project_admin
+-- above: those are called with a CONSTANT argument (a single project_id), so
+-- the planner can hoist the call and evaluate it once. shares_project_with
+-- (profiles.id) is called with profiles.id, a PER-ROW Var, so STABLE buys it
+-- nothing here -- Postgres invokes it once per candidate row, and each
+-- invocation re-runs its own (select auth.uid()) InitPlan. Measured with
+-- pg_get_userbyid as a stand-in probe: a Var-argument call showed 693
+-- invocations against a multi-row table, a constant-argument call showed 1.
+--
+-- The policy below still needs no (select auth.uid()) wrapper around THIS call,
+-- but for a narrower reason than "it only runs once": the auth_rls_initplan
+-- advisor matches the literal text `auth.<fn>()` inside a policy body, and this
+-- call site has no such text at all (auth.uid() appears only inside
+-- shares_project_with's own already-wrapped body) -- and separately, a call
+-- whose argument is a per-row Var cannot be hoisted into a scalar subquery
+-- regardless, so the wrapper would not change its evaluation count if added.
 create or replace function app_auth.shares_project_with(p_user_id uuid)
 returns boolean language sql stable security definer set search_path = ''
 as $$
@@ -1566,7 +1601,17 @@ grant  execute on function app_auth.shares_project_with(uuid) to authenticated;
 -- the eight auth_rls_initplan WARNs, and the wrapped form clears that one for
 -- free since the policy is being rewritten anyway. The sweep across the
 -- remaining tables still belongs to SPRIN-75, not here.
-drop policy profiles_self on profiles;
+--
+-- IF EXISTS, unlike the migration file's plain `drop policy`. This doc is meant
+-- to run top to bottom from an empty database, and the original
+-- `profiles_self` policy was removed from its declaration site above (see the
+-- comment there) rather than recreated only to be dropped here -- so by the
+-- time this statement runs in a fresh execution of this file, the policy never
+-- existed and a bare `drop policy` would fail with 42704. In the real,
+-- already-applied database the policy genuinely exists, which is exactly the
+-- case the actual migration file targets -- its bare `drop policy` is the
+-- correct, stronger statement there and must stay that way.
+drop policy if exists profiles_self on profiles;
 
 create policy profiles_read on profiles
   for select

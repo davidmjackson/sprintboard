@@ -12,6 +12,22 @@
 -- decision rather than an implementation detail. The boundary this establishes is:
 -- profile visibility is CO-MEMBERSHIP and nothing wider. Writes do not widen at all.
 --
+-- "JOINING" OVERSTATES IT -- READ THIS BEFORE TRUSTING THE SENTENCE ABOVE. Nothing in
+-- this schema requires the subject's consent to become a co-member. members_admin_insert
+-- constrains only project_id, not user_id, and seed_project_admin makes every project
+-- creator an admin of their own project on creation -- so ANY authenticated user can
+-- create a project and then INSERT an arbitrary user_id into project_members for it, with
+-- no action, consent or notification from that user. Once this migration lands, that
+-- insert makes the target's display_name and email readable by every other member of that
+-- project. The ONLY reason this is not exploitable today is that nothing in the app
+-- exposes a uuid oracle -- there is no search-by-uuid, no listing of every auth.users.id,
+-- nothing that hands an attacker a stranger's id to insert. SPRIN-102 ("add member by
+-- email") is exactly that oracle in reverse: it is what turns "knows a uuid" into "knows
+-- an email address", and it is SPRIN-102, not this migration, that owns the decision of
+-- whether adding a member should require that member's consent. Do not read the sentence
+-- two paragraphs up as a description of an enforced boundary -- it is a description of
+-- the intended, cooperative use of the feature, and the schema does not yet compel it.
+--
 -- ============================================================================
 -- STATEMENT ORDER IS LOAD-BEARING -- do not "tidy" it
 -- ============================================================================
@@ -83,9 +99,22 @@ update profiles p
 -- decision and needs its own argument. Do not read this function as a precedent for
 -- "parameters are fine now".
 --
--- STABLE, not VOLATILE: the result cannot change within a statement, so the uid read
--- happens once. That is also why the policies below need no (select auth.uid()) wrapper
--- around THIS call for auth_rls_initplan purposes.
+-- STABLE, not VOLATILE, because the result cannot change within a statement -- that
+-- volatility marking is correct and stays. But do NOT read it as "the uid read happens
+-- once per statement" the way it does for is_project_member/is_project_admin: those are
+-- called with a CONSTANT argument (a single project_id), so the planner can hoist the
+-- call and evaluate it once. shares_project_with(profiles.id) is called with profiles.id,
+-- a PER-ROW Var, so STABLE buys it nothing here -- Postgres invokes it once per candidate
+-- row, and each invocation re-runs its own (select auth.uid()) InitPlan. Measured with
+-- pg_get_userbyid as a stand-in probe: a Var-argument call showed 693 invocations against
+-- a multi-row table, a constant-argument call showed 1.
+--
+-- The policies below still need no (select auth.uid()) wrapper around THIS call, but for
+-- a narrower reason than "it only runs once": the auth_rls_initplan advisor matches the
+-- literal text `auth.<fn>()` inside a policy body, and this call site has no such text at
+-- all (auth.uid() appears only inside shares_project_with's own already-wrapped body) --
+-- and separately, a call whose argument is a per-row Var cannot be hoisted into a scalar
+-- subquery regardless, so the wrapper would not change its evaluation count if added.
 --
 -- search_path pinned empty, every reference schema-qualified, matching the two siblings.
 create or replace function app_auth.shares_project_with(p_user_id uuid)
