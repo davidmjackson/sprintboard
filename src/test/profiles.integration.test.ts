@@ -164,14 +164,8 @@ describe.skipIf(!hasServiceRoleKey)('profiles visibility is co-membership', () =
     it('lets two members of one project read each other, in BOTH directions', async () => {
       // Both directions, because the predicate is a self-join and a one-directional test
       // would pass on a broken half.
-      const cReadsD = await cClient
-        .from('profiles')
-        .select('id, display_name, email')
-        .eq('id', dId)
-      const dReadsC = await dClient
-        .from('profiles')
-        .select('id, display_name, email')
-        .eq('id', cId)
+      const cReadsD = await cClient.from('profiles').select('id, display_name, email').eq('id', dId)
+      const dReadsC = await dClient.from('profiles').select('id, display_name, email').eq('id', cId)
 
       expect(cReadsD.error).toBeNull()
       expect(cReadsD.data).toEqual([{ id: dId, display_name: 'Co-member D', email: dEmail }])
