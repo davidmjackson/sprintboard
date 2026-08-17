@@ -115,7 +115,15 @@ create table project_counters (
   last_number int not null default 0
 );
 
--- Create the counter row whenever a project is created
+-- Create the counter row whenever a project is created.
+--
+-- SUPERSEDED BY SPRIN-100, at the foot of this file, which re-declares this
+-- function as SECURITY DEFINER. On a fresh apply the later definition wins; this
+-- one is left in place because the table and its trigger belong here and the
+-- redeclaration cannot move earlier — the reason it became definer is that
+-- counters_owner now resolves through app_auth, which does not exist yet at this
+-- point in the file. Read the SPRIN-100 section for why, and do not "fix" the
+-- duplication by deleting either copy.
 create or replace function create_project_counter()
 returns trigger language plpgsql
 set search_path = ''
@@ -408,9 +416,14 @@ create unique index project_statuses_one_initial_per_project
 -- E2E, and a human pasting SQL. Only a trigger covers all four, and it fires in the
 -- parent's transaction, so "a project with no statuses" is not a reachable state.
 --
--- SECURITY DEFINER, following handle_new_user and NOT create_project_counter. That
--- is forced by the select-only policy below: an invoker function's INSERT would be
--- denied. It pays for the privilege the same way — an empty pinned search_path,
+-- SECURITY DEFINER, following handle_new_user. That is forced by the select-only
+-- policy below: an invoker function's INSERT would be denied.
+--
+-- CORRECTED at SPRIN-100: this sentence used to read "and NOT
+-- create_project_counter", contrasting the two. That contrast no longer exists —
+-- SPRIN-100 made create_project_counter definer too, for a closely related
+-- reason (it fires before the membership row that would authorise its insert).
+-- All three of this table's AFTER INSERT triggers are now definer. It pays for the privilege the same way — an empty pinned search_path,
 -- schema-qualified references, and a revoke. It cannot be abused: it only fires
 -- after a projects INSERT that already passed projects_owner's WITH CHECK.
 --
@@ -675,9 +688,20 @@ create index tickets_project_status_idx on tickets(project_id, status);
 --
 -- Deliberately NOT security definer: it runs as the caller, so the update below
 -- is only permitted by the `counters_owner` RLS policy. Atomicity therefore
--- rests on that policy continuing to grant the owner a write. If anyone ever
+-- rests on that policy continuing to grant the WRITER a write. If anyone ever
 -- narrows counters_owner to read-only, ticket creation breaks here — that is
 -- the intended failure, but it will not be obvious from the error.
+--
+-- SPRIN-100 changed who "the writer" is: counters_owner now resolves to project
+-- MEMBERSHIP, not ownership, so any member creating a ticket takes this path and
+-- must keep the counter UPDATE. board-membership.integration.test.ts pins it with
+-- a positive control — a non-owner member's ticket must come back with a
+-- correctly numbered key, which is the only observable proof this update ran.
+--
+-- Note the contrast with create_project_counter, which SPRIN-100 DID make
+-- security definer. That one fires before the membership row it would need
+-- exists; this one runs long afterwards, so it stays an invoker and stays
+-- RLS-governed. The asymmetry is deliberate.
 -- ============================================================
 create or replace function assign_ticket_key()
 returns trigger language plpgsql
@@ -842,15 +866,13 @@ create policy projects_owner on projects
   using (owner_id = auth.uid())
   with check (owner_id = auth.uid());
 
--- project_counters: reachable only via an owned project
-create policy counters_owner on project_counters
-  for all
-  using (exists (select 1 from projects p
-                 where p.id = project_counters.project_id
-                   and p.owner_id = auth.uid()))
-  with check (exists (select 1 from projects p
-                 where p.id = project_counters.project_id
-                   and p.owner_id = auth.uid()));
+-- project_counters: MOVED. SPRIN-100 rewrote counters_owner from ownership to
+-- membership, so it now calls app_auth.is_project_member and cannot be declared
+-- this early -- app_auth and project_members do not exist until the SPRIN-98
+-- section at the foot of this file. Same forward-reference reasoning as
+-- profiles_read above. The live definition is in the SPRIN-100 section at the
+-- foot. Between here and there a fresh run of this file has no policy on
+-- project_counters, which is fail-closed and therefore safe, not a gap.
 
 -- project_statuses: FOUR policies, split by verb, and the split IS the security model.
 --
@@ -1310,25 +1332,12 @@ $$;
 revoke execute on function reorder_project_statuses(uuid, text[]) from public, anon;
 grant  execute on function reorder_project_statuses(uuid, text[]) to authenticated;
 
--- sprints: via owned project
-create policy sprints_owner on sprints
-  for all
-  using (exists (select 1 from projects p
-                 where p.id = sprints.project_id
-                   and p.owner_id = auth.uid()))
-  with check (exists (select 1 from projects p
-                 where p.id = sprints.project_id
-                   and p.owner_id = auth.uid()));
-
--- tickets: via owned project
-create policy tickets_owner on tickets
-  for all
-  using (exists (select 1 from projects p
-                 where p.id = tickets.project_id
-                   and p.owner_id = auth.uid()))
-  with check (exists (select 1 from projects p
-                 where p.id = tickets.project_id
-                   and p.owner_id = auth.uid()));
+-- sprints and tickets: MOVED, for the same forward-reference reason as
+-- counters_owner above. SPRIN-100 rewrote sprints_owner and tickets_owner to call
+-- app_auth.is_project_member, which does not exist until the SPRIN-98 section at
+-- the foot of this file. Both live definitions are in the SPRIN-100 section
+-- there, alongside counters_owner -- the three are one change and are kept
+-- together so a reader sees the whole board-table boundary in one place.
 
 commit;
 
@@ -1516,6 +1525,13 @@ revoke execute on function public.seed_project_admin() from public, anon, authen
 
 -- Fires after on_project_created and before on_project_created_statuses, in name
 -- order. Nothing depends on that; the name states it rather than stumbling into it.
+--
+-- SPRIN-100 KEPT THAT TRUE ON PURPOSE, and it nearly stopped being so. Once
+-- counters_owner resolved to membership, on_project_created (the counter, and an
+-- INVOKER) would have run BEFORE this trigger seeded the row authorising it, and
+-- every project creation would have failed. The fix was to make that function
+-- definer too, NOT to reorder the triggers — precisely so this comment keeps
+-- holding. Revert the definer change and fire order silently becomes load-bearing.
 create trigger on_project_created_admin
   after insert on projects
   for each row execute function seed_project_admin();
@@ -1714,3 +1730,94 @@ create policy profiles_self_delete on profiles
 -- reasoning: `revoke ... (col)` against a table-wide grant is a silent no-op,
 -- while a table-level revoke cascades.
 revoke all on profiles from anon;
+
+-- ============================================================
+-- SPRIN-100 — the board tables resolve to membership (epic SPRIN-75, story 3)
+-- ============================================================
+-- Applied 2026-08-17. counters_owner, sprints_owner and tickets_owner move from
+-- `projects.owner_id = auth.uid()` to project MEMBERSHIP, with NO role predicate:
+-- both 'admin' and 'member' do board work. Their original owner-scoped bodies
+-- sat in the main body of this file and have been replaced there by pointers to
+-- this section, because they now call app_auth.is_project_member and would be a
+-- forward reference declared that early. Same treatment as profiles_read.
+--
+-- THE POLICY NAMES STILL SAY "_owner" AND NO LONGER MEAN IT. Kept because
+-- SPRIN-100's acceptance criteria enumerate all three by name and SPRIN-103 and
+-- SPRIN-104 will reference them. Read the predicate, not the name.
+--
+-- ALL THREE STAY SINGLE `for all` POLICIES WITH ONE PREDICATE IN BOTH CLAUSES,
+-- and that is load-bearing rather than tidy. completeSprint's guard in
+-- src/lib/sprints.ts is correct ONLY because read and write on `sprints` are the
+-- same question: the guard reads a sprint's status, then writes, and if read ever
+-- became broader than write a caller could pass the guard and reach the write.
+-- The isolation suite would NOT flag that. It is also why David rejected a
+-- read-only viewer role for the whole epic. Do not split these per verb.
+--
+-- WHY `to authenticated`, WHICH THE OWNER-SCOPED ORIGINALS DID NOT CARRY. These
+-- three tables grant anon full CRUD (anon=arwdDxtm), and a policy with no TO
+-- clause covers `public`, anon included. Policy expressions are evaluated as the
+-- CALLING role, and anon holds no USAGE on app_auth and no EXECUTE on its
+-- functions — so without this clause an anonymous request would raise
+-- `permission denied for schema app_auth` (42501) where it used to receive a
+-- clean empty array. The cron-job.org keepalive does an anonymous GET on
+-- /rest/v1/tickets and expects 200 with a JSON array; breaking it pauses the
+-- free-tier project after ~7 days, and a paused database blocks EVERY merge.
+-- With `to authenticated` anon matches no policy, RLS filters it to zero rows,
+-- and the contract is preserved exactly while anon's reach is strictly narrower.
+-- keepalive.integration.test.ts asserts the contract at the cron's own URL;
+-- board-membership.integration.test.ts asserts the shape on all three tables.
+create policy counters_owner on project_counters
+  for all
+  to authenticated
+  using      (app_auth.is_project_member(project_counters.project_id))
+  with check (app_auth.is_project_member(project_counters.project_id));
+
+create policy sprints_owner on sprints
+  for all
+  to authenticated
+  using      (app_auth.is_project_member(sprints.project_id))
+  with check (app_auth.is_project_member(sprints.project_id));
+
+create policy tickets_owner on tickets
+  for all
+  to authenticated
+  using      (app_auth.is_project_member(tickets.project_id))
+  with check (app_auth.is_project_member(tickets.project_id));
+
+-- create_project_counter BECOMES SECURITY DEFINER, and this is the bootstrap
+-- problem arriving one story before the story that documents it.
+--
+-- Three AFTER INSERT ... FOR EACH ROW triggers exist on projects, and same-timing
+-- triggers fire in NAME ORDER. `on_project_created` is a prefix of
+-- `on_project_created_admin`, so the counter insert runs FIRST — before the
+-- membership row that would authorise it exists. As an invoker it would fail
+-- counters_owner's WITH CHECK and every project creation would fail.
+--
+-- Its two sibling triggers on this table, seed_project_admin and
+-- seed_project_statuses, are already definer for exactly this reason, so this is
+-- consistency rather than a new privilege shape. It inserts new.id and nothing
+-- caller-controlled, so its authority is inherited from the projects INSERT
+-- policy that just admitted the row.
+--
+-- Rejected: renaming the trigger to sort after the seeding. That would make
+-- alphabetical fire order load-bearing and invisible, and would falsify SPRIN-98's
+-- own comment that nothing depends on that ordering.
+--
+-- CREATE OR REPLACE PRESERVES AN EXISTING ACL. This function was
+-- EXECUTE-to-public; a definer function must not keep a grant it does not need,
+-- so the revoke below brings it to {postgres, service_role}, the same shape as
+-- both definer siblings. It returns trigger, so PostgREST cannot call it as an
+-- RPC in any case — defence in depth, not the closing of a live hole.
+create or replace function create_project_counter()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.project_counters (project_id) values (new.id);
+  return new;
+end;
+$$;
+
+revoke execute on function public.create_project_counter() from public, anon, authenticated;
