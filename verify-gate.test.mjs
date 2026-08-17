@@ -426,9 +426,11 @@ describe('the verify gate is composed of exactly the steps it claims', () => {
  * `'**\/verify-gate.test.mjs'` makes this guard delete itself.
  *
  * So the assertion is on the COLLECTED SET, derived from vitest itself, not on a
- * string in package.json. It names the seven live suites individually rather than
+ * string in package.json. It names the live suites individually rather than
  * counting them, because a count moves every time a story adds a test file and a
- * name does not. It also requires this file's own presence, which is what closes
+ * name does not. (This sentence used to say "the seven live suites" and was stale
+ * by two the moment SPRIN-105 landed — a number here is the same decay the array
+ * itself exists to avoid, so it no longer carries one.) It also requires this file's own presence, which is what closes
  * the self-deletion route.
  */
 describe('npm test really collects the live integration suites', () => {
@@ -449,6 +451,16 @@ describe('npm test really collects the live integration suites', () => {
     // stayed green. `it.each` below is an "at least these" assertion, so an unregistered
     // suite is invisible to it BY CONSTRUCTION — the array is not a list, it is the gate.
     'src/test/project-members.integration.test.ts',
+    // SPRIN-105. Added here by SPRIN-100, one story LATE: SPRIN-105 shipped this suite,
+    // moved CLAUDE.md's prose tripwire from "eight more files" to "nine", and left this
+    // array at eight -- the same miss SPRIN-98's note above describes, repeated by the
+    // very next story to add a live suite. The prose and the array are two halves of one
+    // control and only the array is executable.
+    'src/test/profiles.integration.test.ts',
+    // SPRIN-100. The board tables (project_counters, sprints, tickets) resolving to
+    // membership rather than ownership, plus the anon empty-array contract the production
+    // keepalive cron depends on.
+    'src/test/board-membership.integration.test.ts',
   ]
 
   const collected = (() => {
@@ -466,6 +478,26 @@ describe('npm test really collects the live integration suites', () => {
 
   it.each(LIVE_SUITES)('collects %s', (suite) => {
     expect(collected.some((line) => line.endsWith(suite))).toBe(true)
+  })
+
+  it('registers EVERY live suite, not merely the ones listed', () => {
+    // `it.each` above is an "at least these" assertion, so it cannot see a suite that
+    // exists but was never added to the array — which is the exact failure SPRIN-98's and
+    // SPRIN-105's notes above both describe, one story apart. Mutation-proven while
+    // fixing the second one: omitting a new suite from LIVE_SUITES left this whole file
+    // green at 43 passed.
+    //
+    // Counting collected suites against the array's length closes it structurally, so the
+    // next story that adds a live suite is stopped by a red test rather than by
+    // remembering to read a paragraph in CLAUDE.md. The failure message names the
+    // difference, because "expected 11 to be 10" on its own would send someone hunting.
+    const collectedLive = collected.filter((line) => line.endsWith('.integration.test.ts'))
+    const unregistered = collectedLive.filter(
+      (line) => !LIVE_SUITES.some((suite) => line.endsWith(suite)),
+    )
+
+    expect(unregistered, `live suites collected but absent from LIVE_SUITES`).toEqual([])
+    expect(collectedLive).toHaveLength(LIVE_SUITES.length)
   })
 
   it('collects this guard file itself', () => {

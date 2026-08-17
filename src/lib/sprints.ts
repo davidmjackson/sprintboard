@@ -31,10 +31,10 @@ export function defaultSprintName(existing: readonly Sprint[]): string {
  *
  * `status` is never sent: the column defaults to `'future'`, which is exactly S6.1's AC —
  * so the AC is satisfied by the database, not by the client. `sprints` has no `owner_id`;
- * the `sprints_owner` RLS policy scopes writes through the project, so a cross-tenant
- * insert is rejected by the database, not by this function. A failure is not
- * user-correctable (no unique constraint is reachable here — duplicate names are legal),
- * so the error result is a single `'unknown'`.
+ * the `sprints_owner` RLS policy scopes writes through the caller's MEMBERSHIP of the
+ * project (SPRIN-100), so a cross-tenant insert is rejected by the database, not by this
+ * function. A failure is not user-correctable (no unique constraint is reachable here —
+ * duplicate names are legal), so the error result is a single `'unknown'`.
  */
 export type CreateSprintResult = { ok: true; sprint: Sprint } | { ok: false; error: 'unknown' }
 
@@ -73,9 +73,13 @@ export async function createSprint(input: {
 /**
  * The sprints of one project, newest first.
  *
- * The `project_id` filter is required, not optional: `sprints_owner` RLS scopes the select
- * to the owner, but the owner has many projects — without the filter this returns every
- * project's sprints. Same reasoning as `listTickets`.
+ * The `project_id` filter is required, not optional: `sprints_owner` RLS scopes the select to
+ * the caller's project memberships, but a caller belongs to many projects — without the filter
+ * this returns every one of their projects' sprints. Same reasoning as `listTickets`.
+ *
+ * SPRIN-100 made that set STRICTLY WIDER, not merely differently named: it used to be the
+ * projects you own, and is now every project you are a member of. The filter was already
+ * load-bearing and is more so now.
  *
  * This throws rather than resolving to `[]` on error, and that is the load-bearing part: `[]`
  * is indistinguishable from "this project has no sprints", so a caller handed one could not
@@ -140,8 +144,8 @@ async function requireSprintStatus(id: string, expected: SprintStatus): Promise<
  * is the index rejecting a second active sprint — the user can finish the current one and
  * retry — so it gets its own tag and a clear message at the UI. Everything else (an RLS
  * zero-row match on a cross-tenant or missing id, a network error) is not user-correctable
- * and collapses to `'unknown'`. RLS (`sprints_owner`) scopes the write through the owned
- * project, exactly as in the browser.
+ * and collapses to `'unknown'`. RLS (`sprints_owner`) scopes the write through a project
+ * the caller is a MEMBER of, exactly as in the browser.
  */
 export type StartSprintResult =
   | { ok: true; sprint: Sprint }
@@ -216,8 +220,9 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  * `status = 'active'` filter on the flip is a compare-and-swap for the window between the
  * read and the write; a lost race there is `unknown` and self-corrects on retry.
  *
- * RLS (`sprints_owner` / `tickets_owner`) scopes both writes through the owned project, but for
- * a cross-tenant caller neither write is what stops the mutation: `requireSprintStatus`'s
+ * RLS (`sprints_owner` / `tickets_owner`) scopes both writes through the caller's project
+ * MEMBERSHIP, but for a cross-tenant caller neither write is what stops the mutation:
+ * `requireSprintStatus`'s
  * precondition read is RLS-scoped too, so a cross-tenant id matches zero rows there and the
  * function returns `'unknown'` before either write runs. (Before this guard existed, the bulk
  * update was the thing that actually protected a cross-tenant sprint — it filtered to zero rows
@@ -229,12 +234,21 @@ export async function startSprint(id: string): Promise<StartSprintResult> {
  *
  * This safety depends on `sprints_owner` being a single `for all` policy: the same predicate
  * governs the guard's `select` and both writes, so "can read this sprint's status" and "can
- * write it" are the same fact today. Rung 3's membership model (CLAUDE.md's forward-compat
- * rules) could break that equivalence — e.g. a member who can `select` a sprint but not
- * `update` it would pass this guard and reach the ticket move first. RLS would still filter
- * that `update` to zero rows, so this stays defence-in-depth rather than an actual hole, but
- * whoever writes that migration needs to know the guard currently assumes read and write are
- * co-extensive, and should re-check this function once they aren't.
+ * write it" are the same fact.
+ *
+ * SPRIN-100 IS THE MIGRATION THIS PARAGRAPH USED TO WARN ABOUT, and it preserved the property
+ * rather than breaking it. `sprints_owner` is still ONE `for all` policy; only its predicate
+ * changed, from `projects.owner_id = auth.uid()` to `app_auth.is_project_member(project_id)`,
+ * and that one predicate still governs `USING` and `WITH CHECK` alike. Read and write remain
+ * co-extensive, so this guard holds for exactly the reason it always did. That is also why
+ * David rejected a read-only `viewer` role for the whole epic: a member who could `select` a
+ * sprint but not `update` it would pass this guard and reach the ticket move first.
+ *
+ * So the warning has not been discharged, only narrowed — it now belongs to whoever might
+ * SPLIT this policy by verb. `board-membership.integration.test.ts` pins the equivalence
+ * directly, so a split goes red there rather than silently disarming this function. Do not
+ * delete that test on the grounds that it looks redundant; it is the only thing standing
+ * between a verb-split and a guard that no longer guards.
  */
 export type CompleteSprintResult =
   | { ok: true; sprint: Sprint; returnedTickets: Ticket[] }

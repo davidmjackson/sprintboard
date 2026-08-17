@@ -32,9 +32,10 @@ export function ticketInsertPayload(input: TicketInsert): TablesInsert<'tickets'
  * rows through the composite `tickets_status_fk` rather than against a global check
  * constraint. That is the whole point of keying the fk on the slug — no ticket row, and
  * no insert path, had to change. `tickets` has no `owner_id`; the `tickets_owner` RLS
- * policy scopes writes through the project, so a cross-tenant insert is rejected by the
- * database, not by this function. A failure is not user-correctable (no per-field unique
- * constraint reachable here), so the error result is a single `'unknown'`. `parentEpicId`
+ * policy scopes writes through the caller's MEMBERSHIP of the project (SPRIN-100), so a
+ * cross-tenant insert is rejected by the database, not by this function. A failure is not
+ * user-correctable (no per-field unique constraint reachable here), so the error result is
+ * a single `'unknown'`. `parentEpicId`
  * is optional and set when a ticket is created under an epic; the composite fk
  * `tickets_epic_fk` keeps the parent in the same project, which holds because the caller
  * passes the epic's own project id.
@@ -79,9 +80,10 @@ export async function createTicket(input: {
 /**
  * The tickets of one project, number-ordered.
  *
- * The `project_id` filter is required, not optional: `tickets_owner` RLS scopes the
- * select to the owner, but the owner has many projects — without the filter this
- * returns every project's tickets.
+ * The `project_id` filter is required, not optional: `tickets_owner` RLS scopes the select
+ * to the caller's project memberships, but a caller belongs to many projects — without the
+ * filter this returns every one of their projects' tickets. SPRIN-100 made that set
+ * strictly wider (membership, not ownership), so the filter matters more than it used to.
  *
  * This throws rather than resolving to `[]` on error, and that is load-bearing: `[]` is
  * indistinguishable from "this project has no tickets", so a caller handed one cannot tell a
@@ -105,8 +107,8 @@ export async function listTickets(projectId: string): Promise<Ticket[]> {
  * timestamps are excluded by `TicketUpdate`, so the immutable and trigger-owned columns
  * cannot be sent. `updated_at` is refreshed by the `tickets_set_updated_at` trigger, so
  * the returned row carries the new timestamp. RLS (`tickets_owner`) scopes the write
- * through the owned project: a cross-tenant update matches zero rows, `.single()` then
- * errors, and we report the single non-user-correctable `'unknown'`.
+ * through a project the caller is a MEMBER of: a cross-tenant update matches zero rows,
+ * `.single()` then errors, and we report the single non-user-correctable `'unknown'`.
  */
 export type UpdateTicketResult = { ok: true; ticket: Ticket } | { ok: false; error: 'unknown' }
 
@@ -123,8 +125,9 @@ export async function updateTicket(id: string, patch: TicketUpdate): Promise<Upd
 }
 
 /**
- * Delete a ticket by id. RLS (`tickets_owner`, `FOR ALL`) scopes the delete through the
- * owned project, so a cross-tenant delete matches ZERO rows rather than raising. We
+ * Delete a ticket by id. RLS (`tickets_owner`, `FOR ALL`) scopes the delete through a
+ * project the caller is a MEMBER of, so a cross-tenant delete matches ZERO rows rather
+ * than raising. We
  * `.select()` the deleted rows and treat an empty result set as a failure — a delete that
  * removed nothing is not a success. Deleting a parent epic nulls its children's
  * `parent_epic_id` (the `tickets_epic_fk` `on delete set null`), and `project_counters` is
@@ -167,9 +170,9 @@ export function parseBlockReason(raw: string): BlockReasonResult {
  * the reconciled row we return carries the server timestamp — never guess it client-side.
  * The reason is validated here first: an invalid one never reaches the database and is
  * reported as `invalid_reason` with a message. RLS (`tickets_owner`) scopes the write
- * through the owned project, so a cross-tenant block matches zero rows, `.single()` then
- * errors, and we report `'unknown'`. Blocking does NOT change `status`: a blocked ticket
- * stays in its board column (S4.4 AC), it is a flag, never a column.
+ * through a project the caller is a MEMBER of, so a cross-tenant block matches zero rows,
+ * `.single()` then errors, and we report `'unknown'`. Blocking does NOT change `status`: a
+ * blocked ticket stays in its board column (S4.4 AC), it is a flag, never a column.
  */
 export type BlockTicketResult =
   | { ok: true; ticket: Ticket }

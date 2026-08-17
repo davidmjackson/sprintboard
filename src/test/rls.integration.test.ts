@@ -545,12 +545,19 @@ describe.skipIf(!hasRlsCredentials)('RLS isolation between two users', () => {
       expect(data).toBeNull()
       // OBSERVED against the live database: 42501 (RLS violation on
       // tickets_owner's WITH CHECK), not 23502. Postgres evaluates RLS before
-      // table constraints, so the RLS violation fires first even though
-      // assign_ticket_key (SECURITY INVOKER) would independently fail here too:
-      // B's RLS makes the project_counters UPDATE match zero rows, leaving
-      // `number` NULL. If a future change ever surfaced 23502 instead, that
-      // would mean RLS stopped firing first — re-verify against the DB, don't
-      // just widen this assertion.
+      // table constraints, so the RLS violation fires first.
+      //
+      // CORRECTED AT SPRIN-100b. This comment used to add that assign_ticket_key
+      // "(SECURITY INVOKER) would independently fail here too", B's RLS making
+      // the counter UPDATE match zero rows and leaving `number` NULL — a second,
+      // independent refusal behind the policy. That is no longer true: the
+      // function is SECURITY DEFINER and `project_counters` is owned by postgres
+      // with relforcerowsecurity = false, so the counter UPDATE now succeeds for
+      // B and is rolled back with the failed statement. tickets_owner's WITH
+      // CHECK is the ONLY thing refusing this insert. The named 23502 diagnostic
+      // below can therefore no longer occur at all — a 23502 here would mean
+      // something new, not "RLS stopped firing first". Re-verify against the DB
+      // rather than widening this assertion.
       expect(error!.code).toBe('42501')
 
       // And nothing landed.

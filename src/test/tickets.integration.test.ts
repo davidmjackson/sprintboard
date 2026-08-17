@@ -93,9 +93,14 @@ describe.skipIf(!hasRlsCredentials)('S4.1 ticket-creation contract', () => {
   }, 30_000)
 
   it("rejects a ticket inserted into another owner's project (cross-tenant)", async () => {
-    // Signed in as B, inserting into A's project: the counters_owner policy denies the
-    // counter update (number -> NULL -> NOT NULL abort) and tickets_owner's with-check
-    // denies the row. Either way the insert fails and nothing is created.
+    // Signed in as B, inserting into A's project. `tickets_owner`'s with-check denies the
+    // row, and since SPRIN-100b that is the ONLY mechanism doing so.
+    //
+    // This comment used to say counters_owner ALSO denied the counter update
+    // (number -> NULL -> NOT NULL abort) and hedged with "either way". Exactly one of the
+    // two now exists: assign_ticket_key is SECURITY DEFINER, so B's counter update succeeds
+    // and is rolled back with the failed statement. An "either way" hedge over one surviving
+    // mechanism can never flag the loss of the other, which is why it is gone.
     const { data, error } = await b
       .from('tickets')
       .insert(ticketInsertPayload({ project_id: projectId, summary: 'Intruder' }))
