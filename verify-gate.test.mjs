@@ -480,6 +480,26 @@ describe('npm test really collects the live integration suites', () => {
     expect(collected.some((line) => line.endsWith(suite))).toBe(true)
   })
 
+  it('registers EVERY live suite, not merely the ones listed', () => {
+    // `it.each` above is an "at least these" assertion, so it cannot see a suite that
+    // exists but was never added to the array — which is the exact failure SPRIN-98's and
+    // SPRIN-105's notes above both describe, one story apart. Mutation-proven while
+    // fixing the second one: omitting a new suite from LIVE_SUITES left this whole file
+    // green at 43 passed.
+    //
+    // Counting collected suites against the array's length closes it structurally, so the
+    // next story that adds a live suite is stopped by a red test rather than by
+    // remembering to read a paragraph in CLAUDE.md. The failure message names the
+    // difference, because "expected 11 to be 10" on its own would send someone hunting.
+    const collectedLive = collected.filter((line) => line.endsWith('.integration.test.ts'))
+    const unregistered = collectedLive.filter(
+      (line) => !LIVE_SUITES.some((suite) => line.endsWith(suite)),
+    )
+
+    expect(unregistered, `live suites collected but absent from LIVE_SUITES`).toEqual([])
+    expect(collectedLive).toHaveLength(LIVE_SUITES.length)
+  })
+
   it('collects this guard file itself', () => {
     // Excluding this file from collection would otherwise disarm every assertion
     // above in a single line of vite.config.ts, silently.

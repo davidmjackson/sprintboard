@@ -280,15 +280,24 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-100 board tables resolve to membershi
     }, 30_000)
 
     /**
-     * THE ASSERTION THAT MATTERS MOST IN THIS FILE, and it does not look like it.
+     * THE END-TO-END CONTROL: a non-owner MEMBER gets a correctly numbered key.
      *
-     * `assign_ticket_key` is deliberately NOT security definer (schema, lines 686-705), so
-     * its `update project_counters ... returning last_number` runs as the caller and is
-     * permitted only by `counters_owner`. If that policy ever stops granting a member the
-     * WRITE -- narrowed to read-only, or split so that read is broader than write -- the
-     * update matches zero rows, `last_number` comes back NULL, and the trigger assigns a
-     * NULL key that the NOT NULL constraint then aborts. The key is the only observable
-     * proof the counter update ran at all.
+     * WHAT THIS NO LONGER DETECTS, stated first because an earlier version of this docblock
+     * claimed the opposite and was shipped on this very branch. It said `assign_ticket_key`
+     * is "deliberately NOT security definer", so its counter UPDATE is permitted only by
+     * `counters_owner`, and that narrowing that policy would surface here as a NULL key and
+     * a NOT NULL abort. That tripwire is now STRUCTURALLY UNREACHABLE, by two independent
+     * mechanisms: SPRIN-100b made this function SECURITY DEFINER, and `project_counters` is
+     * owned by `postgres` with `relforcerowsecurity = false`, so the owner bypasses RLS on
+     * it regardless. Narrowing `counters_owner` would NOT redden this test. Nothing else
+     * detects it either -- that is a real, accepted loss, argued in
+     * docs/migrations/sprin-100b-ticket-key-definer.sql.
+     *
+     * What it DOES pin, which is still worth a test: the whole membership path end to end.
+     * A member who owns nothing inserts a ticket, `tickets_owner`'s WITH CHECK admits it,
+     * both triggers run, and the row comes back with the right key and number. That covers
+     * the policy admitting the insert, the counter advancing, and the two definer functions
+     * still being attached and functional -- reverting either definer conversion reddens it.
      *
      * The expected number is READ FROM THE COUNTER first rather than hardcoded. Hardcoding
      * `-3` would couple this test to how many tickets the fixture happens to create, and
@@ -390,15 +399,30 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-100 board tables resolve to membershi
     }, 30_000)
 
     it('is refused a ticket insert, and the refusal RAISES', async () => {
+      // Bracket the refused insert with the counter, so this test says something about the
+      // ROLLBACK and not only about the refusal. Since SPRIN-100b the definer trigger really
+      // does increment `last_number` for a stranger; the only thing putting it back is the
+      // failed statement aborting. Without these two reads that is asserted nowhere, and the
+      // schema doc's claim that this test covers "both halves" would be an overclaim.
+      const counterBefore = await admin
+        .from('project_counters')
+        .select('last_number')
+        .eq('project_id', projectId)
+        .single()
+
       const { error } = await sClient
         .from('tickets')
         .insert(ticketInsertPayload({ project_id: projectId, summary: 'Written by a stranger' }))
 
-      // INSERT is governed by WITH CHECK, which raises rather than filtering. Postgres runs
-      // the RLS WITH CHECK before the tuple's NOT NULL constraints, so tickets_owner refuses
-      // first and 42501 wins over the 23502 that `assign_ticket_key` would otherwise produce
-      // (its counter update matches no row for a stranger, so `number` would arrive NULL).
-      // Both are genuine refusals; only one of them is the POLICY, and this pins that one.
+      // INSERT is governed by WITH CHECK, which raises rather than filtering.
+      //
+      // `tickets_owner` is now the SOLE control on this path. Before SPRIN-100b there was a
+      // second, independent refusal behind it -- assign_ticket_key ran as the caller, so a
+      // stranger's counter UPDATE matched no row and the NULL key aborted with 23502 even if
+      // RLS had let the row through. That is gone: the function is SECURITY DEFINER, so the
+      // counter UPDATE now succeeds for a stranger too (and is rolled back with the failed
+      // statement). Do not read this test as proving defence in depth. It proves the policy,
+      // which is why it asserts the row-level-security MESSAGE and not merely the 42501 code.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
       expect(error?.message).toMatch(/violates row-level security policy/)
 
@@ -409,6 +433,15 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-100 board tables resolve to membershi
         .eq('project_id', projectId)
         .eq('summary', 'Written by a stranger')
       expect(after.data).toEqual([])
+
+      // ... and the counter is where it started, so the definer trigger's increment was
+      // rolled back rather than leaking a number out of the project's sequence.
+      const counterAfter = await admin
+        .from('project_counters')
+        .select('last_number')
+        .eq('project_id', projectId)
+        .single()
+      expect(counterAfter.data!.last_number).toBe(counterBefore.data!.last_number)
     }, 30_000)
 
     it('is refused a sprint insert, and the refusal RAISES', async () => {
@@ -552,6 +585,56 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-100 board tables resolve to membershi
 
       const ownProject = await mClient.from('tickets').select('id').eq('project_id', projectId)
       expect(ownProject.data?.length).toBeGreaterThan(0)
+    }, 30_000)
+
+    /**
+     * The counter WRITE across the boundary, which the block above does not cover -- it
+     * checks a cross-project counter SELECT and a cross-project tickets UPDATE, but nothing
+     * anywhere performs an authenticated write to `project_counters`.
+     *
+     * Today a predicate widening cannot open this without also opening the SELECT that is
+     * already pinned above, because `counters_owner` is a single `for all` with ONE
+     * expression. The gap opens under a structural VERB SPLIT of that policy -- which is
+     * exactly what an `auth_rls_initplan` sweep would once have done to it. Cheap insurance
+     * against the one change most likely to be made by someone optimising rather than
+     * designing.
+     *
+     * `authenticated` holds `arwdDxtm` on this table with no column ACL, so a zero-row
+     * result measures the POLICY and not a missing grant -- the positive control below
+     * proves the grant by exercising it.
+     */
+    it("cannot rewind another project's counter, but can write its own", async () => {
+      const foreign = await mClient
+        .from('project_counters')
+        .update({ last_number: 0 })
+        .eq('project_id', otherProjectId)
+        .select('project_id')
+      expect(foreign.error).toBeNull()
+      expect(foreign.data).toEqual([])
+
+      const intact = await admin
+        .from('project_counters')
+        .select('last_number')
+        .eq('project_id', otherProjectId)
+        .single()
+      expect(intact.data!.last_number).toBeGreaterThan(0)
+
+      // POSITIVE CONTROL, and the only authenticated counter WRITE in the suite. Without it
+      // a blanket denial of every counter update would pass the assertion above. Written as
+      // a no-op increment-then-restore so it cannot corrupt the key sequence for any test
+      // that runs after it.
+      const own = await admin
+        .from('project_counters')
+        .select('last_number')
+        .eq('project_id', projectId)
+        .single()
+      const bumped = await mClient
+        .from('project_counters')
+        .update({ last_number: own.data!.last_number })
+        .eq('project_id', projectId)
+        .select('project_id')
+      expect(bumped.error).toBeNull()
+      expect(bumped.data).toEqual([{ project_id: projectId }])
     }, 30_000)
   })
 

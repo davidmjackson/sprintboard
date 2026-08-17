@@ -132,6 +132,16 @@
 -- positive control: a non-owner member creating a ticket must receive a correctly
 -- numbered key.
 --
+-- SUPERSEDED, on this same branch, by sprin-100b-ticket-key-definer.sql. The
+-- paragraph above is left as written because a migration header is a historical
+-- record, but every claim in it about assign_ticket_key is now false: the function
+-- IS security definer, its counter UPDATE no longer depends on counters_owner (and
+-- could not, since project_counters is owned by postgres with relforcerowsecurity
+-- = false), and the positive control it names now pins the membership path end to
+-- end rather than that policy. It had to change because the same function also
+-- READS projects, which stays owner-scoped until SPRIN-101 -- so a member got a
+-- NULL key. See that file's header for the full argument.
+--
 --
 -- 4. POLICY NAMES ARE DELIBERATELY UNCHANGED
 --
@@ -235,8 +245,10 @@ commit;
 --    seven and should clear, because a STABLE definer predicate takes the
 --    auth.uid() read out of the per-row path.
 --
---    EXPECT 12 performance lints and 4 auth_rls_initplan WARNs across three
---    tables: projects (projects_owner) and project_statuses (three policies).
+--    EXPECT 12 performance lints and 4 auth_rls_initplan WARNs across TWO
+--    tables: projects (projects_owner, one) and project_statuses (three). An
+--    earlier draft of this line said "three tables" while naming two; 1 + 3 = 4
+--    across two. Measured after applying: two.
 --    ADD NO NEW LINTS. Re-derive with get_advisors and update CLAUDE.md's
 --    baseline paragraph with the measured figures, not these predicted ones.
 --

@@ -159,6 +159,13 @@ is deliberately **not** SECURITY DEFINER, so its `project_counters` UPDATE is pe
 grants it, and a positive control proves it: a non-owner member creating a ticket must receive a
 correctly numbered key.
 
+> **SUPERSEDED during implementation, by `sprin-100b`.** The paragraph above is left as the
+> design said it, but it did not survive contact. `assign_ticket_key` also **reads `projects`**,
+> which stays owner-scoped until SPRIN-101, so a member's ticket insert failed with a NULL `key`.
+> The function is now SECURITY DEFINER, which knowingly gives up the `counters_owner` tripwire
+> this paragraph describes. The positive control still exists and still earned its place — it is
+> what caught the defect — but what it pins is the membership path end to end, not that policy.
+
 ## Expected advisor delta
 
 Baseline re-derived 2026-08-17 with `get_advisors`, before any change: **1 security WARN**
@@ -168,7 +175,8 @@ and **7 `auth_rls_initplan` WARNs** across five tables.
 Three of those seven are `counters_owner`, `sprints_owner` and `tickets_owner`. A `STABLE`
 definer predicate takes the `auth.uid()` read out of the per-row path, so they should clear —
 the same mechanism that kept SPRIN-98's four new policies off the list. Expected after:
-**12 performance lints, 4 WARNs across three tables** (`projects`, `project_statuses` ×3).
+**12 performance lints, 4 WARNs across two tables** (`projects` ×1, `project_statuses` ×3 — an
+earlier draft of this line said "three tables" while naming two).
 
 Re-derive with `get_advisors` after applying and update `CLAUDE.md`'s baseline. Do not trust
 this paragraph; it is a prediction, and `unused_index` has already taught this project that a

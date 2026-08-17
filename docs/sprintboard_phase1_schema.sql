@@ -580,9 +580,19 @@ create table tickets (
   -- overwrites them. The defaults exist purely so the column is not "required"
   -- in the generated TypeScript Insert type — without them, the type system
   -- demands a key from the client, which is how you end up generating keys
-  -- client-side. The trigger still assigns NULL when the counter update matches
-  -- no row (a cross-tenant insert), and NOT NULL then aborts the statement.
-  -- That abort is a security property. Do not add a default that hides it.
+  -- client-side.
+  --
+  -- CORRECTED AT SPRIN-100b, and this one mattered: these lines used to end
+  -- "the trigger still assigns NULL when the counter update matches no row (a
+  -- cross-tenant insert), and NOT NULL then aborts the statement. That abort is
+  -- a security property. Do not add a default that hides it." The abort no
+  -- longer happens. assign_ticket_key is SECURITY DEFINER, and project_counters
+  -- is owned by postgres with relforcerowsecurity = false, so the counter update
+  -- matches for ANY caller and `number` is never NULL on this path. The security
+  -- property that remains is tickets_owner's WITH CHECK, which refuses the row
+  -- before the constraint layer is reached. Instructing a future reader to
+  -- preserve a deleted control is worse than saying nothing, which is why this
+  -- says what actually holds instead.
   number         int  not null default 0,       -- the N in PROJECTKEY-N
   key            text not null default '',      -- e.g. SPB-14
   summary        text not null,
@@ -736,15 +746,20 @@ begin
 end;
 $$;
 
+create trigger on_ticket_insert
+  before insert on tickets
+  for each row execute function assign_ticket_key();
+
 -- A definer function must not keep an EXECUTE grant it does not need, and this one
 -- needs none: Postgres checks EXECUTE on a trigger function at CREATE TRIGGER time,
 -- not on each fire, so revoking it does not stop the trigger. Same shape as
 -- create_project_counter, seed_project_admin and seed_project_statuses.
+--
+-- AFTER the create trigger above, deliberately, and matching every sibling. Because
+-- the check happens at CREATE TRIGGER time, revoking first is harmless only while
+-- this file is applied as the function's owner. Any other role would fail on the
+-- trigger it just lost the privilege to create.
 revoke execute on function assign_ticket_key() from public, anon, authenticated;
-
-create trigger on_ticket_insert
-  before insert on tickets
-  for each row execute function assign_ticket_key();
 
 -- ============================================================
 -- New ticket status resolution  (SPRIN-80)
@@ -791,8 +806,14 @@ create trigger resolve_initial_ticket_status
 -- assign_ticket_key only fires BEFORE INSERT, so nothing stopped an owner (or a
 -- bug) from UPDATE-ing key or number to anything at all, desyncing them from
 -- project_counters and destroying the PROJECTKEY-N invariant. RLS does not help:
--- tickets_owner grants the owner FOR ALL over their own rows. Owner-scoped means
--- the damage is self-inflicted, but CLAUDE.md treats the key as an invariant.
+-- tickets_owner grants FOR ALL over every row the caller can reach.
+--
+-- "Owner-scoped means the damage is self-inflicted" was the rest of this sentence
+-- until SPRIN-100, and it is no longer true — tickets_owner resolves to MEMBERSHIP,
+-- so the rows in reach include other people's work in a shared project. The control
+-- itself (this trigger) is unchanged and still holds; only the reason it seemed
+-- unimportant has rotted. Note what the trigger does NOT pin: `project_id`. See the
+-- reparent follow-up in docs/HANDOVER.md.
 --
 -- Silently restoring beats raising: a PATCH that includes the whole row (as a
 -- naive client will) should not fail merely for echoing the key back unchanged.
@@ -1362,9 +1383,13 @@ commit;
 -- SPRIN-98 — project_members (epic SPRIN-75, teams and roles)
 -- ============================================================
 -- Applied 2026-08-16. The FIRST table in this schema whose policies do not resolve
--- to `owner_id = auth.uid()`. Everything above still does; SPRIN-100, SPRIN-101 and
--- SPRIN-99 convert them, and until they do this table grants nothing to anyone —
--- it is inert, populated, and waiting.
+-- to `owner_id = auth.uid()`. It is no longer the only one, and it is no longer
+-- inert: SPRIN-100 pointed the three board tables at `app_auth.is_project_member`,
+-- so these rows now decide who can read and write every sprint, ticket and counter.
+-- SPRIN-101 (`projects`) and SPRIN-99 (the config tables) are what remain.
+--
+-- This paragraph said "it is inert, populated, and waiting" until SPRIN-100, which
+-- is exactly the sentence that stops being true the moment the first consumer lands.
 --
 -- STATEMENT ORDER IS LOAD-BEARING. The table is created before the app_auth
 -- functions that read it, and those before the policies that call them. A

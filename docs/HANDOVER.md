@@ -1221,6 +1221,88 @@ Engineering items with no story yet. Each is a candidate for one.
   the name, because `message` is the only channel PostgREST exposes for constraint identity).
   Dropping the check still reddens them, so they are not vacuous — just less specific.
 
+## Owed to SPRIN-75, found by SPRIN-100's adversarial review (session 71)
+
+Five lenses in isolated worktrees, each serious finding attacked by two independent skeptics.
+The verdict was "sound and mergeable"; everything below was triaged as follow-up rather than
+blocking, and the must-fix and should-fix items were all closed on the branch.
+
+- **A member of TWO projects can reparent a ticket across the boundary. This one is real.**
+  `tickets_owner` evaluates `USING` against the OLD row and `WITH CHECK` against the NEW one, so
+  a caller who belongs to both A and B satisfies both halves of
+  `update tickets set project_id = '<B>', sprint_id = null, parent_epic_id = null where id = '<ticket in A>'`.
+  `authenticated` holds table-wide UPDATE with no column ACL; `freeze_ticket_key` pins `key` and
+  `number` and **nothing else**; every project gets the same four default status slugs so the
+  deferrable composite fk is satisfied by construction. Dual membership needs no escalation —
+  `seed_project_admin` makes every creator a member of their own project, so "be invited to A,
+  create B" is enough.
+  The asymmetry pre-existed, but it crossed no boundary while both projects had to be owned by
+  the same person. **Membership is what makes the second project someone else's.** It is not a
+  confidentiality breach (a member of A can already read and copy the ticket) and not novel
+  destruction (they can already delete it). What is not substitutable: the row lands in B
+  carrying `AKEY-5`, made permanent by `freeze_ticket_key`, violating the project-scoped
+  `PROJECTKEY-N` invariant `CLAUDE.md` requires preserving; and when B's counter reaches that
+  number `assign_ticket_key` raises 23505, the increment rolls back with the failed insert, and
+  ticket creation in B wedges until someone deletes the imported row.
+  ⚠ **The obvious fix reddens an existing test, and whoever takes this must budget for it.**
+  Adding `new.project_id := old.project_id;` to `freeze_ticket_key` turns
+  `src/test/tickets.integration.test.ts:269-290` red — that test asserts `42501` on a reparent,
+  and with the freeze the trigger restores the old `project_id`, `WITH CHECK` then passes, and
+  `error` is null. Rewrite it in the same commit. `sprints` has the same exposure with **no
+  freeze trigger at all**. Belongs to SPRIN-104 (guard re-audit) or SPRIN-101.
+- **`anon` still holds `arwdDxtm` on all three board tables, and the policies are now
+  `to authenticated` — so those grants are pure liability.** An unauthenticated
+  `POST /rest/v1/tickets` still drives both SECURITY DEFINER triggers, taking a row lock on and
+  incrementing a foreign project's counter **as `postgres`**, before RLS refuses. Nothing escapes
+  the transaction, so this is defence-in-depth — but the reach of a BYPASSRLS trigger is now
+  anonymous, which it was not before this story. One line in SPRIN-103's sweep:
+  `revoke insert, update, delete on tickets, sprints, project_counters from anon;`. It removes
+  nothing anon can currently do and moves the refusal ahead of the BEFORE-triggers. The same
+  sweep owns the pre-existing TRUNCATE grants. Note the failure shape changes from an RLS message
+  to a privilege 42501, so any anon-write test must pick the right one; `keepalive` is SELECT-only
+  and unaffected.
+- **Removed-member coverage is absent, and `CLAUDE.md` names it as required for this epic.**
+  Every negative in the new suite comes from a caller who was *never* a member. A never-member
+  cannot detect the staleness class: if SPRIN-102 implements removal as a soft delete that
+  `is_project_member` forgets to filter, or if membership is ever cached, a removed member keeps
+  full board access and all 17 tests stay green. **SPRIN-102 owns this — do not let it slip to
+  SPRIN-103.**
+- **`assertServiceRoleOrExplain()` is guarded only by an unused-import lint error.**
+  Mutation-proven: comment out the call and `test:unit` stays green with one lint error; delete
+  the import too and lint and `test:unit` are both fully green, with every test in the epic's
+  security-boundary suite free to skip in a CI run missing the key. Neither tripwire notices —
+  `LIVE_SUITES` and `CLAUDE.md`'s gap count both measure *collected* files, and a skipped file is
+  still collected. Repo-wide and pre-existing across all ten live suites, so not SPRIN-100's to
+  fix. Worth pairing with a source-text assertion: every `LIVE_SUITES` entry must contain a
+  module-scope `assertCredentialsOrExplain()`/`assertServiceRoleOrExplain()` call.
+- **Unverified hypothesis, flagged as such.** A stranger's `.upsert(payload, { ignoreDuplicates:
+  true })` compiles to `INSERT … ON CONFLICT DO NOTHING`, where a conflict is discarded with no
+  error — after the BEFORE triggers have already incremented the victim's counter as `postgres`.
+  Whether the RLS insert check is evaluated before conflict resolution could not be settled with
+  a read-only MCP. Almost certainly refused with 42501, but nobody proved it. No app code upserts
+  tickets, so this is attacker-only.
+- **Test-order coupling in `board-membership.integration.test.ts:260-266`.** Three exact-set
+  assertions are invalidated by later tests in the same file. Deterministic today under Vitest's
+  sequential default, but `-t`/`.only` gives a false result and `--sequence.shuffle` would redden
+  three tests for reasons unrelated to the boundary. Line 260 is the only thing pinning "a member
+  sees ALL tickets in the project". Same convention as `rls.integration.test.ts`; a repo-wide
+  decision, not this story's.
+
+### Carried into SPRIN-101's brief specifically
+
+- **The `projects` DELETE cascade.** Killed twice by the skeptics, correctly — today the actor is
+  the owner deleting their own project. But once `projects` resolves to membership, a plain
+  non-admin member deleting the project cascades away the entire board **with RLS not enforced on
+  the child rows**. SPRIN-101 already plans admin-only DELETE; this is why that half is not
+  optional.
+- **`SprintsTab.tsx:90`, `canComplete = statusesPhase === 'loaded'`.** Killed as unreachable and
+  that kill was right — `ProjectShell` redirects a non-owner away and a trigger guarantees ≥1
+  status per project. But the mutation result stands: adding `&& statuses.length > 0` leaves all
+  unit tests green, so the loaded-but-empty case is pinned in neither direction, and **SPRIN-101
+  is what makes it reachable.** Do **not** carry the other half of that finding — making
+  `completeSprint` refuse an empty `terminalSlugs` contradicts the documented fail-safe design and
+  would redden two deliberate tests.
+
 ## Owed to SPRIN-75, added by SPRIN-92 (session 61)
 
 - **`project_field_options` is born with TRUNCATE granted to BOTH roles**, and TRUNCATE bypasses RLS.
