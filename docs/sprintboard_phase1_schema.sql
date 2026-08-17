@@ -1734,7 +1734,13 @@ revoke all on profiles from anon;
 -- ============================================================
 -- SPRIN-100 — the board tables resolve to membership (epic SPRIN-75, story 3)
 -- ============================================================
--- Applied 2026-08-17. counters_owner, sprints_owner and tickets_owner move from
+-- Applied 2026-08-17, and verified from the catalogue rather than from the SQL
+-- editor's "Success" -- the verification queries are at the foot of
+-- docs/migrations/sprin-100-board-tables-membership.sql. Do not trust this line
+-- on its own; an earlier draft of it claimed "Applied" while the migration was
+-- still pending, which is exactly the drift this file warns about elsewhere.
+--
+-- counters_owner, sprints_owner and tickets_owner move from
 -- `projects.owner_id = auth.uid()` to project MEMBERSHIP, with NO role predicate:
 -- both 'admin' and 'member' do board work. Their original owner-scoped bodies
 -- sat in the main body of this file and have been replaced there by pointers to

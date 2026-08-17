@@ -426,9 +426,11 @@ describe('the verify gate is composed of exactly the steps it claims', () => {
  * `'**\/verify-gate.test.mjs'` makes this guard delete itself.
  *
  * So the assertion is on the COLLECTED SET, derived from vitest itself, not on a
- * string in package.json. It names the seven live suites individually rather than
+ * string in package.json. It names the live suites individually rather than
  * counting them, because a count moves every time a story adds a test file and a
- * name does not. It also requires this file's own presence, which is what closes
+ * name does not. (This sentence used to say "the seven live suites" and was stale
+ * by two the moment SPRIN-105 landed — a number here is the same decay the array
+ * itself exists to avoid, so it no longer carries one.) It also requires this file's own presence, which is what closes
  * the self-deletion route.
  */
 describe('npm test really collects the live integration suites', () => {
@@ -449,6 +451,16 @@ describe('npm test really collects the live integration suites', () => {
     // stayed green. `it.each` below is an "at least these" assertion, so an unregistered
     // suite is invisible to it BY CONSTRUCTION — the array is not a list, it is the gate.
     'src/test/project-members.integration.test.ts',
+    // SPRIN-105. Added here by SPRIN-100, one story LATE: SPRIN-105 shipped this suite,
+    // moved CLAUDE.md's prose tripwire from "eight more files" to "nine", and left this
+    // array at eight -- the same miss SPRIN-98's note above describes, repeated by the
+    // very next story to add a live suite. The prose and the array are two halves of one
+    // control and only the array is executable.
+    'src/test/profiles.integration.test.ts',
+    // SPRIN-100. The board tables (project_counters, sprints, tickets) resolving to
+    // membership rather than ownership, plus the anon empty-array contract the production
+    // keepalive cron depends on.
+    'src/test/board-membership.integration.test.ts',
   ]
 
   const collected = (() => {
