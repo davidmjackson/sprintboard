@@ -686,26 +686,37 @@ create index tickets_project_status_idx on tickets(project_id, status);
 -- ============================================================
 -- Ticket key generation  (atomic, race-safe)
 --
--- Deliberately NOT security definer: it runs as the caller, so the update below
--- is only permitted by the `counters_owner` RLS policy. Atomicity therefore
--- rests on that policy continuing to grant the WRITER a write. If anyone ever
--- narrows counters_owner to read-only, ticket creation breaks here — that is
--- the intended failure, but it will not be obvious from the error.
+-- SECURITY DEFINER since SPRIN-100b. This comment used to say the opposite —
+-- "deliberately NOT security definer", so that the counter update below stayed
+-- permitted only by `counters_owner`, making a mistake in that policy break
+-- ticket creation loudly. That was a TRIPWIRE rather than a boundary, and
+-- SPRIN-100b knowingly gave it up. Nothing replaces it. Do not restore the
+-- sentence without restoring the invoker, and do not restore the invoker without
+-- reading why it changed.
 --
--- SPRIN-100 changed who "the writer" is: counters_owner now resolves to project
--- MEMBERSHIP, not ownership, so any member creating a ticket takes this path and
--- must keep the counter UPDATE. board-membership.integration.test.ts pins it with
--- a positive control — a non-owner member's ticket must come back with a
--- correctly numbered key, which is the only observable proof this update ran.
+-- WHY IT HAD TO CHANGE, and the general trap: this function READS `projects` as
+-- well as writing `project_counters`. Once SPRIN-100 made the board tables
+-- resolve to membership, a member could update the counter but the
+-- `select key into v_key from public.projects` below returned ZERO ROWS, because
+-- `projects_owner` is still `owner_id = auth.uid()` and remains SPRIN-101's to
+-- change. v_key was NULL, so the key was NULL, and the NOT NULL aborted every
+-- member's ticket creation with 23502. A SECURITY INVOKER trigger has a hidden
+-- dependency on every table it reads, not only the ones it writes.
 --
--- Note the contrast with create_project_counter, which SPRIN-100 DID make
--- security definer. That one fires before the membership row it would need
--- exists; this one runs long afterwards, so it stays an invoker and stays
--- RLS-governed. The asymmetry is deliberate.
+-- The boundary that actually stops a stranger is unchanged and is NOT this
+-- function: `tickets_owner`'s WITH CHECK is evaluated after BEFORE-triggers run,
+-- so a stranger's insert is refused and this trigger's counter increment rolls
+-- back with the statement. board-membership.integration.test.ts asserts both
+-- halves.
+--
+-- FOR SPRIN-101: when `projects` SELECT resolves to membership, the reason for
+-- this definer disappears and reverting it would restore the tripwire. Make that
+-- a decision rather than an inheritance. See
+-- docs/migrations/sprin-100b-ticket-key-definer.sql for the full argument.
 -- ============================================================
 create or replace function assign_ticket_key()
 returns trigger language plpgsql
-set search_path = ''
+security definer set search_path = ''
 as $$
 declare
   v_key text;
@@ -724,6 +735,12 @@ begin
   return new;
 end;
 $$;
+
+-- A definer function must not keep an EXECUTE grant it does not need, and this one
+-- needs none: Postgres checks EXECUTE on a trigger function at CREATE TRIGGER time,
+-- not on each fire, so revoking it does not stop the trigger. Same shape as
+-- create_project_counter, seed_project_admin and seed_project_statuses.
+revoke execute on function assign_ticket_key() from public, anon, authenticated;
 
 create trigger on_ticket_insert
   before insert on tickets
