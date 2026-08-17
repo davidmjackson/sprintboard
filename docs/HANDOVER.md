@@ -44,8 +44,8 @@ Same parallel-creation race as SPRIN-71 and SPRIN-74. **Build in this order, not
 | # | Key | Story | State |
 |---|---|---|---|
 | 1 | **SPRIN-98** | Membership table, roles and admin seeding | **Done** 2026-08-16, migration applied |
-| 2 | SPRIN-105 | Co-members can see each other (`profiles` widening + `profiles.email`) | To Do |
-| 3 | SPRIN-100 | Board tables governed by membership (`sprints`, `tickets`, `counters`) | To Do |
+| 2 | SPRIN-105 | Co-members can see each other (`profiles` widening + `profiles.email`) | **Done** 2026-08-16, two migrations applied |
+| 3 | SPRIN-100 | Board tables governed by membership (`sprints`, `tickets`, `counters`) | **Done** 2026-08-17, two migrations applied |
 | 4 | SPRIN-101 | Projects table governed by membership | To Do |
 | 5 | SPRIN-99 | Config tables: admin-only writes, member reads | To Do |
 | 6 | SPRIN-102 | Add and remove members by email | To Do |
@@ -136,6 +136,68 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 **D**. Go by the filenames in `docs/migrations/`, not by the letters in the epic design.
 
 ## Session log
+
+### Session 71 — SPRIN-100, the board tables resolve to membership (two migrations)
+
+`counters_owner`, `sprints_owner` and `tickets_owner` moved from `owner_id = auth.uid()` to
+`app_auth.is_project_member(project_id)`, each still a single `for all` with one predicate in
+both clauses. Advisors 15 → 12 performance lints; the three `auth_rls_initplan` WARNs cleared
+for free, because a `STABLE` definer predicate does what `(select auth.uid())` does.
+
+**Two things bit that neither the story description nor this file predicted. Both were found
+before writing code, by checking the ACs against the live catalogue rather than the prose.**
+
+1. **The naive rewrite would have broken the production keepalive and therefore every future
+   merge.** These three tables grant `anon` full CRUD and the old policies had no `TO` clause,
+   so they covered `public`. Policy expressions are evaluated as the *calling* role, and `anon`
+   has neither USAGE on `app_auth` nor EXECUTE on its functions — so an anonymous read would
+   have raised `permission denied for schema app_auth` instead of returning `[]`. The cron
+   keepalive does an anon `GET /rest/v1/tickets` and expects `200 []`; breaking it pauses the
+   free-tier database, and a paused database blocks every merge including its own fix.
+   **Fix: `to authenticated` on all three.** This is now a standing rule in `CLAUDE.md` for the
+   rest of the epic. SPRIN-98 never felt it because `anon` holds no grant on `project_members`.
+2. **The bootstrap problem arrived a story early.** `create_project_counter` is an `AFTER INSERT`
+   trigger on `projects` that sorts *before* `on_project_created_admin` in name order, so under a
+   membership-only `counters_owner` it ran before the membership row existed and every project
+   creation would have failed. **Fix: SECURITY DEFINER**, matching its two sibling triggers,
+   rather than reordering triggers — which would have made alphabetical fire order load-bearing
+   and falsified SPRIN-98's own comment that nothing depends on it.
+
+**A third was found only by the tests, and is the reason the positive control existed.**
+Post-migration, members could read and update tickets but not CREATE them: `23502`, null `key`.
+The counter is the obvious suspect and is innocent. `assign_ticket_key` also **reads
+`projects`**, whose policy is still owner-scoped until SPRIN-101, so `v_key` was NULL for a
+member. Proved two ways: `number` is column 3 and `key` is column 4, both `NOT NULL`, and
+Postgres named `key` — so the counter write had succeeded. Fixed in `sprin-100b` by making
+`assign_ticket_key` SECURITY DEFINER, which **knowingly deletes a tripwire** (the schema comment
+said it was deliberately an invoker so a mistake in `counters_owner` would break ticket creation
+loudly). The boundary is unchanged — `tickets_owner`'s `WITH CHECK` runs after BEFORE-triggers,
+so a stranger is refused and the increment rolls back. **SPRIN-101 can revert it and get the
+tripwire back once `projects` is membership-scoped; that should be a decision, not an
+inheritance.** The generalised lesson is in `CLAUDE.md`: a SECURITY INVOKER trigger depends on
+every table it READS, not only the ones it writes.
+
+**The suite.** New file `board-membership.integration.test.ts`, 16 live tests on its own
+throwaway users, taking the tripwire gap to **ten**. It adds only `member` rows, never a second
+`admin`, because `project-members.integration.test.ts` asserts a whole-database invariant that
+every project has exactly one. Committed **red** before the migration, and it failed 12 of 16 —
+a real mutation result showing the suite dies when the policy is owner-scoped.
+
+Its cross-project block was added in review and matters more than its size: every other negative
+is written from a stranger who belongs to **no** project, so all of them are satisfied by a
+predicate that merely asks "is this caller a member of anything?". Dropping the `project_id`
+comparison from `is_project_member` would have left the rest of the file green while a member
+could read every project in the database.
+
+**Also fixed: `verify-gate.test.mjs`'s `LIVE_SUITES` had drifted to eight against nine real
+suites.** SPRIN-105 updated the prose tripwire in `CLAUDE.md` and left the executable array, so
+its own suite was collectable-but-unregistered for a whole story — precisely the state that
+array exists to make impossible. Both halves are now registered and `CLAUDE.md` says they are
+one control with two halves.
+
+**Known intermediate state, not a defect:** until SPRIN-101, a member has board access to a
+project that does not appear in their project list, because `listProjects` still resolves
+through `projects_owner`. The feature is not user-visible end to end until story 4.
 
 Newest first. One paragraph each — detail is in the linked PRs, specs and git history.
 
