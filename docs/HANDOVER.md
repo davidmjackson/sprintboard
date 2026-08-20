@@ -137,6 +137,87 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 ## Session log
 
+### Session 73 — SPRIN-101 reviewed, four findings closed, PR #116 open
+
+Picked up session 72's paused branch. `verify` is **green on the PR's own head**, collecting
+**83 files, 0 skipped** — so the eleven live suites genuinely ran. Jira SPRIN-101 is **In Review**.
+`CLAUDE.md`'s advisor baseline was corrected from the pre-story 12/4 to the measured **11/3**
+(re-derived live: 8 `unindexed_foreign_keys`, 3 `auth_rls_initplan` on `project_statuses` alone).
+
+**The deep review was re-run from scratch and this time it was clean.** Twelve mutating lenses,
+one worktree each. **All twelve worktrees were provisioned at `main` again** — that is now
+thirteen sessions out of thirteen — and **all twelve self-corrected**, because every prompt opened
+with `git rev-parse HEAD` against the literal 40-char SHA plus two files that exist only at the
+head. Every positive control went red, every tree was clean at the end, and nothing escaped into
+the shared checkout. The countermeasures in `isolate-mutating-reviewers` work; use them verbatim.
+
+🚨 **THE RUN DIED ON THE SESSION LIMIT MID-PHASE, and the fan-out is why.** 37 agents,
+**3.69M subagent tokens**, 1101 tool calls, 18 minutes: 9 of 24 refuters and the synthesis agent
+all failed with "You've hit your session limit". **David's instruction, standing:** *"Do not spawn
+many agents at once when swarming a job. This eats the tokens very fast."* The multiplier is what
+explodes — lenses x findings x votes — not the lens count. Budget the whole tree before dispatching.
+
+**A dead workflow still has its results.** Everything completed was in
+`<transcriptDir>/journal.jsonl`, and the synthesis was reconstructed by hand for a few thousand
+main-loop tokens. Do that instead of re-running. **But the reconstruction found a bug in the
+workflow's own post-processing:** `survives = cast > 0 && refutations < cast` classified a finding
+whose refuters both died as **killed**, when it is *unverified*. Three states, not two — the same
+trap as `a-missing-verdict-is-not-a-refutation`, in the harness this time rather than the report.
+
+**34 findings: 0 high, 19 medium, 15 low.** 8 survived adversarial refutation; exactly one refuter
+voted to refute anything, and it was one half of a split whose other half upheld the finding.
+**Nothing found a live tenant-isolation leak.** The mediums are overwhelmingly "this is true but
+nothing pins it".
+
+**Four were fixed in this story, on the principle that a story owns what it broke or now leans on:**
+
+1. **The fixture race, and it is WIDER than the review reported.** The SPRIN-101b block swapped the
+   admin with an INSERT then a DELETE, leaving **two** admin rows between two awaited round-trips,
+   while `project-members.integration.test.ts` measures "exactly one admin" over **every project in
+   the database in one snapshot** and Vitest runs test files in parallel. The swap is now a single
+   UPDATE that *moves* the row. **But the same sibling assertion also demands the admin BE the
+   owner**, and the disowned project violates that for its entire lifetime, not merely between two
+   statements — because an admin who is not the owner is precisely what SPRIN-101 designs for. That
+   half was **falsified by this story**, so it is now scoped to pre-migration rows, which is the
+   backfill it was written to test. Re-derived independently before acting, by replaying the
+   sibling's own predicate over the three fixture states.
+2. **The grant matcher had a false green.** It `exec`'d a **non-global** regex over the sorted,
+   joined statement list, so it read exactly one statement: a second column grant was seen only if
+   its text sorted before the incumbent (`grant update (description)` reddened,
+   `grant update (wip_limit)` did not), and a **table-level** grant matched nothing at all. It now
+   unions every column grant and refuses the table-level form in both files. Both shapes were
+   mutation-proven red afterwards. This binds harder since `projects_admin_update` stopped pinning
+   `owner_id` in its WITH CHECK: **the grant is the only control left on `owner_id`.**
+3. **The INSERT negative that RETURNING was masking.** The suite had no negative on
+   `projects_bootstrap_insert`, and the pre-existing one in `projects.integration.test.ts:318`
+   stopped discriminating *because of this story*: ask for the row back and `projects_member_read`
+   refuses the RETURNING projection with the **same 42501 and the same wording** as the WITH CHECK.
+   The new test omits `.select()` deliberately — a bare insert never consults the SELECT policy —
+   and reads back past RLS to prove no row landed.
+4. **Documentation this diff falsified:** `CLAUDE.md` said `app_auth` holds a *third* predicate when
+   101b made it four and never named `project_has_members`; the schema doc called the bootstrap
+   disjunct "false forever" when the condition is **zero members**, which SPRIN-102 can produce; and
+   it still described `assign_ticket_key` as SECURITY DEFINER, contradicting its own definition 200
+   lines below and telling the reader a NOT NULL abort no longer happens when SPRIN-101 restored it.
+
+⚠ **I destroyed my own uncommitted work, again.** A `git checkout docs/…` inside a mutation probe
+loop reverted two schema-doc edits made minutes earlier. `commit-before-mutation-testing` is not
+advice for agents only — it applies to the probe loops I write myself.
+
+**Deferred, as Jira comments on the stories that own them** (not handover prose, so they cannot be
+missed): **SPRIN-102** — a stranded project is now permanently un-updatable *and* un-deletable, and
+the bootstrap disjunct hands a removed owner their read back if a project is ever left with zero
+members; **SPRIN-104** — three concrete zero-row-write sites (`updateProjectCadence`, no role-aware
+component, and the new `SprintsTab` guard testing non-emptiness rather than trustworthiness);
+**SPRIN-103** — no admin-who-is-not-owner *write* assertion, `board-membership`'s counter-rollback
+assertion gone vacuous, and `beSingleton` having no gate.
+
+**Still open, needing a decision:** the review found that **nothing in the repo reads a `create
+policy` body, nothing pins `assign_ticket_key` to SECURITY INVOKER, and `verify.yml` has no
+executable guard** (swap `npm run verify` for `npm run test:unit` in it and every local check stays
+green). That is one coherent story — pin the SQL artefacts and the CI command the gate cannot see —
+and it has not been created on the board.
+
 ### Session 72 — SPRIN-101 built and APPLIED, **paused before merge** (branch `sprin-101-projects-membership`, `0ecd398`)
 
 🚨 **THE DATABASE IS AHEAD OF `main`.** Two migrations are applied and catalogue-verified; the code
