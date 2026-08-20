@@ -1509,10 +1509,38 @@ as $$
                    and m.role = 'admin');
 $$;
 
+-- SPRIN-101b. Does this project have ANY members, regardless of who they are?
+--
+-- Exists solely to make projects_member_read's bootstrap disjunct conditional. It
+-- is what stops that disjunct being a permanent owner read-grant: it is TRUE only
+-- in the instant between a project row landing and its AFTER INSERT trigger
+-- seeding the admin membership, which is exactly the window INSERT ... RETURNING
+-- reads in.
+--
+-- IT MUST BE SECURITY DEFINER, and inlining the same subquery into the policy is
+-- a silent security downgrade rather than a simplification. Evaluated as the
+-- CALLING role, the subquery is filtered by project_members' own RLS, which shows
+-- a caller only the rows of projects they belong to -- so "has no members" would
+-- read TRUE for every project the caller is not a member of, and the policy would
+-- collapse into the plain `or owner_id = uid` variant that SPRIN-101b explicitly
+-- rejected. No syntax error, no failing test.
+--
+-- It takes a PROJECT id and no user parameter, so SPRIN-98's warning about an
+-- app_auth function that takes another user's id becoming an oracle does not
+-- apply: it answers only "are there any", never "who".
+create or replace function app_auth.project_has_members(p_project_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (select 1 from public.project_members m
+                 where m.project_id = p_project_id);
+$$;
+
 revoke execute on function app_auth.is_project_member(uuid) from public;
 revoke execute on function app_auth.is_project_admin(uuid) from public;
+revoke execute on function app_auth.project_has_members(uuid) from public;
 grant  execute on function app_auth.is_project_member(uuid) to authenticated;
 grant  execute on function app_auth.is_project_admin(uuid) to authenticated;
+grant  execute on function app_auth.project_has_members(uuid) to authenticated;
 
 alter table project_members enable row level security;
 
@@ -1932,10 +1960,41 @@ revoke execute on function public.create_project_counter() from public, anon, au
 
 -- SELECT: every project the caller is a member of, and no other. NO role
 -- predicate -- admins and members alike read the project they work on.
+--
+-- THE SECOND DISJUNCT IS NOT AN OWNERSHIP FALLBACK, AND DELETING THE
+-- `not project_has_members` HALF IS A SECURITY REGRESSION, NOT A SIMPLIFICATION.
+-- It was added by SPRIN-101b after the membership-only version broke every project
+-- INSERT in the application with
+--
+--   42501  new row violates row-level security policy for table "projects"
+--
+-- because INSERT ... RETURNING applies the SELECT policy to the row being
+-- returned, and the membership row that satisfies it is created by
+-- seed_project_admin -- an AFTER INSERT trigger that has not fired at that point.
+-- The row is, for one instant, owned by the caller and readable by nobody.
+--
+-- Conditioning on the project having NO members keeps that instant and nothing
+-- else: from the end of that statement onward the project has an admin, the
+-- second half is false forever, and membership is once again the only thing
+-- granting read. The plain `or owner_id = (select auth.uid())` was considered and
+-- REJECTED -- it re-arms ownership as a permanent read grant, so a project's
+-- creator would keep reading it after being removed, and SPRIN-102's member
+-- removal would leak for exactly one person per project.
+--
+-- See docs/migrations/sprin-101b-projects-bootstrap-read.sql for the probe that
+-- discriminated the two hypotheses (a bare INSERT succeeded where
+-- insert().select() raised 42501, which is what cleared the INSERT policy of
+-- suspicion).
 create policy projects_member_read on projects
   for select
   to authenticated
-  using (app_auth.is_project_member(projects.id));
+  using (
+    app_auth.is_project_member(projects.id)
+    or (
+      projects.owner_id = (select auth.uid())
+      and not app_auth.project_has_members(projects.id)
+    )
+  );
 
 -- INSERT: the BOOTSTRAP, and the reason owner_id still appears in a policy at
 -- all. If authority came only from membership rows, creating a project would
