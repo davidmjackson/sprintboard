@@ -209,17 +209,21 @@ most stories rather than a rare one.
 **The advisor baseline is NOT zero, and this file used to say it was.** That wording was
 aspirational when written and has been false for some time — a story that took it literally
 would either chase pre-existing lints it did not cause or, worse, read a red result as its own
-regression. Re-measured **2026-08-17, after SPRIN-100 and SPRIN-100b applied**: **1 security
-WARN** (leaked-password protection disabled) and **12 performance lints** (8
+regression. Re-measured **2026-08-20, after SPRIN-101 and SPRIN-101b applied**: **1 security
+WARN** (leaked-password protection disabled) and **11 performance lints** (the same 8
 `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`, 3 on `tickets`, 1 on
-`project_field_options`; and **4** `auth_rls_initplan` WARNs across **two** tables).
+`project_field_options` — and **3** `auth_rls_initplan` WARNs on **one** table,
+`project_statuses`). It read **12**, with **4** WARNs across **two** tables, from SPRIN-100
+until SPRIN-101 cleared `projects`.
 
 **SPRIN-100 took three of those WARNs off the board for free**, and the mechanism is worth
 copying rather than rediscovering: replacing a bare `auth.uid()` predicate with a call to a
 `STABLE SECURITY DEFINER` function takes the uid read out of the per-row path just as
 `(select auth.uid())` does. `counters_owner`, `sprints_owner` and `tickets_owner` all cleared
-when they moved to `app_auth.is_project_member`. The remaining four are `projects`
-(`projects_owner`) and `project_statuses` (`statuses_owner_read`, `_insert`, `_update`).
+when they moved to `app_auth.is_project_member`. **SPRIN-101 took a fourth the same way** —
+`projects_owner` became four policies whose predicates are `app_auth` calls, and `projects`
+cleared entirely. The remaining three are all on `project_statuses` (`statuses_owner_read`,
+`_insert`, `_update`), and they are SPRIN-99's to clear.
 
 It read **15** and **7 across five tables** until that re-measurement. This paragraph said
 **14** and **6 / 3+3** until
@@ -256,18 +260,18 @@ Two of those are settled and must not be re-litigated. The three `ticket_field_v
 are **David's explicit call** — keep the `(field_id)` index, add nothing, accept them (the
 advisor's prefix rule goes unsatisfied, not any query a cascade actually performs). The
 `auth_rls_initplan` sweep belongs to **SPRIN-75**, not to whichever feature story next touches
-a policy: it is now **four WARNs across two tables** — `projects` (`projects_owner`) and
-`project_statuses` (`statuses_owner_read`, `statuses_owner_insert`, `statuses_owner_update`
-— three policies on that one table).
+a policy: it is now **three WARNs on one table** — `project_statuses` (`statuses_owner_read`,
+`statuses_owner_insert`, `statuses_owner_update`), which is SPRIN-99's table.
 
 It was eight across six tables until SPRIN-105 rewrote `profiles_self` in the wrapped form as a
 side effect of an unrelated policy split, then **seven across five** until SPRIN-100 moved
 `counters_owner`, `sprints_owner` and `tickets_owner` to a `STABLE` definer predicate and took
-all three tables out of the list at once. **Both reductions were side effects of doing the
-membership rewrite properly, not of a sweep** — which is the argument for letting the remaining
-four fall out of SPRIN-101 (`projects`) and SPRIN-99 (`project_statuses`) the same way, rather
-than paying for a separate mechanical pass. If those two stories do their job, the sweep has
-nothing left to do and this bullet retires itself.
+all three tables out of the list at once, and **four across two** until SPRIN-101 did the same
+for `projects`. **All three reductions were side effects of doing the membership rewrite
+properly, not of a sweep** — which is the argument, now with three worked examples, for letting
+the last three fall out of SPRIN-99 (`project_statuses`) the same way rather than paying for a
+separate mechanical pass. If that story does its job, the sweep has nothing left to do and this
+bullet retires itself.
 
 **CORRECTION, made explicit because this file's own ethos forbids a silent one:** the
 "six tables" figure just above replaces a **five-tables** figure this file previously stated
