@@ -342,6 +342,32 @@ describe.skipIf(!hasRlsCredentials)(
       if (authErr) throw authErr
     }, 30_000)
 
+    /**
+     * Switch the app singleton's identity, and REFUSE TO CONTINUE IF IT DID NOT HAPPEN.
+     *
+     * These four call sites used to discard the result. That is not a tidiness problem: when
+     * GoTrue's rate limiter refuses the switch to B, the singleton stays signed in as A, the
+     * "cross-tenant" call below becomes a SAME-tenant call, and it correctly succeeds -- so the
+     * test reports `ok: true` where it expected a refusal and reads exactly like a cross-tenant
+     * mutation leak. Measured 2026-08-20 during SPRIN-101: a run whose sibling suite logged
+     * `Request rate limit reached` produced precisely that false alarm and cost a diagnosis.
+     *
+     * The `finally` restore is the more dangerous of the two. A silently failed restore leaves
+     * the singleton authenticated as B for every test that follows in this file.
+     *
+     * Throwing names the real cause on the spot. It does not weaken any assertion below: a
+     * genuine refusal is still a refusal, and this only distinguishes it from never having
+     * asked the question.
+     */
+    async function beSingleton(user: { email?: string; password?: string }): Promise<void> {
+      const { error } = await appClient.auth.signInWithPassword({
+        email: user.email!,
+        password: user.password!,
+      })
+      if (error)
+        throw new Error(`Could not switch the app singleton to ${user.email}: ${error.message}`)
+    }
+
     afterEach(async () => {
       // Reset to zero sprints so each test is independent of order (one leaves an active one).
       // Tickets first: deleting a sprint only nulls sprint_id, it does not remove the ticket.
@@ -417,7 +443,7 @@ describe.skipIf(!hasRlsCredentials)(
       const id = await newFutureSprint('Cross-tenant')
 
       const asB = RLS_USERS.B
-      await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
+      await beSingleton(asB)
       try {
         // For B the precondition read matches ZERO rows (`sprints_owner` scopes it through the
         // owned project), so startSprint returns 'unknown' having written nothing at all —
@@ -427,7 +453,7 @@ describe.skipIf(!hasRlsCredentials)(
         expect(result).toEqual({ ok: false, error: 'unknown' })
       } finally {
         const asA = RLS_USERS.A
-        await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
+        await beSingleton(asA)
       }
 
       // Re-read as A: the sprint is untouched — proof the cross-tenant call filtered to zero
@@ -497,7 +523,7 @@ describe.skipIf(!hasRlsCredentials)(
       const todoId = await ticketInSprint(id, 'todo')
 
       const asB = RLS_USERS.B
-      await appClient.auth.signInWithPassword({ email: asB.email!, password: asB.password! })
+      await beSingleton(asB)
       try {
         // The precondition read matches zero rows for B, so completeSprint now returns
         // 'unknown' before ANY write — strictly better than before, when the ticket move ran
@@ -506,7 +532,7 @@ describe.skipIf(!hasRlsCredentials)(
         expect(result).toEqual({ ok: false, error: 'unknown' })
       } finally {
         const asA = RLS_USERS.A
-        await appClient.auth.signInWithPassword({ email: asA.email!, password: asA.password! })
+        await beSingleton(asA)
       }
 
       // Re-read as A: the sprint is still active AND its ticket unmoved — proof that B's call
