@@ -137,6 +137,90 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 ## Session log
 
+### Session 72 — SPRIN-101 built and APPLIED, **paused before merge** (branch `sprin-101-projects-membership`, `0ecd398`)
+
+🚨 **THE DATABASE IS AHEAD OF `main`.** Two migrations are applied and catalogue-verified; the code
+that exercises them is on an unmerged, pushed branch. `main` is still `2dadefe`. Reconcile this
+first — either merge the branch or be aware that `main`'s suites now run against membership-scoped
+`projects`.
+
+**What the story does.** `projects_owner` — one `for all` policy, no `TO` clause,
+`owner_id = auth.uid()` — becomes four verb-split policies, all `to authenticated`:
+`projects_member_read` (SELECT, membership), `projects_bootstrap_insert` (INSERT, still owner, purely
+to bootstrap), `projects_admin_update` and `projects_admin_delete` (both admin). This is the FIRST
+table where read is deliberately broader than write. `assign_ticket_key` reverted to SECURITY
+INVOKER, restoring the tripwire SPRIN-100b knowingly gave up and taking the definer count 4 → 3.
+
+**`sprin-101` ALONE BROKE PRODUCTION, AND `sprin-101b` IS THE FIX. Never apply one without the
+other.** With membership-only SELECT, every project INSERT failed for everyone —
+`42501 new row violates row-level security policy` — including `createProject`. Eight live suites
+red, 197 tests cascaded out by fixture `beforeAll` failures.
+
+**The cause, and the technique that found it.** `INSERT ... RETURNING` applies the **SELECT** policy
+to the returned row, and the membership row that satisfies it is created by `seed_project_admin`, an
+AFTER INSERT trigger that fires at end of statement — after the RETURNING projection is checked. The
+row is, for one instant, owned by the caller and readable by nobody. Found not by argument but by a
+throwaway probe chosen so the two hypotheses predicted **opposite** observables:
+`insert().select()` → 42501, bare `insert()` → success, row landed. That cleared the INSERT policy
+in one run.
+
+Two things this settled that were previously guesses: **RLS is evaluated before CHECK constraints**
+(a range-violating insert returned 42501, not 23514), and `projects` is the only table in this schema
+with that shape, because it is the only one that seeds its own membership.
+
+**The fix is a CONDITIONAL disjunct, and both halves are load-bearing.**
+`is_project_member(id) or (owner_id = (select auth.uid()) and not app_auth.project_has_members(id))`.
+True only in that instant, so `owner_id` stays an audit column granting nothing in any state that
+outlives a single statement. ⚠ The `not exists` **must** go through a SECURITY DEFINER function:
+inlined it is filtered by `project_members`' own RLS, reads TRUE for every project the caller is not
+in, and the policy silently collapses into the plain `or owner_id = uid` variant that was explicitly
+rejected — no syntax error, no failing test.
+
+**Two false alarms, both worth knowing.**
+1. `expected '42501' to be '23514'` looked like a constraint regression; it was the RETURNING failure.
+2. `completeSprint` returning `ok: true` on another user's sprint looked like a **cross-tenant leak**.
+   It was an **unchecked identity switch**: four sites signed the app singleton in as B and discarded
+   the result, so when the rate limiter refused, the singleton stayed as A and a same-tenant call
+   correctly succeeded. Fixed with a `beSingleton` helper that throws. The `finally` restore was the
+   more dangerous half — a silent failure there leaves later tests running as the wrong user.
+
+**The discriminator between flake and regression: a flake does not reproduce byte-identically.** Two
+`verify` runs 20 minutes apart gave the same 8 files / 11 tests / 197 skipped — that was a defect.
+When the post-cool-down run changed shape and named `AuthApiError: Request rate limit reached`, that
+was the limiter.
+
+**Also in the diff:** `SprintsTab`'s `canComplete` gains `&& statuses.length > 0`. Not polish — a
+member can now reach the tab while `project_statuses` is still owner-scoped, so `listProjectStatuses`
+succeeds with **zero rows**, `terminalSlugs` is empty, and `completeSprint` drops its filter and
+returns every ticket including Done ones to the backlog. Mutation-proven: removing the guard reddens
+exactly the one new test.
+
+🚨 **THE DEEP REVIEW WAS STOPPED AND IS CONTAMINATED — RE-RUN FROM SCRATCH.** A lens escaped its
+worktree, left the main checkout in **detached HEAD**, and planted the *rejected* policy variant in a
+migration file. Other lenses therefore reviewed code that was never shipped. Both were reverted (the
+live catalogue is what proved the file edit was a mutation). `isolation: "worktree"` provides a tree
+but does not **pin** an agent inside it; harden the brief and verify `git status` on the main
+checkout after any mutating review.
+
+**Measurements, all verified from the catalogue rather than the editor's "Success":** 4 policies, all
+`{authenticated}`; `assign_ticket_key` `prosecdef = false` with `search_path` pinned;
+`app_auth.project_has_members` at `{postgres=X,authenticated=X}` — no PUBLIC entry, so the hand
+revoke took; grants unchanged (`anon=ardDxtm`, `authenticated=ardDxtm`, exactly two column grants);
+advisors **11 performance / 1 security**, with `auth_rls_initplan` down to **3 WARNs on
+`project_statuses` alone** — `projects` cleared entirely, the third time a membership rewrite has
+cleared these for free. Tripwire gap **10 → 11**, 83 files vs 72, registered in **both** halves
+(`LIVE_SUITES` and `CLAUDE.md`) in the same commit.
+
+**Still owed before merge:** the re-run deep review; a green `verify` on the PR head after a long
+quiet window; PR opened; Jira SPRIN-101 → In Review → Done; and `CLAUDE.md`'s advisor-baseline
+paragraph updated from the pre-story 12/4 to the measured **11/3**.
+
+**Known intermediate state until SPRIN-99, accepted deliberately:** a member sees the project in
+their list, but the board renders **no columns** and Settings → Cadence fails with the generic retry
+copy forever (`updateProjectCadence` filters on `id` alone and leans on the policy's USING breadth —
+a fresh, now-reachable instance of the SPRIN-64 class, owned by SPRIN-104).
+
+
 ### Session 71 — SPRIN-100, the board tables resolve to membership (two migrations)
 
 `counters_owner`, `sprints_owner` and `tickets_owner` moved from `owner_id = auth.uid()` to
