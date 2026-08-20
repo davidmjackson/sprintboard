@@ -635,4 +635,84 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-101 projects resolves to membership',
       expect(own.data).toEqual([{ id: projectId }])
     }, 30_000)
   })
+
+  /**
+   * SPRIN-101b -- THE BOOTSTRAP DISJUNCT IS CONDITIONAL, AND THIS IS THE ONLY TEST THAT SAYS SO.
+   *
+   * sprin-101 shipped `projects_member_read` as `app_auth.is_project_member(id)` alone, and
+   * every project INSERT in the app and in eight live suites broke with
+   *
+   *   42501  new row violates row-level security policy for table "projects"
+   *
+   * `INSERT ... RETURNING` applies the SELECT policy to the row being returned, and the
+   * membership row that would satisfy it is created by `seed_project_admin`, an AFTER INSERT
+   * trigger that has not fired at that point. A bare INSERT with no `.select()` succeeded --
+   * which is how the INSERT policy was cleared of suspicion.
+   *
+   * sprin-101b adds a second disjunct, true only in that instant:
+   *
+   *   owner_id = (select auth.uid())  and  not app_auth.project_has_members(id)
+   *
+   * THE POINT OF THIS TEST IS THE SECOND HALF. Every other assertion in this file passes
+   * equally well against the PLAIN disjunct `or owner_id = (select auth.uid())`, which was
+   * considered and rejected because it re-arms ownership as a permanent read grant and would
+   * leak to a removed owner for the life of the project. The two variants are
+   * indistinguishable to this suite except here.
+   *
+   * So: a project that HAS members, whose owner is NOT among them, must be invisible to that
+   * owner. Under the plain disjunct this returns one row and the rejected design ships.
+   *
+   * The fixture keeps the project at exactly one admin throughout -- O's row is replaced by
+   * M's rather than merely deleted -- because `project-members.integration.test.ts` asserts
+   * one-admin-per-project across the whole database. Built with the service-role client for
+   * the same reason the M-joins-the-project fixture is: the app path for membership changes is
+   * SPRIN-102 and does not exist yet.
+   */
+  describe('SPRIN-101b -- owner_id grants nothing once the project has members', () => {
+    it('hides a project from its own owner once someone else holds the membership', async () => {
+      const { data: created, error: createError } = await admin
+        .from('projects')
+        .insert({ owner_id: oId, name: 'SPRIN-101b disowned project', key: runKey() })
+        .select('id')
+        .single()
+      if (createError) throw new Error(`Fixture: could not create: ${createError.message}`)
+      const disownedId = created.id
+
+      try {
+        // Swap the admin: M in, O out. One admin before, one admin after.
+        const promote = await admin
+          .from('project_members')
+          .insert({ project_id: disownedId, user_id: mId, role: 'admin' })
+        if (promote.error) throw new Error(`Fixture: could not promote M: ${promote.error.message}`)
+
+        const demote = await admin
+          .from('project_members')
+          .delete()
+          .eq('project_id', disownedId)
+          .eq('user_id', oId)
+          .select('user_id')
+        if (demote.error) throw new Error(`Fixture: could not remove O: ${demote.error.message}`)
+        // Prove the fixture did what it claims: exactly one row removed, and it was O's.
+        expect(demote.data).toEqual([{ user_id: oId }])
+
+        // O still owns the row -- `owner_id` is unchanged and unchangeable -- and can no
+        // longer see it. That is the whole of "an audit column granting nothing".
+        const owns = await admin.from('projects').select('owner_id').eq('id', disownedId).single()
+        expect(owns.data?.owner_id).toBe(oId)
+
+        const asOwner = await oClient.from('projects').select('id').eq('id', disownedId)
+        expect(asOwner.error).toBeNull()
+        expect(asOwner.data).toEqual([])
+
+        // POSITIVE CONTROL: the project is readable by the person who now holds membership,
+        // so the empty result above is the policy discriminating, not the row being gone.
+        const asMember = await mClient.from('projects').select('id').eq('id', disownedId)
+        expect(asMember.data).toEqual([{ id: disownedId }])
+      } finally {
+        // Teardown BEFORE any further assertion could throw, and unconditional: this project
+        // hangs off O's user and would otherwise survive until the afterAll cascade.
+        await admin.from('projects').delete().eq('id', disownedId)
+      }
+    }, 30_000)
+  })
 })
