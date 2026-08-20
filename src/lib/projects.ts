@@ -4,8 +4,17 @@ import type { Project, ProjectType, SprintCadence } from './domain'
 /**
  * Create a project for the given owner.
  *
- * `owner_id` must be the caller's own `auth.uid()` — the RLS insert policy rejects
- * anything else, so this is the security boundary, not a convenience. The result is a
+ * `owner_id` must be the caller's own `auth.uid()` — `projects_bootstrap_insert` rejects
+ * anything else, so this is the security boundary, not a convenience.
+ *
+ * **That policy is the one place `owner_id` still carries authority, and it is a bootstrap
+ * rather than an ownership model.** Since SPRIN-101 every other verb on this table resolves
+ * to membership; INSERT cannot, because a brand-new project has no members yet and requiring
+ * one would make every creation fail. The `seed_project_admin` trigger closes the loop in
+ * this same transaction, inserting the caller's `admin` row — so by the time this function
+ * returns, authority has already moved from the column to the membership table.
+ *
+ * The result is a
  * discriminated union rather than a throw: a duplicate key is an expected,
  * user-correctable outcome (the `projects_owner_key_unique` constraint), not an
  * exception. Postgres raises `23505` on any unique violation; the only unique
@@ -56,11 +65,19 @@ export async function createProject(input: {
 }
 
 /**
- * The caller's own projects, name-ordered for a stable nav.
+ * Every project the caller is a MEMBER of, name-ordered for a stable nav.
  *
- * No owner filter is needed or wanted: the `projects_owner` RLS policy already scopes
- * `select` to `owner_id = auth.uid()`, so this returns exactly the signed-in user's
- * projects and never another tenant's — the isolation is the database's, proven live.
+ * No filter is needed or wanted: `projects_member_read` scopes `select` to
+ * `app_auth.is_project_member(id)`, so this returns exactly the projects the signed-in user
+ * belongs to and never another tenant's — the isolation is the database's, proven live.
+ *
+ * **This docblock said "the caller's OWN projects" and named `projects_owner` until
+ * SPRIN-101, and both halves are now wrong.** Ownership no longer decides what appears here;
+ * membership does. A user can see a project they did not create, and — once SPRIN-102 ships
+ * removal — stop seeing one they did. `owner_id` is an audit column that grants nothing on
+ * its own; the only place it still carries authority is the INSERT policy, purely to
+ * bootstrap. Do not reintroduce an `.eq('owner_id', …)` filter here "for safety": it would
+ * silently hide every project the caller was invited to, and no test asserts its absence.
  */
 export async function listProjects(): Promise<Project[]> {
   const { data, error } = await supabase
@@ -85,11 +102,25 @@ export async function listProjects(): Promise<Project[]> {
  * user-facing sentence can honestly be written about.
  *
  * **On this table `42501` has two possible authors, and only one of them is reachable here.**
- * It is also what `projects_owner`'s RLS `WITH CHECK` raises when an INSERT or UPDATE would
- * leave a row owned by someone other than `auth.uid()` — see `projects.integration.test.ts`,
- * which pins both. This path can never produce that one: the payload spells out two columns
- * and neither is `owner_id`, so there is no ownership for the check to reject. Every `42501`
- * that reaches this branch is a missing grant.
+ * It is also what an RLS `WITH CHECK` raises — on INSERT, `projects_bootstrap_insert` rejects
+ * a row owned by someone other than `auth.uid()`; see `projects.integration.test.ts`, which
+ * pins both. This path can never produce that one, and **SPRIN-101 changed the reason while
+ * leaving the conclusion standing** — worth recording, because the old reason is the one a
+ * reader will assume. It used to be that the payload names two columns and neither is
+ * `owner_id`, so there was no ownership for `projects_owner`'s check to reject. That is still
+ * true but no longer the operative fact: UPDATE is now governed by `projects_admin_update`,
+ * whose `WITH CHECK` is `is_project_admin(id)` — the *same* predicate as its `USING`. A row
+ * that fails the check would have been filtered by `USING` first, so the check can never be
+ * the thing that raises. Every `42501` reaching this branch is a missing grant.
+ *
+ * **What DID change is the zero-row path, and it is now reachable by an ordinary user.** A
+ * non-admin member's patch is filtered to zero rows and mapped to `'unknown'` below, so they
+ * see the generic retry copy for a state retrying will never fix. That is a fresh instance of
+ * the SPRIN-64 class — an app-layer path leaning on a policy's USING breadth — and it belongs
+ * to SPRIN-104 (re-audit app-layer guards for zero-row-write blindness) rather than being
+ * papered over here. A `'not_permitted'` tag was considered and rejected for SPRIN-101: zero
+ * rows cannot honestly distinguish "not an admin" from "project deleted in another tab"
+ * without a second read, and a tag that guesses is worse than the generic copy.
  *
  * **The payload is an object literal with both column names written out as plain keys**, and
  * that is structural, not stylistic. `src/test/project-type-immutability.test.ts` parses this
