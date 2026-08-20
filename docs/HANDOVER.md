@@ -46,7 +46,7 @@ Same parallel-creation race as SPRIN-71 and SPRIN-74. **Build in this order, not
 | 1 | **SPRIN-98** | Membership table, roles and admin seeding | **Done** 2026-08-16, migration applied |
 | 2 | SPRIN-105 | Co-members can see each other (`profiles` widening + `profiles.email`) | **Done** 2026-08-16, two migrations applied |
 | 3 | SPRIN-100 | Board tables governed by membership (`sprints`, `tickets`, `counters`) | **Done** 2026-08-17, two migrations applied |
-| 4 | SPRIN-101 | Projects table governed by membership | To Do |
+| 4 | SPRIN-101 | Projects table governed by membership | **Done** 2026-08-20, two migrations applied |
 | 5 | SPRIN-99 | Config tables: admin-only writes, member reads | To Do |
 | 6 | SPRIN-102 | Add and remove members by email | To Do |
 | 7 | SPRIN-104 | Re-audit app-layer guards for zero-row-write blindness | To Do |
@@ -137,7 +137,12 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 
 ## Session log
 
-### Session 73 — SPRIN-101 reviewed, four findings closed, PR #116 open
+### Session 73 — SPRIN-101 reviewed and **SHIPPED** (`dbb7dd3`, PR #116)
+
+**Merged, squashed, branch deleted; Jira Done.** `verify` was green on the PR's own head —
+83 files, **0 skipped**, so all eleven live suites ran. Both migrations were already applied, so
+`main` and the live database are back in step and the session-72 "database is ahead" warning is
+discharged.
 
 Picked up session 72's paused branch. `verify` is **green on the PR's own head**, collecting
 **83 files, 0 skipped** — so the eleven live suites genuinely ran. Jira SPRIN-101 is **In Review**.
