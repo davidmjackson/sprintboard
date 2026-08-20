@@ -582,17 +582,26 @@ create table tickets (
   -- demands a key from the client, which is how you end up generating keys
   -- client-side.
   --
-  -- CORRECTED AT SPRIN-100b, and this one mattered: these lines used to end
-  -- "the trigger still assigns NULL when the counter update matches no row (a
-  -- cross-tenant insert), and NOT NULL then aborts the statement. That abort is
-  -- a security property. Do not add a default that hides it." The abort no
-  -- longer happens. assign_ticket_key is SECURITY DEFINER, and project_counters
-  -- is owned by postgres with relforcerowsecurity = false, so the counter update
-  -- matches for ANY caller and `number` is never NULL on this path. The security
-  -- property that remains is tickets_owner's WITH CHECK, which refuses the row
-  -- before the constraint layer is reached. Instructing a future reader to
-  -- preserve a deleted control is worse than saying nothing, which is why this
-  -- says what actually holds instead.
+  -- CORRECTED AT SPRIN-100b AND CORRECTED BACK AT SPRIN-101. Read both halves,
+  -- because the second reverses the first and a half-remembered version of this
+  -- comment is worse than none.
+  --
+  -- Originally: "the trigger still assigns NULL when the counter update matches
+  -- no row (a cross-tenant insert), and NOT NULL then aborts the statement. That
+  -- abort is a security property. Do not add a default that hides it."
+  --
+  -- SPRIN-100b made assign_ticket_key SECURITY DEFINER, which took the abort
+  -- away: project_counters is owned by postgres with relforcerowsecurity =
+  -- false, so the counter update matched for ANY caller and `number` was never
+  -- NULL on this path.
+  --
+  -- SPRIN-101 REVERTED THE FUNCTION TO SECURITY INVOKER (see its definition
+  -- below, which is the authority), so the original text is true again: the
+  -- counter update is filtered by counters_owner for a non-member, matches no
+  -- row, and NOT NULL aborts the statement. That abort is a security property.
+  -- Do not add a default that hides it. tickets_owner's WITH CHECK is the other,
+  -- overlapping control -- two defences, neither of which may be assumed to be
+  -- the one that fired. Any test asserting one of them must discriminate.
   number         int  not null default 0,       -- the N in PROJECTKEY-N
   key            text not null default '',      -- e.g. SPB-14
   summary        text not null,
@@ -1975,8 +1984,19 @@ revoke execute on function public.create_project_counter() from public, anon, au
 --
 -- Conditioning on the project having NO members keeps that instant and nothing
 -- else: from the end of that statement onward the project has an admin, the
--- second half is false forever, and membership is once again the only thing
--- granting read. The plain `or owner_id = (select auth.uid())` was considered and
+-- second half is false, and membership is once again the only thing granting
+-- read.
+--
+-- "False forever" would overstate it, and the residual matters to SPRIN-102.
+-- The condition is ZERO MEMBERS, not "the trigger has fired": if a project is
+-- ever left with no members at all, its owner regains read access. No path
+-- produces that today -- seed_project_admin guarantees one admin at creation,
+-- and a sole admin deleting their own row is the reachable case, which strands
+-- the project rather than emptying it. But SPRIN-102 owns add/remove by email,
+-- and a remove path that can empty a project turns this disjunct back on for
+-- exactly one person. Revisit it there rather than rediscovering it.
+--
+-- The plain `or owner_id = (select auth.uid())` was considered and
 -- REJECTED -- it re-arms ownership as a permanent read grant, so a project's
 -- creator would keep reading it after being removed, and SPRIN-102's member
 -- removal would leak for exactly one person per project.

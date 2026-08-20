@@ -62,10 +62,20 @@ assertServiceRoleOrExplain()
  *
  * WHY NO SECOND ADMIN IS EVER CREATED HERE, and it is not a stylistic choice either.
  * `project-members.integration.test.ts` asserts a whole-DATABASE invariant that every project
- * has EXACTLY ONE admin, and that it is the owner. A second `admin` row anywhere -- even
- * transiently, even in a project this file owns -- turns that sibling suite red for reasons
- * nothing in its own diff explains. The admin side of every assertion here is played by O,
- * whose row `seed_project_admin` creates for free; M joins as a plain `member`.
+ * has EXACTLY ONE admin. A second `admin` row anywhere -- even transiently, even in a project
+ * this file owns -- turns that sibling suite red for reasons nothing in its own diff explains,
+ * because it measures every project in one snapshot and Vitest runs test FILES in parallel.
+ * The admin side of every assertion here is played by O, whose row `seed_project_admin`
+ * creates for free; M joins as a plain `member`. Where an admin genuinely has to change hands
+ * (the SPRIN-101b block below) the swap is a single UPDATE that MOVES the row, so the count
+ * never leaves one -- see the comment there, which is the whole argument.
+ *
+ * THE OWNER-IS-THE-ADMIN half of that sibling invariant is a different matter: SPRIN-101
+ * falsified it on purpose, and the fix belonged in the sibling rather than here. The block
+ * below creates a project whose owner has been swapped OUT of the membership, which is the
+ * designed state `projects_admin_update` describes and which SPRIN-102 will make routine. That
+ * sibling assertion is now scoped to rows the backfill created, where it is still true and is
+ * still what it was written to test.
  *
  * GATING: gated on `SUPABASE_SERVICE_ROLE_KEY` rather than on `RLS_TEST_*`, because it creates
  * its own users and needs a client that bypasses RLS for the fixture and for every read-back.
@@ -679,21 +689,28 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-101 projects resolves to membership',
       const disownedId = created.id
 
       try {
-        // Swap the admin: M in, O out. One admin before, one admin after.
-        const promote = await admin
+        // Swap the admin in ONE statement: O's row MOVES to M, because the primary key is
+        // (project_id, user_id) and M holds no row in this project.
+        //
+        // NOT two statements, and this is load-bearing rather than tidy. An INSERT of M
+        // followed by a DELETE of O leaves the project with TWO admin rows between them, and
+        // `project-members.integration.test.ts` asserts "exactly one admin" over EVERY project
+        // in the database in a single snapshot. Vitest runs test FILES in parallel, so that
+        // snapshot can land inside the window: the sibling suite goes red on the required
+        // `verify` check for a reason nothing in its own diff explains, and the failure matches
+        // none of the documented live-suite flake signatures, whose playbook then says it is
+        // real. Being correct at the endpoints is no defence when the invariant is sampled at
+        // an arbitrary instant. Reversing the order does not help either -- a transient ZERO
+        // admin state fails the same assertion.
+        const swap = await admin
           .from('project_members')
-          .insert({ project_id: disownedId, user_id: mId, role: 'admin' })
-        if (promote.error) throw new Error(`Fixture: could not promote M: ${promote.error.message}`)
-
-        const demote = await admin
-          .from('project_members')
-          .delete()
+          .update({ user_id: mId })
           .eq('project_id', disownedId)
           .eq('user_id', oId)
-          .select('user_id')
-        if (demote.error) throw new Error(`Fixture: could not remove O: ${demote.error.message}`)
-        // Prove the fixture did what it claims: exactly one row removed, and it was O's.
-        expect(demote.data).toEqual([{ user_id: oId }])
+          .select('user_id, role')
+        if (swap.error) throw new Error(`Fixture: could not swap the admin: ${swap.error.message}`)
+        // Prove the fixture did what it claims: exactly one row moved, and it is M's, still admin.
+        expect(swap.data).toEqual([{ user_id: mId, role: 'admin' }])
 
         // O still owns the row -- `owner_id` is unchanged and unchangeable -- and can no
         // longer see it. That is the whole of "an audit column granting nothing".

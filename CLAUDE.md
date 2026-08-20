@@ -188,15 +188,20 @@ alongside it. `anon` holds **nothing** on `profiles`: SPRIN-105 revoked the tabl
 the table was *born* with (nobody had ever revoked it; anon previously read zero rows only
 because RLS filtered `id = auth.uid()` down to nothing for a null caller — the failure shape
 changes from an RLS-filtered empty result to a `42501` privilege refusal, and a test must
-pick the right one). `app_auth` now holds a **third** predicate, `shares_project_with(uuid)`,
-alongside SPRIN-98's `is_project_member`/`is_project_admin`. Those two are affordable as
+pick the right one). `app_auth` held a **third** predicate from SPRIN-105, `shares_project_with(uuid)`,
+alongside SPRIN-98's `is_project_member`/`is_project_admin` — and SPRIN-101b added a **fourth**,
+`project_has_members(uuid)`, which the bootstrap disjunct on `projects_member_read` calls. That one
+takes a **project** id, not a user id, so the foreign-id warning below does not bind it; it is
+`security definer` for a different reason entirely, namely that inlining its `not exists` lets
+`project_members`' own RLS filter the subquery to empty and collapse the policy into the rejected
+variant. Those first two are affordable as
 `security definer` only because they take **no** other-user parameter — SPRIN-98's migration
 warns that adding one "would turn a harmless self-query into an oracle about other people. Do
 not." `shares_project_with` **does** take another user's id and is still affordable, but for a
 narrower, different reason, not a relaxation of that rule: one side of its join is pinned to
 `(select auth.uid())`, so it can only answer "do I share a project with X", never "do X and Y
 share a project" — read the full three-point argument in
-`docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql` §3 before adding a fourth
+`docs/migrations/sprin-105-profiles-email-and-co-member-reads.sql` §3 before adding a **fifth**
 `app_auth` function with a foreign-id parameter. It is not a precedent that "parameters are
 fine now."
 
