@@ -86,6 +86,10 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   `authenticated=w` on `sprint_length_weeks` and `sprint_start_weekday` and nothing else.
   That is what keeps `name`, `key` and `project_type` immutable in the *database* rather than
   only in our code, now that `hasSprints(project)` decides whether sprints exist at all.
+  Re-measured 2026-08-20 during SPRIN-101 and **unchanged** — that migration touches policies
+  only. But it is now the **sole** control on `owner_id` as well: the old `for all` policy's
+  `WITH CHECK` used to pin `owner_id = auth.uid()` on UPDATE too, and `projects_admin_update`
+  deliberately does not. See the SPRIN-101 paragraphs below.
 
   **This bullet used to say `projects` holds no UPDATE privilege at all, and to tell the next
   story to run `grant update (name)` and restore the RLS assertion on `name`. Both halves are
@@ -106,15 +110,39 @@ less, and each is easy to undo by accident while thinking you are tidying up.
 **The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
 Most tables still resolve every policy to `owner_id = auth.uid()`, and rewriting *all* of those
 to a membership check is still the security boundary of the whole app — that scope has not
-shrunk. **Five tables are already rewritten**, ahead of the rest, as stories inside this same
+shrunk. **Six tables are already rewritten**, ahead of the rest, as stories inside this same
 epic: `project_members` (SPRIN-98, four policies resolving through
 `app_auth.is_project_member`/`is_project_admin`); `profiles` (SPRIN-105, four verb-split
 policies where SELECT resolves through `app_auth.shares_project_with` and the three write verbs
-stay `id = (select auth.uid())`); and the three board tables `project_counters`, `sprints` and
+stay `id = (select auth.uid())`); the three board tables `project_counters`, `sprints` and
 `tickets` (SPRIN-100, each still a single `for all` — see the next paragraph, that shape is
 load-bearing — resolving through `app_auth.is_project_member(project_id)` and now carrying
-`to authenticated`). **What is left is `projects` (SPRIN-101) and the four config tables
-(SPRIN-99).** Teams, roles and permissions means rewriting those the same way.
+`to authenticated`); and **`projects` itself (SPRIN-101, four verb-split policies)**. **What is
+left is the four config tables (SPRIN-99), and nothing else.** Teams, roles and permissions
+means rewriting those the same way.
+
+**`projects` is verb-split ON PURPOSE, and the board tables are single `for all` ON PURPOSE.
+Do not "harmonise" them.** The asymmetry is the model, not an inconsistency left to tidy: on
+`sprints` and `tickets` read must stay co-extensive with write or `completeSprint`'s guard
+silently stops holding; on `projects` read is *meant* to be broader than write, because every
+member reads the project they work on and only an **admin** reconfigures it. SPRIN-101's four
+are `projects_member_read` (SELECT, membership), `projects_bootstrap_insert` (INSERT, still
+`owner_id = (select auth.uid())`, purely so creating a project does not require a membership
+that does not exist yet), `projects_admin_update` and `projects_admin_delete` (both
+`app_auth.is_project_admin(id)`).
+
+**Two consequences of that split, both live:**
+- **`owner_id` immutability now rests on the GRANT alone.** The old `for all` policy's
+  `WITH CHECK` pinned `owner_id = auth.uid()` on UPDATE as well as INSERT; `projects_admin_update`
+  says nothing about `owner_id`, because an admin who is not the owner must be able to change the
+  cadence. The surviving control is the stronger one — a privilege check precedes RLS and cannot
+  be filtered — but it is now the **only** one. The four-part obligation two paragraphs up binds
+  harder because of it.
+- **Admin-only DELETE is not a nicety.** Deleting a project cascades through every referencing fk
+  and **RLS is not enforced on cascaded child rows**, so a membership-only DELETE would let a
+  plain member destroy an entire board in one request. Reviewers killed this finding twice during
+  SPRIN-100 as "the actor is the owner deleting their own project" — correct then, and made wrong
+  by SPRIN-101 itself.
 
 **SPRIN-100 added a rule that binds every remaining story in this epic:
 a policy that calls an `app_auth` function must carry `to authenticated`.** Those three tables
@@ -335,10 +363,12 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
 - **One active sprint per project:** enforced by a partial unique index. Surface
   the rejection as a clear message. Do not work around the index.
 - **RLS is on every table, but it is no longer owner-scoped on every table.** This line said
-  "owner-scoped on every table" until SPRIN-100. Five tables now resolve to membership —
-  `project_members`, `profiles`, `project_counters`, `sprints`, `tickets` — and `projects` plus
-  the four config tables still resolve to `owner_id = auth.uid()` pending SPRIN-101 and
-  SPRIN-99. Do not describe the schema as uniformly one or the other; check the policy.
+  "owner-scoped on every table" until SPRIN-100. **Six** tables now resolve to membership —
+  `project_members`, `profiles`, `project_counters`, `sprints`, `tickets` and, since SPRIN-101,
+  `projects` — and only the four config tables still resolve to `owner_id = auth.uid()`, pending
+  SPRIN-99. Do not describe the schema as uniformly one or the other; check the policy. And note
+  that "resolves to membership" is not one shape: the board tables ask **member**, `projects`
+  asks **member to read and admin to write**. Check the verb too.
 
 ## Security rules (non-negotiable)
 - Anon key only in the browser. The service-role key must never ship client-side.
