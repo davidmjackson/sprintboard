@@ -403,15 +403,18 @@ run that collects only the unit-test file count means exactly that, and must be 
 as a failure.
 
 **The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
-**ten more files** than `test:unit` — the ten `*.integration.test.ts` suites: RLS,
-keepalive, signup, login, project, project-members, profiles, board-membership, and the
-cross-tenant write paths. That difference is what stays put. The absolute numbers do not:
+**eleven more files** than `test:unit` — the eleven `*.integration.test.ts` suites: RLS,
+keepalive, signup, login, project, project-members, profiles, board-membership,
+projects-membership, and the cross-tenant write paths. That difference is what stays put. The
+absolute numbers do not:
 every story that adds
 a unit-test file moves both, and they have been wrong in this file twice in a single session
 (44/37 → 45/38 → 46/39). At SPRIN-55 it was **50 vs 43** — down from 51/44, because that
 story deleted two threshold-test files and added one gate test. Re-measured **2026-08-16**,
 after SPRIN-105 added `profiles.integration.test.ts`: **81 vs 72**. Re-measured
 **2026-08-17**, after SPRIN-100 added `board-membership.integration.test.ts`: **82 vs 72**.
+Re-measured **2026-08-20**, after SPRIN-101 added
+`projects-membership.integration.test.ts`: **83 vs 72**.
 Treat every one of these
 as a timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` (all files) and the same command with
@@ -419,8 +422,10 @@ as a timestamped observation, not a constant, and re-derive it with
 
 **The GAP itself moves when a story adds an integration suite** — SPRIN-98 took it from
 seven to eight, SPRIN-105 took it from eight to nine with
-`profiles.integration.test.ts`, and SPRIN-100 has just taken it to **ten** with
-`board-membership.integration.test.ts` for the board-table membership boundary. That is not a
+`profiles.integration.test.ts`, SPRIN-100 took it to ten with
+`board-membership.integration.test.ts` for the board-table membership boundary, and SPRIN-101
+has just taken it to **eleven** with `projects-membership.integration.test.ts` for the
+`projects` table itself. That is not a
 contradiction of the rule above: the invariant is that the gap equals the number of live
 suites, so a story adding one owes this line an update in the same commit — this is that
 update. A gap that has silently *shrunk* is the failure this tripwire exists for.
@@ -428,8 +433,9 @@ update. A gap that has silently *shrunk* is the failure this tripwire exists for
 **AND THE PROSE IS ONLY HALF THE CONTROL.** `verify-gate.test.mjs`'s `LIVE_SUITES` array is
 the executable half, and SPRIN-105 updated this paragraph while leaving that array at eight —
 so its own suite was collectable-but-unregistered for a whole story, which is precisely the
-state the array exists to make impossible. SPRIN-100 registered both. Update the array in the
-same commit as this line, every time.
+state the array exists to make impossible. SPRIN-100 registered both, and SPRIN-101 registered
+both in the same commit that created the suite. Update the array in the same commit as this
+line, every time.
 
 If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the
 live suites silently skipped and the run is a failure however green it looks.
