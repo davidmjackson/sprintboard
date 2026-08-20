@@ -600,6 +600,17 @@ describe('SprintsTab', () => {
 
   // A project with nothing terminal is a real state, not a broken one: the set is empty and
   // `completeSprint` omits its filter, so every ticket returns to the backlog.
+  // ⚠ THIS FIXTURE'S NON-EMPTINESS IS LOAD-BEARING, and became so silently in SPRIN-101.
+  //
+  // The filter below leaves TWO non-terminal rows, so `statuses.length > 0` holds and the
+  // Complete button still renders. That is the whole point: this test pins the fail-safe for
+  // "a project with no terminal status", which is a legitimate instruction — distinct from
+  // "the statuses read gave us nothing", which SPRIN-101's guard now hides the button for.
+  //
+  // "Simplify" this to `statuses: []` and the test does not fail. It silently inverts: the
+  // button disappears, `getByRole` below throws, and if anyone then "fixes" that by asserting
+  // absence instead, the empty-set fail-safe path stops being covered ANYWHERE with no red
+  // in the suite. The two cases look identical in the data and are opposite in meaning.
   it('passes an EMPTY set when no status is in the done category', async () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
     const user = userEvent.setup()
@@ -630,6 +641,29 @@ describe('SprintsTab', () => {
       expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
     },
   )
+
+  // SPRIN-101. The THIRD source of an empty `statuses`, and the only one wearing the 'loaded'
+  // phase — so the `it.each` above cannot see it and every existing test in this file stays
+  // green without the guard. `projects` now resolves to MEMBERSHIP while `project_statuses` is
+  // still owner-scoped until SPRIN-99, so a non-owner member reaches this tab and
+  // `listProjectStatuses` SUCCEEDS with zero rows. Phase 'loaded', `statuses` `[]`, empty
+  // terminal set, `completeSprint` drops its filter, every Done ticket returns to the backlog.
+  //
+  // The role query is paired with a raw DOM one on purpose: `queryByRole` skips `aria-hidden`
+  // subtrees, so on its own it would prove only "not exposed to assistive tech" and would go
+  // green with the button still rendered and clickable. `querySelectorAll('button')` sees the
+  // element whatever its ARIA state, which is what makes this an ABSENCE assertion.
+  it('hides Complete when the statuses read LOADED but returned zero rows', () => {
+    renderTab({
+      sprints: [sprint({ id: 's1', name: 'Active one', status: 'active' })],
+      statuses: [],
+      statusesPhase: 'loaded',
+    })
+
+    const row = screen.getByText('Active one').closest('li') as HTMLElement
+    expect(within(row).queryByRole('button', { name: 'Complete' })).not.toBeInTheDocument()
+    expect([...row.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Complete')
+  })
 
   it('still offers Start while the statuses read is failed — the gate is statuses-only', () => {
     renderTab({

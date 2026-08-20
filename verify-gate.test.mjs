@@ -461,6 +461,12 @@ describe('npm test really collects the live integration suites', () => {
     // membership rather than ownership, plus the anon empty-array contract the production
     // keepalive cron depends on.
     'src/test/board-membership.integration.test.ts',
+    // SPRIN-101. The projects table itself: SELECT resolving to membership while UPDATE and
+    // DELETE require the admin role -- the first table in this schema where read is
+    // deliberately BROADER than write. Registered in the SAME commit that created the suite,
+    // which is the whole point of the two notes above; SPRIN-98 and SPRIN-105 each updated
+    // CLAUDE.md's prose half and left this array behind, one story apart.
+    'src/test/projects-membership.integration.test.ts',
   ]
 
   const collected = (() => {

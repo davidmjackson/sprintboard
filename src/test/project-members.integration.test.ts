@@ -184,7 +184,7 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
     })
 
     it.skipIf(!hasServiceRoleKey)(
-      'every project has an admin, it is the owner, and no project has a second one',
+      'every project has exactly one admin, and on backfilled rows it is the owner',
       async () => {
         // AC3 -- the BACKFILL. Nothing else in this suite covers it: every fixture project
         // is created inside beforeAll and gets its admin row from the TRIGGER, not the
@@ -214,18 +214,12 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         const admins = (p: (typeof rows)[number]) =>
           p.project_members.filter((m) => m.role === 'admin')
 
-        // THREE independent properties. An earlier version asserted only the first two,
-        // and the first was DEAD: `no admin at all` is a strict subset of `no admin equal
-        // to the owner`, so it could never be the assertion that fired.
-        const adminIsNotOwner = rows.filter((p) => !admins(p).some((m) => m.user_id === p.owner_id))
         // CARDINALITY, which the test's old name claimed ("exactly one admin") and no
         // assertion checked. A project with the owner as admin PLUS a stranger as admin
         // passed happily -- which is precisely the leak SPRIN-102's add-member path could
-        // introduce, and precisely what this test would be relied on to catch.
+        // introduce, and precisely what this test would be relied on to catch. This half
+        // stays WHOLE-DATABASE: no story makes two admins, or zero, a legitimate state.
         const multipleAdmins = rows.filter((p) => admins(p).length !== 1)
-
-        expect(adminIsNotOwner).toEqual([])
-        expect(multipleAdmins).toEqual([])
 
         // POSITIVE CONTROL, and it has to be sharper than `rows.length > 0`. This suite's
         // own three fixture projects satisfy that, so a plain count would keep the test
@@ -234,6 +228,33 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         // it. Every fixture project is created inside beforeAll and seeded by the TRIGGER.
         const MIGRATION_APPLIED = '2026-08-16'
         const preMigration = rows.filter((p) => p.created_at < MIGRATION_APPLIED)
+
+        // ADMIN-IS-OWNER IS SCOPED TO PRE-MIGRATION ROWS, and the scope is the assertion's
+        // real subject rather than a concession to a flaky sibling. It exists to test the
+        // BACKFILL, and only rows predating the migration exercise that.
+        //
+        // As a whole-database invariant it was FALSIFIED BY SPRIN-101. `projects_admin_update`
+        // and `projects_admin_delete` resolve to `app_auth.is_project_admin`, deliberately not
+        // to ownership, so "the admin is the owner" stopped being a property of this schema and
+        // became a property of how a project HAPPENS to have been created.
+        // `projects-membership.integration.test.ts` creates the counter-example on purpose --
+        // a project whose owner has been swapped out of the membership -- and SPRIN-102's
+        // add/remove path will make it routine. Left unscoped, this line goes red on a sibling
+        // suite's legitimate fixture, on the required `verify` check, for a reason nothing in
+        // that PR's diff explains.
+        //
+        // The property this used to protect for NEW projects -- the creator becomes the sole
+        // admin, via `seed_project_admin` -- is NOT left unpinned by the narrowing:
+        // `projects-membership.integration.test.ts` asserts it directly against the trigger.
+        // An earlier version of this test asserted `no admin at all` as a separate property
+        // and it was DEAD, being a strict subset of `no admin equal to the owner`; the
+        // cardinality check above is what covers it now, and it covers it everywhere.
+        const adminIsNotOwner = preMigration.filter(
+          (p) => !admins(p).some((m) => m.user_id === p.owner_id),
+        )
+
+        expect(adminIsNotOwner).toEqual([])
+        expect(multipleAdmins).toEqual([])
         expect(preMigration.length).toBeGreaterThan(0)
       },
     )

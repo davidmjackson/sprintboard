@@ -23,8 +23,9 @@ import { StartSprintButton } from './StartSprintButton'
  * a duplicate 'Sprint 1' if sprints are still in flight, and an invisible create (the shell's
  * `onSprintCreated` guard drops it) if the read failed.
  *
- * The Complete trigger is gated on `statusesPhase` for the same class of reason (SPRIN-77) —
- * see `canComplete` below, where the specific failure mode is spelled out.
+ * The Complete trigger is gated on `statusesPhase` for the same class of reason (SPRIN-77),
+ * and on the statuses being NON-EMPTY as well (SPRIN-101) — see `canComplete` below, where
+ * both failure modes are spelled out.
  */
 export function SprintsTab() {
   const {
@@ -87,7 +88,22 @@ export function SprintsTab() {
   // literal and could not be wrong; now that it is read, a degraded read must not be allowed
   // to look like an answer. Hiding the button is the honest degradation — the same one the
   // ticket-count badge makes — and the tab's own Retry restores it.
-  const canComplete = statusesPhase === 'loaded'
+  //
+  // The LENGTH check is not redundant with the phase check, and deleting it as such is the
+  // mistake this paragraph exists to prevent (SPRIN-101). A phase of 'loaded' means the read
+  // SUCCEEDED, not that it returned anything. `projects` now resolves to project MEMBERSHIP
+  // while `project_statuses` is still owner-scoped until SPRIN-99, so a non-owner member
+  // reaches this tab — `ProjectShell` no longer redirects them — and `listProjectStatuses`
+  // returns them zero rows without erroring. That is a THIRD source of an empty `statuses`,
+  // and unlike loading and failed it wears the 'loaded' phase, so the phase check alone lets
+  // it straight through to the same empty terminal set and the same data loss. An empty read
+  // is not an answer whatever phase it arrives under.
+  //
+  // The guard belongs HERE and not in `completeSprint`: an empty `terminalSlugs` is a
+  // legitimate instruction from a project that genuinely has no terminal status (pinned by
+  // its own tests in `sprints.ts`), and only this call site can tell that apart from a
+  // degraded read. Do not push it down the stack.
+  const canComplete = statusesPhase === 'loaded' && statuses.length > 0
 
   return (
     <div className="space-y-4">

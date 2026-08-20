@@ -582,17 +582,26 @@ create table tickets (
   -- demands a key from the client, which is how you end up generating keys
   -- client-side.
   --
-  -- CORRECTED AT SPRIN-100b, and this one mattered: these lines used to end
-  -- "the trigger still assigns NULL when the counter update matches no row (a
-  -- cross-tenant insert), and NOT NULL then aborts the statement. That abort is
-  -- a security property. Do not add a default that hides it." The abort no
-  -- longer happens. assign_ticket_key is SECURITY DEFINER, and project_counters
-  -- is owned by postgres with relforcerowsecurity = false, so the counter update
-  -- matches for ANY caller and `number` is never NULL on this path. The security
-  -- property that remains is tickets_owner's WITH CHECK, which refuses the row
-  -- before the constraint layer is reached. Instructing a future reader to
-  -- preserve a deleted control is worse than saying nothing, which is why this
-  -- says what actually holds instead.
+  -- CORRECTED AT SPRIN-100b AND CORRECTED BACK AT SPRIN-101. Read both halves,
+  -- because the second reverses the first and a half-remembered version of this
+  -- comment is worse than none.
+  --
+  -- Originally: "the trigger still assigns NULL when the counter update matches
+  -- no row (a cross-tenant insert), and NOT NULL then aborts the statement. That
+  -- abort is a security property. Do not add a default that hides it."
+  --
+  -- SPRIN-100b made assign_ticket_key SECURITY DEFINER, which took the abort
+  -- away: project_counters is owned by postgres with relforcerowsecurity =
+  -- false, so the counter update matched for ANY caller and `number` was never
+  -- NULL on this path.
+  --
+  -- SPRIN-101 REVERTED THE FUNCTION TO SECURITY INVOKER (see its definition
+  -- below, which is the authority), so the original text is true again: the
+  -- counter update is filtered by counters_owner for a non-member, matches no
+  -- row, and NOT NULL aborts the statement. That abort is a security property.
+  -- Do not add a default that hides it. tickets_owner's WITH CHECK is the other,
+  -- overlapping control -- two defences, neither of which may be assumed to be
+  -- the one that fired. Any test asserting one of them must discriminate.
   number         int  not null default 0,       -- the N in PROJECTKEY-N
   key            text not null default '',      -- e.g. SPB-14
   summary        text not null,
@@ -696,37 +705,48 @@ create index tickets_project_status_idx on tickets(project_id, status);
 -- ============================================================
 -- Ticket key generation  (atomic, race-safe)
 --
--- SECURITY DEFINER since SPRIN-100b. This comment used to say the opposite —
--- "deliberately NOT security definer", so that the counter update below stayed
--- permitted only by `counters_owner`, making a mistake in that policy break
--- ticket creation loudly. That was a TRIPWIRE rather than a boundary, and
--- SPRIN-100b knowingly gave it up. Nothing replaces it. Do not restore the
--- sentence without restoring the invoker, and do not restore the invoker without
--- reading why it changed.
+-- SECURITY INVOKER, and it has been all three of invoker, definer, and invoker
+-- again. The round trip is the documentation: read it before changing this line
+-- a fourth time.
 --
--- WHY IT HAD TO CHANGE, and the general trap: this function READS `projects` as
--- well as writing `project_counters`. Once SPRIN-100 made the board tables
--- resolve to membership, a member could update the counter but the
--- `select key into v_key from public.projects` below returned ZERO ROWS, because
--- `projects_owner` is still `owner_id = auth.uid()` and remains SPRIN-101's to
--- change. v_key was NULL, so the key was NULL, and the NOT NULL aborted every
--- member's ticket creation with 23502. A SECURITY INVOKER trigger has a hidden
--- dependency on every table it reads, not only the ones it writes.
+-- DELIBERATELY NOT SECURITY DEFINER. It runs as the caller, so BOTH statements
+-- below are permitted only by RLS -- the counter update by `counters_owner`, the
+-- projects read by `projects_member_read`. That is a TRIPWIRE, not a boundary:
+-- narrowing either policy breaks ticket creation loudly instead of silently.
+--
+-- WHY IT BRIEFLY WAS A DEFINER, and the general trap worth keeping: this
+-- function READS `projects` as well as writing `project_counters`. When SPRIN-100
+-- made the board tables resolve to membership but left `projects` owner-scoped, a
+-- member could update the counter while
+-- `select key into v_key from public.projects` returned ZERO ROWS. v_key was
+-- NULL, so the key was NULL, and the NOT NULL aborted every member's ticket
+-- creation with 23502. sprin-100b bought that back with SECURITY DEFINER and
+-- recorded, in writing, that it was knowingly deleting the tripwire and that
+-- SPRIN-101 should decide -- not inherit -- whether to restore it.
+--
+-- SPRIN-101 restored it. Once `projects` SELECT resolves to membership the
+-- member's read succeeds as themselves, so the definer earns nothing and costs a
+-- standing RLS bypass. Four definer functions went back to three.
+--
+-- A SECURITY INVOKER TRIGGER HAS A HIDDEN DEPENDENCY ON EVERY TABLE IT READS,
+-- not only the ones it writes. That dependency on `projects` was written down
+-- nowhere and cost a story to find. It is live again now, which is the price of
+-- the tripwire: if a later story narrows `projects_member_read`, ticket creation
+-- breaks here. That is the intended failure.
 --
 -- The boundary that actually stops a stranger is unchanged and is NOT this
 -- function: `tickets_owner`'s WITH CHECK is evaluated after BEFORE-triggers run,
 -- so a stranger's insert is refused and this trigger's counter increment rolls
 -- back with the statement. board-membership.integration.test.ts asserts both
--- halves.
---
--- FOR SPRIN-101: when `projects` SELECT resolves to membership, the reason for
--- this definer disappears and reverting it would restore the tripwire. Make that
--- a decision rather than an inheritance. See
--- docs/migrations/sprin-100b-ticket-key-definer.sql for the full argument.
+-- halves, and its stranger-insert assertion (42501 with the row-level-security
+-- message, NOT 23502) is what proves RLS is evaluated before the NOT NULL check
+-- now that a stranger's v_key is NULL again. See
+-- docs/migrations/sprin-100b-ticket-key-definer.sql and
+-- docs/migrations/sprin-101-projects-membership.sql section 4 for both arguments.
 -- ============================================================
 create or replace function assign_ticket_key()
 returns trigger language plpgsql
-security definer set search_path = ''
+security invoker set search_path = ''
 as $$
 declare
   v_key text;
@@ -750,10 +770,17 @@ create trigger on_ticket_insert
   before insert on tickets
   for each row execute function assign_ticket_key();
 
--- A definer function must not keep an EXECUTE grant it does not need, and this one
--- needs none: Postgres checks EXECUTE on a trigger function at CREATE TRIGGER time,
--- not on each fire, so revoking it does not stop the trigger. Same shape as
+-- No function should keep an EXECUTE grant it does not need, and this one needs
+-- none: Postgres checks EXECUTE on a trigger function at CREATE TRIGGER time, not
+-- on each fire, so revoking it does not stop the trigger. Same shape as
 -- create_project_counter, seed_project_admin and seed_project_statuses.
+--
+-- The revoke arrived with sprin-100b, when this was briefly a definer and the
+-- grant was a live concern. SPRIN-101 returned the function to invoker and KEPT
+-- the revoke: as an invoker it carries no privilege of its own, so this is now
+-- pure defence in depth rather than a boundary. It returns trigger, so PostgREST
+-- cannot reach it as an RPC in any case. Keeping it costs nothing and keeps all
+-- four trigger functions the same shape.
 --
 -- AFTER the create trigger above, deliberately, and matching every sibling. Because
 -- the check happens at CREATE TRIGGER time, revoking first is harmless only while
@@ -898,11 +925,16 @@ alter table tickets           enable row level security;
 -- here and that section a fresh run of this file has no policy on profiles at
 -- all, which is fail-closed and therefore safe, not a gap.
 
--- projects: owner only
-create policy projects_owner on projects
-  for all
-  using (owner_id = auth.uid())
-  with check (owner_id = auth.uid());
+-- projects: MOVED. SPRIN-101 replaced the single owner-scoped `for all` policy
+-- that used to sit here with FOUR verb-split policies -- SELECT resolves to
+-- membership, UPDATE and DELETE additionally require the 'admin' role, and
+-- INSERT stays owner-scoped purely to bootstrap. Three of the four call
+-- app_auth.is_project_admin / is_project_member and so cannot be declared this
+-- early: app_auth and project_members do not exist until the SPRIN-98 section at
+-- the foot of this file. Same forward-reference reasoning as profiles_read and
+-- counters_owner above. The live definitions are in the SPRIN-101 section at the
+-- foot. Between here and there a fresh run of this file has no policy on
+-- projects at all, which is fail-closed and therefore safe, not a gap.
 
 -- project_counters: MOVED. SPRIN-100 rewrote counters_owner from ownership to
 -- membership, so it now calls app_auth.is_project_member and cannot be declared
@@ -1486,10 +1518,38 @@ as $$
                    and m.role = 'admin');
 $$;
 
+-- SPRIN-101b. Does this project have ANY members, regardless of who they are?
+--
+-- Exists solely to make projects_member_read's bootstrap disjunct conditional. It
+-- is what stops that disjunct being a permanent owner read-grant: it is TRUE only
+-- in the instant between a project row landing and its AFTER INSERT trigger
+-- seeding the admin membership, which is exactly the window INSERT ... RETURNING
+-- reads in.
+--
+-- IT MUST BE SECURITY DEFINER, and inlining the same subquery into the policy is
+-- a silent security downgrade rather than a simplification. Evaluated as the
+-- CALLING role, the subquery is filtered by project_members' own RLS, which shows
+-- a caller only the rows of projects they belong to -- so "has no members" would
+-- read TRUE for every project the caller is not a member of, and the policy would
+-- collapse into the plain `or owner_id = uid` variant that SPRIN-101b explicitly
+-- rejected. No syntax error, no failing test.
+--
+-- It takes a PROJECT id and no user parameter, so SPRIN-98's warning about an
+-- app_auth function that takes another user's id becoming an oracle does not
+-- apply: it answers only "are there any", never "who".
+create or replace function app_auth.project_has_members(p_project_id uuid)
+returns boolean language sql stable security definer set search_path = ''
+as $$
+  select exists (select 1 from public.project_members m
+                 where m.project_id = p_project_id);
+$$;
+
 revoke execute on function app_auth.is_project_member(uuid) from public;
 revoke execute on function app_auth.is_project_admin(uuid) from public;
+revoke execute on function app_auth.project_has_members(uuid) from public;
 grant  execute on function app_auth.is_project_member(uuid) to authenticated;
 grant  execute on function app_auth.is_project_admin(uuid) to authenticated;
+grant  execute on function app_auth.project_has_members(uuid) to authenticated;
 
 alter table project_members enable row level security;
 
@@ -1869,3 +1929,142 @@ end;
 $$;
 
 revoke execute on function public.create_project_counter() from public, anon, authenticated;
+
+-- ============================================================
+-- SPRIN-101 — the projects table resolves to membership (epic SPRIN-75, story 4)
+-- ============================================================
+-- The full argument, with the measurements it rests on, is in
+-- docs/migrations/sprin-101-projects-membership.sql. Verify applied state from
+-- the catalogue rather than from this line or the SQL editor's "Success".
+--
+-- projects_owner -- ONE `for all` policy, no TO clause, owner_id = auth.uid() in
+-- both clauses -- becomes FOUR verb-split policies. Its old body sat in the main
+-- body of this file and has been replaced there by a pointer to this section,
+-- because three of the four call app_auth predicates and would be a forward
+-- reference declared that early. Same treatment as profiles_read and
+-- counters_owner.
+--
+-- THIS TABLE IS DELIBERATELY VERB-SPLIT, WHICH THE BOARD TABLES ARE DELIBERATELY
+-- NOT, and the asymmetry is the design rather than an inconsistency. On sprints
+-- and tickets, read and write must stay co-extensive: completeSprint's guard is
+-- correct only because `sprints_owner` asks one question for both. On projects,
+-- read is MEANT to be broader than write -- every member reads the project they
+-- work on, only an admin reconfigures it. That is David's settled model for the
+-- epic: admins configure, members do board work.
+--
+-- The cost of that asymmetry is real and lands on SPRIN-104: any app-layer path
+-- that writes to projects while leaning on the policy's USING breadth now
+-- silently affects zero rows for a non-admin member. updateProjectCadence in
+-- src/lib/projects.ts is exactly such a path and maps zero rows to 'unknown'.
+--
+-- WHY `to authenticated` ON ALL FOUR. Measured 2026-08-20, projects grants anon
+-- ardDxtm -- INSERT, SELECT and DELETE. A policy with no TO clause covers
+-- `public`, anon included, and policy expressions are evaluated as the CALLING
+-- role; anon holds no USAGE on app_auth and no EXECUTE on its functions. Without
+-- the clause an anonymous SELECT would raise `permission denied for schema
+-- app_auth` (42501) where today it is filtered to a clean empty array. With it,
+-- anon matches no policy at all: SELECT returns [], INSERT and DELETE are refused
+-- by RLS. Same rule SPRIN-100 established; projects is the second table to need
+-- it. anon's now-pointless a/d grants belong to SPRIN-103's schema-wide sweep.
+
+-- SELECT: every project the caller is a member of, and no other. NO role
+-- predicate -- admins and members alike read the project they work on.
+--
+-- THE SECOND DISJUNCT IS NOT AN OWNERSHIP FALLBACK, AND DELETING THE
+-- `not project_has_members` HALF IS A SECURITY REGRESSION, NOT A SIMPLIFICATION.
+-- It was added by SPRIN-101b after the membership-only version broke every project
+-- INSERT in the application with
+--
+--   42501  new row violates row-level security policy for table "projects"
+--
+-- because INSERT ... RETURNING applies the SELECT policy to the row being
+-- returned, and the membership row that satisfies it is created by
+-- seed_project_admin -- an AFTER INSERT trigger that has not fired at that point.
+-- The row is, for one instant, owned by the caller and readable by nobody.
+--
+-- Conditioning on the project having NO members keeps that instant and nothing
+-- else: from the end of that statement onward the project has an admin, the
+-- second half is false, and membership is once again the only thing granting
+-- read.
+--
+-- "False forever" would overstate it, and the residual matters to SPRIN-102.
+-- The condition is ZERO MEMBERS, not "the trigger has fired": if a project is
+-- ever left with no members at all, its owner regains read access. No path
+-- produces that today -- seed_project_admin guarantees one admin at creation,
+-- and a sole admin deleting their own row is the reachable case, which strands
+-- the project rather than emptying it. But SPRIN-102 owns add/remove by email,
+-- and a remove path that can empty a project turns this disjunct back on for
+-- exactly one person. Revisit it there rather than rediscovering it.
+--
+-- The plain `or owner_id = (select auth.uid())` was considered and
+-- REJECTED -- it re-arms ownership as a permanent read grant, so a project's
+-- creator would keep reading it after being removed, and SPRIN-102's member
+-- removal would leak for exactly one person per project.
+--
+-- See docs/migrations/sprin-101b-projects-bootstrap-read.sql for the probe that
+-- discriminated the two hypotheses (a bare INSERT succeeded where
+-- insert().select() raised 42501, which is what cleared the INSERT policy of
+-- suspicion).
+create policy projects_member_read on projects
+  for select
+  to authenticated
+  using (
+    app_auth.is_project_member(projects.id)
+    or (
+      projects.owner_id = (select auth.uid())
+      and not app_auth.project_has_members(projects.id)
+    )
+  );
+
+-- INSERT: the BOOTSTRAP, and the reason owner_id still appears in a policy at
+-- all. If authority came only from membership rows, creating a project would
+-- require a membership that does not yet exist and every creation would fail at
+-- insert time. owner_id remains an AUDIT column that grants nothing else.
+--
+-- seed_project_admin (AFTER INSERT, definer) then creates the admin row in this
+-- same transaction, reading NEW.OWNER_ID rather than auth.uid() -- which is why a
+-- service-role fixture insert, with no auth.uid() at all, still seeds an admin
+-- and does not create a project nobody can administer.
+--
+-- The wrapped (select auth.uid()) form is deliberate: it keeps the uid read out
+-- of the per-row path, which is what stops this policy re-adding the
+-- auth_rls_initplan WARN that the other three clear.
+create policy projects_bootstrap_insert on projects
+  for insert
+  to authenticated
+  with check (owner_id = (select auth.uid()));
+
+-- UPDATE: admin only. The predicate is repeated in WITH CHECK rather than left to
+-- default, so a row cannot be updated INTO a project the caller does not
+-- administer. Both clauses read alike because `id` is not updatable -- but
+-- writing only USING would make that grant load-bearing in a second, undocumented
+-- place.
+--
+-- NOTE WHAT THIS GIVES UP. The old for-all policy's WITH CHECK pinned
+-- owner_id = auth.uid() on UPDATE as well as INSERT. This one says nothing about
+-- owner_id, deliberately, because an admin who is not the owner must be able to
+-- change the cadence. Ownership immutability therefore now rests on the GRANT
+-- alone: projects holds no table-level UPDATE for authenticated and exactly two
+-- column grants, sprint_length_weeks and sprint_start_weekday. That is the
+-- stronger of the two controls -- a privilege check precedes RLS and cannot be
+-- filtered -- but it is now the ONLY one, so anyone running
+-- `grant update (owner_id)` gets no second refusal.
+create policy projects_admin_update on projects
+  for update
+  to authenticated
+  using      (app_auth.is_project_admin(projects.id))
+  with check (app_auth.is_project_admin(projects.id));
+
+-- DELETE: admin only, and this half is NOT optional.
+--
+-- Deleting a project cascades through every referencing fk -- counters, sprints,
+-- tickets, statuses, fields, options, values, memberships -- and RLS IS NOT
+-- ENFORCED ON CASCADED CHILD ROWS. Under a membership-only DELETE a plain member
+-- would destroy the entire board with one request. Restricting it to admins is
+-- what keeps the blast radius matched to the authority. This was killed twice by
+-- reviewers during SPRIN-100 as "the actor is the owner deleting their own
+-- project" -- correct then, and made wrong by this very migration.
+create policy projects_admin_delete on projects
+  for delete
+  to authenticated
+  using (app_auth.is_project_admin(projects.id));

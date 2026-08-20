@@ -558,20 +558,36 @@ describe('the schema parser can still see the whole truth', () => {
      * privilege could widen in the applied artefact with nothing anywhere going red — the
      * precise shape of "a comment is not a control".
      */
-    const grantMatch = /grant update \(([^)]*)\) on projects to authenticated/.exec(
-      fromMigrations.join(';'),
-    )
+    /**
+     * EVERY column grant, not the first one a regex happens to hit — and the difference is
+     * not hypothetical. This read `/grant update \(([^)]*)\) on projects to authenticated/`
+     * once, non-globally, against the JOINED statement list, which is sorted
+     * lexicographically. So a SECOND `grant update (<col>) on projects to authenticated` in a
+     * later migration — the exact shape CLAUDE.md's four-part obligation prescribes for
+     * widening this table — was read only when its text sorted BEFORE the incumbent
+     * `grant update (sprint_length_weeks, sprint_start_weekday) …`. Whether the guard fired
+     * was decided by the alphabetical position of the column name: `grant update (description)`
+     * reddened, `grant update (wip_limit)` stayed green. Measured by mutation, SPRIN-101 review.
+     */
+    const COLUMN_GRANT = /grant update \(([^)]*)\) on projects to authenticated/
+    const columnGrants = fromMigrations.filter((statement) => COLUMN_GRANT.test(statement))
     expect(
-      grantMatch,
+      columnGrants,
       'No `grant update (<columns>) on projects to authenticated` statement was found in the ' +
         'migrations. Either it was removed — in which case the cadence form 42501s on every ' +
         'save — or it was reworded and this assertion is now reading nothing.',
-    ).not.toBeNull()
+    ).not.toEqual([])
 
-    const grantedColumns = (grantMatch?.[1] ?? '')
-      .split(',')
-      .map((column) => column.trim())
-      .sort()
+    const grantedColumns = [
+      ...new Set(
+        columnGrants.flatMap((statement) =>
+          (COLUMN_GRANT.exec(statement)?.[1] ?? '')
+            .split(',')
+            .map((column) => column.trim())
+            .filter(Boolean),
+        ),
+      ),
+    ].sort()
     expect(
       grantedColumns,
       'The columns granted UPDATE on projects by the migrations no longer match ' +
@@ -581,6 +597,34 @@ describe('the schema parser can still see the whole truth', () => {
         'never uses and no other test can see; widening only the constant ships a write that ' +
         'silently 42501s.',
     ).toEqual([...SPRINT_CADENCE_COLUMNS].sort())
+
+    /**
+     * A TABLE-LEVEL grant matches no column-list regex at all, so it was invisible here
+     * UNCONDITIONALLY — not merely for half the alphabet. It is also the more damaging of the
+     * two: `grant update on projects to authenticated;` restores UPDATE on EVERY column,
+     * including `owner_id`, `name`, `key` and `project_type`, which is precisely the privilege
+     * SPRIN-82 revoked. The vacuity guard above does not catch it either, being satisfied by
+     * the incumbent column grant.
+     *
+     * This binds harder since SPRIN-101: `projects_admin_update` deliberately does not pin
+     * `owner_id` in its WITH CHECK (an admin who is not the owner must be able to change the
+     * cadence), so the old policy's WITH CHECK is gone and THIS GRANT IS THE ONLY REMAINING
+     * CONTROL on `owner_id`. Asserted against both files, because either one drifting is a
+     * defect: the migrations are the applied artefact, the doc is what a rebuild would apply.
+     */
+    const TABLE_LEVEL_GRANT = /grant\s+update\s+on\s+projects\s+to\s+(authenticated|anon)/i
+    for (const [label, statements] of [
+      ['docs/migrations', fromMigrations],
+      ['docs/sprintboard_phase1_schema.sql', fromDoc],
+    ] as const) {
+      expect(
+        statements.filter((statement) => TABLE_LEVEL_GRANT.test(statement)),
+        `${label} now contains a TABLE-LEVEL \`grant update on projects\`, which grants UPDATE ` +
+          'on every column — owner_id included. Since SPRIN-101 split the projects policies by ' +
+          'verb, the column grant is the only control left on owner_id. Grant the specific ' +
+          'column instead, and discharge all four parts of the obligation in CLAUDE.md.',
+      ).toEqual([])
+    }
 
     // Sequence, which the sorted comparison above cannot see. See the docblock: a table-level
     // revoke cascades to column privileges, so the revoke MUST precede the column grant.
