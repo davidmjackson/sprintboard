@@ -600,6 +600,17 @@ describe('SprintsTab', () => {
 
   // A project with nothing terminal is a real state, not a broken one: the set is empty and
   // `completeSprint` omits its filter, so every ticket returns to the backlog.
+  // ⚠ THIS FIXTURE'S NON-EMPTINESS IS LOAD-BEARING, and became so silently in SPRIN-101.
+  //
+  // The filter below leaves TWO non-terminal rows, so `statuses.length > 0` holds and the
+  // Complete button still renders. That is the whole point: this test pins the fail-safe for
+  // "a project with no terminal status", which is a legitimate instruction — distinct from
+  // "the statuses read gave us nothing", which SPRIN-101's guard now hides the button for.
+  //
+  // "Simplify" this to `statuses: []` and the test does not fail. It silently inverts: the
+  // button disappears, `getByRole` below throws, and if anyone then "fixes" that by asserting
+  // absence instead, the empty-set fail-safe path stops being covered ANYWHERE with no red
+  // in the suite. The two cases look identical in the data and are opposite in meaning.
   it('passes an EMPTY set when no status is in the done category', async () => {
     mockComplete.mockResolvedValue({ ok: false, error: 'unknown' })
     const user = userEvent.setup()
