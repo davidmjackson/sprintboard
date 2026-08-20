@@ -433,6 +433,47 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-101 projects resolves to membership',
       expect(readBack.error).toBeNull()
       expect(readBack.data).toEqual([{ id: newProjectId }])
     }, 30_000)
+
+    /**
+     * THE NEGATIVE FOR `projects_bootstrap_insert`, AND IT IS DELIBERATELY WRITTEN WITHOUT
+     * `.select()`. That omission is the entire test; with RETURNING it proves nothing.
+     *
+     * `owner_id = (select auth.uid())` in this policy's WITH CHECK is, since SPRIN-101 split
+     * these policies by verb, the ONLY thing at INSERT time stopping an authenticated user
+     * attributing a project to someone else -- and `seed_project_admin` reads NEW.owner_id, so
+     * a row that lands names the VICTIM as its admin.
+     *
+     * WHY RETURNING WOULD MASK IT. Ask for the row back and `projects_member_read` is applied
+     * to the returned projection, where BOTH disjuncts are false: `is_project_member` (the
+     * AFTER INSERT trigger has not fired) and `owner_id = uid` (the row names O, the caller is
+     * N). That refusal carries the SAME 42501 and the SAME "new row violates row-level
+     * security policy" wording as the WITH CHECK refusal -- measured in this story's own
+     * sprin-101b probe. So with the INSERT policy weakened to `true`, a RETURNING insert still
+     * fails, with an identical error, and a test asserting code plus message plus null data
+     * stays green while the control is gone. A bare insert never consults the SELECT policy,
+     * which is the only shape that isolates the WITH CHECK.
+     *
+     * `projects.integration.test.ts:318` is the pre-existing version of this assertion and it
+     * stopped discriminating for exactly this reason -- SPRIN-101 is what broke it, and its own
+     * comment predicted the class by name.
+     */
+    it('refuses an INSERT that attributes the project to another user, and lands no row', async () => {
+      const key = runKey()
+      const refused = await nClient
+        .from('projects')
+        .insert({ owner_id: oId, name: 'Attributed to someone else', key })
+
+      expect(refused.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      // The WITH CHECK wording, not a privilege refusal: a missing grant would say
+      // `permission denied for table projects`, and 42501 has both authors on this table.
+      expect(refused.error?.message).toMatch(/violates row-level security policy/)
+
+      // ...and prove no row landed, read past RLS. Without this the assertion above passes on
+      // a refusal raised AFTER the write, and `projects.key` is unique so this is exact.
+      const landed = await admin.from('projects').select('id, owner_id').eq('key', key)
+      expect(landed.error).toBeNull()
+      expect(landed.data).toEqual([])
+    }, 30_000)
   })
 
   describe('AC4 -- a member reads the project but cannot update it', () => {
