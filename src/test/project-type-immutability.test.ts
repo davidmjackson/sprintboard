@@ -253,7 +253,33 @@ const CALL_ONLY_MEMBERS = new Set(['from', 'rpc', 'update', 'upsert'])
  * after user B calls it on user A's project. Any name added here needs the same kind of
  * evidence somewhere, and a note saying where.
  */
-const ALLOWED_RPCS = new Set(['reorder_project_statuses'])
+const ALLOWED_RPCS = new Set([
+  'reorder_project_statuses',
+  // SPRIN-102's three member-management RPCs. They are the ONLY write path to
+  // `project_members` since that story revoked insert/update/delete/truncate from
+  // `authenticated`, so the app cannot avoid calling them.
+  //
+  // WHY THEY CANNOT WRITE `projects.project_type`, and be precise about which part is
+  // evidence and which is reading. Their bodies are recorded verbatim in
+  // `docs/sprintboard_phase1_schema.sql` (the SPRIN-102 section) and in
+  // `docs/migrations/sprin-102-member-management.sql`. Between them, the only table any of
+  // the three WRITES is `project_members`; the only table any of them READS is `profiles`,
+  // plus `project_members` again through `app_auth.is_project_admin`, whose own body is a
+  // single `exists` over `project_members`. The string `projects` does not appear in any of
+  // the three except inside the schema-qualified `public.project_members`.
+  //
+  // THESE ARE `security definer`, WHICH IS THE OPPOSITE OF `reorder_project_statuses`'s
+  // position above, so do not carry that argument across. Definer means RLS would NOT stop
+  // one of these writing `projects` if someone added such a statement. What stands in for
+  // that is narrower and worth stating honestly: nothing in TypeScript can see it, exactly
+  // as the note above concedes for `reorder_project_statuses`, and the live evidence is
+  // "the RPCs leave the project row alone" in `src/test/member-management.integration.test.ts`
+  // -- which exercises all three and then asserts the project's own columns are byte-identical.
+  // Change a body in a migration and that test is what goes red.
+  'add_project_member_by_email',
+  'set_project_member_role',
+  'remove_project_member',
+])
 
 /**
  * The docblock above says SEVEN checks. These two numbers are that claim in a form a

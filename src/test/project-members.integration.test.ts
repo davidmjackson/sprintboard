@@ -184,7 +184,7 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
     })
 
     it.skipIf(!hasServiceRoleKey)(
-      'every project has exactly one admin, and on backfilled rows it is the owner',
+      'every project has at least one admin, and on backfilled rows it is the owner',
       async () => {
         // AC3 -- the BACKFILL. Nothing else in this suite covers it: every fixture project
         // is created inside beforeAll and gets its admin row from the TRIGGER, not the
@@ -214,12 +214,27 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         const admins = (p: (typeof rows)[number]) =>
           p.project_members.filter((m) => m.role === 'admin')
 
-        // CARDINALITY, which the test's old name claimed ("exactly one admin") and no
-        // assertion checked. A project with the owner as admin PLUS a stranger as admin
-        // passed happily -- which is precisely the leak SPRIN-102's add-member path could
-        // introduce, and precisely what this test would be relied on to catch. This half
-        // stays WHOLE-DATABASE: no story makes two admins, or zero, a legitimate state.
-        const multipleAdmins = rows.filter((p) => admins(p).length !== 1)
+        // CARDINALITY: AT LEAST one admin, never EXACTLY one. This half stays
+        // WHOLE-DATABASE -- no story makes a ZERO-admin project a legitimate state, and
+        // SPRIN-102's last-admin guard is the thing that now enforces it.
+        //
+        // THIS ASSERTION USED TO READ `!== 1` AND THE COMMENT ABOVE IT USED TO NAME
+        // SPRIN-102 AS "PRECISELY THE LEAK" IT WOULD CATCH. Both were written before that
+        // story had a design, and SPRIN-102 INVERTED them: `set_project_member_role`
+        // promotes a member to admin ON PURPOSE, and the last-admin guard it exists to
+        // enforce is only REACHABLE with two admins present -- demoting or removing one of
+        // a pair is the only path that can be refused. Two admins is the FEATURE, so
+        // `!== 1` would have gone red on `member-management.integration.test.ts`'s
+        // legitimate fixtures, in parallel, on the required `verify` check.
+        //
+        // Narrowing this does not weaken it. The property worth protecting was never
+        // "exactly one" -- it is that a project can never be left with NOBODY able to
+        // administer it, which is what strands the row permanently: SPRIN-101 made
+        // `projects_admin_update` and `projects_admin_delete` both resolve to
+        // `app_auth.is_project_admin`, so a zero-admin project can no longer be
+        // reconfigured OR deleted by any authenticated user. `=== 0` is that property
+        // stated exactly; `!== 1` was that property plus an accident of the fixtures.
+        const adminlessProjects = rows.filter((p) => admins(p).length === 0)
 
         // POSITIVE CONTROL, and it has to be sharper than `rows.length > 0`. This suite's
         // own three fixture projects satisfy that, so a plain count would keep the test
@@ -254,7 +269,7 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         )
 
         expect(adminIsNotOwner).toEqual([])
-        expect(multipleAdmins).toEqual([])
+        expect(adminlessProjects).toEqual([])
         expect(preMigration.length).toBeGreaterThan(0)
       },
     )
@@ -277,17 +292,32 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         .from('project_members')
         .insert({ project_id: strangerProject, user_id: userBId, role: 'admin' })
 
-      // INSERT is governed by WITH CHECK, which RAISES. An empty-array assertion here
-      // would be asserting the wrong mechanism entirely.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
 
-      // 42501 has TWO authors on this table simultaneously: a revoked column INSERT grant
-      // and members_admin_insert's WITH CHECK. Both are live, so the code alone does not
-      // say which refused. Delete the column grant on migration line 181 and this test
-      // stays green while measuring the privilege layer instead of the policy. The
-      // wording is what separates them — a missing grant says `permission denied for
-      // table ...`, never this.
-      expect(error?.message).toMatch(/violates row-level security policy/)
+      // THE AUTHOR OF THIS 42501 CHANGED IN SPRIN-102, AND THIS ASSERTION IS WHY WE KNOW.
+      // It used to read `/violates row-level security policy/` and the comment beside it
+      // said, in as many words, that deleting the column INSERT grant would leave the test
+      // "green while measuring the privilege layer instead of the policy" -- so the
+      // message assertion was put here to separate the two. SPRIN-102 revoked exactly that
+      // grant, and this test went RED rather than silently changing meaning. The
+      // discrimination did its job; the expectation is now updated to the control that
+      // actually refuses.
+      //
+      // Which is the PRIVILEGE layer, table-wide: `permission denied for table
+      // project_members`. members_admin_insert's WITH CHECK is still there and still
+      // correct, but it is no longer REACHABLE over PostgREST -- the grant is checked
+      // first and there is nothing left to grant.
+      //
+      // SO THE THREE WRITE POLICIES ARE NOW A GUARD NO TEST IN THIS REPO CAN OBSERVE, and
+      // that is a real gap rather than an oversight to fix here. Their only witness is
+      // pg_policies, which lives in pg_catalog; PostgREST publishes only the exposed
+      // schemas, so adminClient() cannot read it and no live suite can assert the policies
+      // still exist. SPRIN-102 kept them deliberately as defence in depth -- so that
+      // re-granting a verb later cannot silently reopen a ROW-level hole at the same
+      // moment -- but nothing red-flags their removal. Verify them from the catalog by
+      // hand when touching this table's grants. Tracked with the other unobservable guards
+      // in docs/standards-audit-2026-07-25.md.
+      expect(error?.message).toMatch(/permission denied for table project_members/)
 
       // ... and prove it did not land, read back with the client that CAN see the row.
       const { data } = await a
@@ -346,11 +376,12 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         .from('project_members')
         .insert({ project_id: sharedProject, user_id: userBId, role: 'admin' })
 
-      // 23505 would mean the row already existed and the policy was never consulted;
-      // 42501 is the refusal we are asserting. Pin the AUTHOR too — see the note on the
-      // stranger-insert test above; the grant and the policy share this SQLSTATE.
+      // 23505 would mean the row already existed and nothing was consulted; 42501 is the
+      // refusal we are asserting. Pin the AUTHOR too — see the note on the stranger-insert
+      // test above; the grant and the policy share this SQLSTATE, and since SPRIN-102 it
+      // is the GRANT that answers.
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
-      expect(error?.message).toMatch(/violates row-level security policy/)
+      expect(error?.message).toMatch(/permission denied for table project_members/)
     })
 
     it('B, a non-admin member, cannot promote themselves', async () => {
@@ -361,12 +392,20 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         .eq('user_id', userBId)
         .select('user_id')
 
-      // UPDATE is governed by USING, which FILTERS. Zero rows changed, no error raised.
-      expect(error).toBeNull()
-      expect(data).toEqual([])
+      // THE MECHANISM CHANGED IN SPRIN-102. This used to assert `error` null and `data`
+      // empty, because UPDATE was governed by members_admin_update's USING, which FILTERS
+      // rather than raising. The UPDATE grant is gone, so the privilege layer now refuses
+      // the statement outright and there is no filtering left to observe.
+      //
+      // A FILTERED refusal and a REFUSED statement are genuinely different outcomes and
+      // this test must not paper over which one it got: an empty `data` alone would be
+      // satisfied by both, so the error is asserted first and by MESSAGE, not just by code.
+      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(/permission denied for table project_members/)
+      expect(data).toBeNull()
 
-      // The row count is the assertion, but read the value back too: an update that
-      // matched zero rows and one that matched and wrote 'member' are different bugs.
+      // Read the value back regardless: a refused statement and one that wrote the wrong
+      // value are different bugs, and only this catches the second.
       const { data: after } = await adminClient()
         .from('project_members')
         .select('role')
@@ -383,8 +422,12 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
         .eq('user_id', userAId)
         .select('user_id')
 
-      expect(error).toBeNull()
-      expect(data).toEqual([])
+      // Same inversion as the promote test above: members_admin_delete's USING used to
+      // FILTER this to zero rows with no error; since SPRIN-102 revoked the DELETE grant
+      // the privilege layer refuses the statement. Discriminate on the message.
+      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(/permission denied for table project_members/)
+      expect(data).toBeNull()
 
       const { data: after } = await adminClient()
         .from('project_members')
@@ -393,41 +436,89 @@ describe.skipIf(!hasRlsCredentials)('project_members RLS', () => {
       expect(after).toHaveLength(2)
     })
 
-    it('POSITIVE CONTROL: A, the admin, can do all three', async () => {
-      // Every refusal above is only meaningful if the same statements succeed for an admin.
-      const { data: promoted, error: upErr } = await a
+    it('the table refuses A, the ADMIN, too -- and the RPC is the path that works', async () => {
+      // THIS TEST WAS INVERTED BY SPRIN-102, and the inversion is the story's whole point.
+      // It used to be `POSITIVE CONTROL: A, the admin, can do all three` and asserted that
+      // A could UPDATE, DELETE and INSERT the table directly. All three are now refused:
+      // the write grants are gone and the three RPCs are the only write path.
+      //
+      // WITHOUT THE SECOND HALF THIS TEST WOULD BE WORTHLESS, and worse, it would quietly
+      // rot the four negatives above it. Every one of those asserts the same privilege
+      // refusal this one does, so if the table simply became unreachable -- a bad project
+      // id, an expired session, a client signed in as nobody -- all five would pass
+      // together while proving nothing about admin vs non-admin at all. The RPC call below
+      // is what makes them meaningful: it proves this exact client, this session and this
+      // project are live and that A really is an admin of it, so the refusals above are
+      // the privilege layer talking and not a broken fixture.
+      const { error: upErr } = await a
         .from('project_members')
         .update({ role: 'admin' })
         .eq('project_id', sharedProject)
         .eq('user_id', userBId)
-        .select('role')
-      expect(upErr).toBeNull()
-      expect(promoted).toEqual([{ role: 'admin' }])
+      expect(upErr?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(upErr?.message).toMatch(/permission denied for table project_members/)
 
-      const { data: removed, error: delErr } = await a
+      const { error: delErr } = await a
         .from('project_members')
         .delete()
         .eq('project_id', sharedProject)
         .eq('user_id', userBId)
-        .select('user_id')
-      expect(delErr).toBeNull()
-      expect(removed).toEqual([{ user_id: userBId }])
+      expect(delErr?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(delErr?.message).toMatch(/permission denied for table project_members/)
 
       const { error: insErr } = await a
         .from('project_members')
-        .insert({ project_id: sharedProject, user_id: userBId, role: 'member' })
-      expect(insErr).toBeNull()
+        .insert({ project_id: strangerProject, user_id: userBId, role: 'member' })
+      expect(insErr?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(insErr?.message).toMatch(/permission denied for table project_members/)
+
+      // POSITIVE CONTROL, through the door that is actually open. Promote B and put them
+      // straight back, so the fixture ends exactly as it started -- the tests after this
+      // one in the file rely on B being a plain member of sharedProject.
+      const { data: promoted, error: promoteErr } = await a.rpc('set_project_member_role', {
+        p_project_id: sharedProject,
+        p_user_id: userBId,
+        p_role: 'admin',
+      })
+      expect(promoteErr).toBeNull()
+      expect(promoted).toBe('updated')
+
+      const { data: demoted, error: demoteErr } = await a.rpc('set_project_member_role', {
+        p_project_id: sharedProject,
+        p_user_id: userBId,
+        p_role: 'member',
+      })
+      expect(demoteErr).toBeNull()
+      expect(demoted).toBe('updated')
+
+      // And prove the round trip really landed rather than both calls no-opping.
+      const { data: after } = await adminClient()
+        .from('project_members')
+        .select('role')
+        .eq('project_id', sharedProject)
+        .eq('user_id', userBId)
+      expect(after).toEqual([{ role: 'member' }])
     })
   })
 
   describe('the grant layer, which sits IN FRONT of the policies', () => {
     it('a single UPDATE cannot touch user_id or project_id, even for an admin', async () => {
-      // NAMED PRECISELY, because the first version of this test was called "even an admin
-      // cannot re-point a membership row at another user" and that is NOT what holds. An
-      // admin reaches the same end state with DELETE + INSERT -- members_admin_delete and
-      // members_admin_insert each constrain only the PROJECT and say nothing about
-      // user_id -- and the admin positive control above performs exactly that sequence.
-      // What `grant update (role)` actually buys is that the SET-list route is closed.
+      // THIS TEST STAYED GREEN THROUGH SPRIN-102 AND NOW PROVES SOMETHING WIDER THAN ITS
+      // NAME. Read that as a warning, not a reassurance. It was written when `authenticated`
+      // held `update (role)` and nothing else, so it pinned a real and narrow property: the
+      // SET-list route to user_id and project_id was closed while role remained updatable.
+      // SPRIN-102 revoked UPDATE entirely, so both arms below now pass for the blunt reason
+      // that NO column is updatable -- the same assertions, a much weaker claim. Re-granting
+      // `update (role, project_id)` tomorrow would leave this test green and the hole open,
+      // which is exactly the failure it was built to prevent. If UPDATE is ever granted back
+      // on this table, this test must be re-derived, not re-run.
+      //
+      // The history it records is still worth keeping: the first version was called "even an
+      // admin cannot re-point a membership row at another user" and that was NOT what held.
+      // An admin reached the same end state with DELETE + INSERT, because members_admin_delete
+      // and members_admin_insert each constrain only the PROJECT and say nothing about
+      // user_id. SPRIN-102 closed that route too, by revoking both verbs -- which is why the
+      // admin control above no longer performs that sequence.
       //
       // Refused by the PRIVILEGE layer before any policy is consulted. It shares SQLSTATE
       // 42501 with an RLS WITH CHECK violation, so assert the wording: A is a legitimate

@@ -455,3 +455,20 @@ That comment is the point. Without it the next reader either deletes a guard exp
 a red test, or writes a test that cannot fail and believes it is covered. Recording
 "this is defence in depth and here is why nothing catches its removal" is more honest
 than either.
+
+**A THIRD, added by SPRIN-102, and it is unobservable for a structural reason rather than
+a redundancy one.** `project_members` now carries three write policies —
+`members_admin_insert`, `members_admin_update` and `members_admin_delete` — that **no live
+suite can reach**. SPRIN-102 revoked INSERT, UPDATE, DELETE and TRUNCATE from
+`authenticated` and made three `SECURITY DEFINER` RPCs the only write path, so the
+privilege layer refuses every direct write **before** any policy is consulted. The
+policies were kept on purpose: re-granting a verb later must not silently reopen a
+row-level hole at the same moment.
+
+The reason nothing can observe them is worth stating exactly, because it is not fixable
+by writing a better test. Their only witness is `pg_policies`, which lives in
+`pg_catalog`; PostgREST publishes only the exposed schemas, so even `adminClient()` — a
+service-role client — cannot read it. **Dropping all three would leave the entire suite
+green.** Verify them from the catalog by hand whenever this table's grants are touched,
+and treat any future re-grant of a write verb on `project_members` as requiring that
+check first.

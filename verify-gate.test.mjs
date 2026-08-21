@@ -473,6 +473,13 @@ describe('npm test really collects the live integration suites', () => {
     // ticket_field_values deliberately asks member on every verb rather than the
     // member-read/admin-write split the other three use.
     'src/test/config-membership.integration.test.ts',
+    // SPRIN-102. Member management: the three SECURITY DEFINER RPCs that are now the ONLY
+    // write path on project_members, and the last-admin guard they carry. This is the
+    // first suite here whose subject is not a POLICY -- the write policies still exist but
+    // are unreachable behind the revoke, so what this pins is the RPC contract and the
+    // guard. Registered in the SAME commit that created the suite, as SPRIN-101 and
+    // SPRIN-99 both were, and as SPRIN-98 and SPRIN-105 both were not.
+    'src/test/member-management.integration.test.ts',
   ]
 
   const collected = (() => {

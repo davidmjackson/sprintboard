@@ -1634,14 +1634,87 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   What IS pinned is the property it protects — a member cannot move a `ticket_field_values` row
   into a project they do not belong to — which fails the moment the two clauses are made to differ.
   Do not "fix" the absence of a clause-level test; there is nothing to fix.
-- **A full `npm test` performs ~29 sign-ins and sits near the free-tier GoTrue ceiling.** SPRIN-99
-  added 3 (`tickets.integration.test.ts` alone holds 11). CI passes cleanly — it was green first
-  time on 84 files with zero skipped — but a developer running several full verifies in an hour
-  will exhaust the budget locally and see unrelated suites fail with `Request rate limit reached`,
-  often with a plausible-looking assertion failure standing in front of it. **Discriminator: run
-  the failing suites in isolation.** If they pass, it is the budget, not the branch. If CI ever
-  reds this way, the fix is raising the GoTrue auth rate limit in the Supabase dashboard, not a
-  code change.
+- **A full `npm test` performs 37 sign-ins against a FIVE-MINUTE `/token` limit.** (This bullet
+  said "~29 sign-ins" against an hourly budget, and pointed at the wrong dashboard setting; both
+  errors are corrected in the sub-points below, which SPRIN-102 established from `auth_logs`.)
+  `tickets.integration.test.ts` alone holds 11 of the 37, all on the two SHARED `rls-a`/`rls-b`
+  fixture users. A developer running several full verifies in quick succession will exhaust the
+  window and see unrelated suites fail with `Request rate limit reached`, often with a
+  plausible-looking assertion failure standing in front of it. **Discriminator: run the failing
+  suites in isolation.** If they pass, it is the budget, not the branch.
+  - **SETTLED BY SPRIN-102 (session 76), AND THE OLD FIGURES ABOVE ARE WRONG.** Two of them:
+    a full run performs **37 sign-in calls**, not 29, and the limiter that binds is **not** the
+    one the bullet above sends you to. Read the next three points instead of the paragraph above.
+  - **THE BINDING LIMIT IS `/token`, WHICH THE DASHBOARD CALLS "Rate limit for token refreshes".**
+    Proven from `auth_logs`, not inferred: every refusal is
+    `path=/token`, `grant_type=password`, `error_code=over_request_rate_limit`, keyed on one
+    `remote_addr`. Password sign-in goes through `/token`, so despite its name that setting
+    governs it. **Raising "Rate limit for sign ups and sign ins" does NOTHING for this** -- it was
+    tried first and the auth log shows it moving only the `GOTRUE_RATE_LIMIT_OTP` family
+    (Signups/Otp/Recover/MagicLink/User/Resend). It was reverted to 30. The `/token` limit was
+    raised 150 -> 600. Query to re-derive any of this:
+    `select log_attributes from logs where source='auth_logs' and log_attributes['status']='429'`.
+  - **IT IS A FIVE-MINUTE WINDOW, NOT AN HOURLY BUDGET, AND ONE RUN FITS INSIDE IT.** This is the
+    fact three separate wrong diagnoses in one session all missed, and it is easy to check:
+    bucket `/token` by `toStartOfFiveMinutes` and read the 200s against the 429s. Four
+    CONSECUTIVE five-minute windows at ~40 sign-ins each completed with **zero** rejections. So
+    the suite is not over the ceiling and never was. What fails is **runs repeated inside one
+    five-minute window** -- the ordinary edit-run-rerun loop, or a local run overlapping CI.
+  - **THE DIAGNOSTIC LESSON, worth more than the setting.** The session concluded "structurally
+    over the ceiling" (wrong), retracted it as self-polluted measurement (right about the
+    confound, wrong to treat that as a refutation), re-asserted it after a quiet hour still went
+    red (wrong again -- the quiet hour cleared the wrong window, since the limit refills in five
+    minutes and the run's own burst is what mattered), and only settled it by reading the log
+    rows and bucketing by window. **Hourly aggregates cannot see a five-minute limiter.** Go to
+    `auth_logs` early; every reading before that was a guess dressed as a measurement.
+  - **THE FAILURE WEARS A CONVINCING DISGUISE, and this is the part to remember.** The visible
+    error was not an auth error at all — it was `completeSprint` returning
+    `{ ok: false, error: 'unknown' }` where the test expected `'stale'`. The app layer maps any
+    unrecognised failure to `unknown`, so a rate-limited sign-in surfaces as a plausible
+    domain-logic assertion failure with the real cause nowhere in the message. None of the four
+    signatures in `CLAUDE.md` matches it, so the rule there — "anything else is real" — points
+    the wrong way for this one. **Grep the whole run for `rate limit` before believing any live
+    assertion failure**, and only then reach for the isolation discriminator.
+  - The recorded fix is unchanged and is now worth actually doing: **raise the GoTrue auth rate
+    limit in the Supabase dashboard.** It is David's to make, it is not a code change, and every
+    future story that adds a live suite makes it more pressing.
+
+## Known-unpinned, added by SPRIN-102 (session 76)
+
+- **The three surviving write policies on `project_members` are a guard NO test in this repo can
+  observe.** `members_admin_insert`, `members_admin_update` and `members_admin_delete` were kept
+  deliberately as defence in depth, so that re-granting a verb later cannot silently reopen a
+  row-level hole at the same moment — but the revoke means the privilege layer refuses every
+  direct write before any policy is consulted, so nothing behavioural can reach them. Their only
+  witness is `pg_policies`, in `pg_catalog`, which PostgREST does not expose even to a
+  service-role client. **Dropping all three would leave the entire suite green.** Verify from the
+  catalogue by hand whenever this table's grants are touched. Also recorded in
+  `docs/standards-audit-2026-07-25.md` beside the other two unobservable guards.
+- **Three NEW security advisor WARNs are EXPECTED and must not be "fixed".** One per RPC, all
+  `authenticated_security_definer_function_executable` (lint 0029). The baseline moves from
+  1 security / 8 performance to **4 / 8**, with `auth_rls_initplan` still at zero. Accepted on
+  David's explicit call after the alternatives were priced — see the ADVISORS section at the foot
+  of `docs/migrations/sprin-102-member-management.sql` for the full argument. The mechanism
+  generalises: lint 0029 is **reachability-gated**, and a fourth public RPC adds a fifth WARN by
+  construction.
+- **`profiles.email` can still drift from `auth.users.email`, and SPRIN-102 did NOT close it.**
+  SPRIN-105 flagged this as something SPRIN-102 "must re-read before trusting the column as an
+  identity key", and the re-read was done: the column is backfilled once and mirrored on every
+  future signup by `handle_new_user`, but nothing re-syncs an existing row when an address changes
+  in `auth.users`. It stays open because **there is still no email-change path anywhere in the
+  app**, so the mirror cannot go stale today. What SPRIN-102 DID settle is the neighbouring
+  question SPRIN-105 left undecided: matching is **exact against a lowercased input**, never
+  `lower(p.email) = lower(...)`, because `profiles_email_key` is a plain case-sensitive UNIQUE and
+  a case-insensitive match over two case-differing rows would take one arbitrarily and silently
+  add the wrong person. Build an email-change path and the sync trigger becomes required, not
+  optional.
+- **A duplicate React key between sibling settings sections is invisible except as a sibling
+  suite going red.** `CadenceSettings` keys on `project.id`; adding `MemberSettings` with the same
+  bare `key={project.id}` made two children of one list share a key, and React responded by
+  duplicating and omitting children — the measured symptom was **two cadence sections** after a
+  project switch, which broke two SPRIN-97 tests that have nothing to do with members. React warns
+  ("Encountered two children with the same key") on stderr but does not fail. `MemberSettings` now
+  keys on `` `members-${project.id}` ``; any future keyed section on that tab needs its own prefix.
 
 ## Settled — do not re-raise
 

@@ -1,13 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 
 import type { ProjectShellContext } from './ProjectShell'
-import type { Project, ProjectStatus } from '@/lib/domain'
+import type { Project, ProjectMemberWithProfile, ProjectStatus } from '@/lib/domain'
 import { hasSprints, hasWipLimits } from '@/lib/domain'
+import type { ReadPhase } from '@/lib/project-reads'
+import { listProjectMembers, roleOf } from '@/lib/project-members'
 import { ticketCountsByStatus } from '@/lib/project-statuses'
+import { useAuth } from '@/lib/auth-context'
 import { CadenceSettings } from './CadenceSettings'
 import { CustomFieldSettings } from './CustomFieldSettings'
 import { LoadFailure } from './LoadFailure'
+import { MemberSettings } from './MemberSettings'
 import { StatusSettings } from './StatusSettings'
 
 /**
@@ -50,6 +54,73 @@ function useTicketCounts(
   }, [projectId, statuses, ready])
 
   return counts
+}
+
+/**
+ * The project's members, read HERE rather than on `ProjectShellContext`.
+ *
+ * Every other list this tab renders comes from the shell, because the board tabs need them
+ * too. Nothing outside Settings renders the member list today, so putting it on the context
+ * would publish state with exactly one reader and make every tab re-render when it changed.
+ * `useTicketCounts` directly above is the same judgement for the same reason. SPRIN-104 --
+ * which makes the OTHER settings sections role-aware -- is where this moves up, because that
+ * is the story with a second reader.
+ *
+ * `reload` is what every successful write calls. There is deliberately NO local mirror of
+ * the list and no optimistic patch: the RPCs return a TAG, not a row, so a client-side patch
+ * would have to reconstruct what the database did from what it asked for -- and the
+ * last-admin guard means the answer is sometimes "nothing happened". Refetching keeps one
+ * source of truth, and the same discipline `CadenceSettings` applies to the cadence.
+ *
+ * A failed read resets to an EMPTY list rather than keeping stale rows, and the phase is what
+ * the section renders on -- so an empty list is never mistaken for "this project has one
+ * member", which is a state the schema cannot produce.
+ */
+function useProjectMembers(projectId: string): {
+  members: readonly ProjectMemberWithProfile[]
+  phase: ReadPhase
+  reload: () => void
+} {
+  // ONE state object carrying the id it describes, not three independent pieces. The
+  // alternative -- separate `members`/`phase` plus a `setPhase('loading')` at the top of the
+  // effect -- is what the first draft did, and it was wrong twice over. `react-hooks/
+  // set-state-in-effect` rejects the synchronous setState outright, and the reason the rule
+  // exists is the second problem: between a project switch and the new read resolving, the
+  // hook would hand back the PREVIOUS project's members under the new project's id. Pairing
+  // the rows with the id they came from makes that state unrepresentable rather than merely
+  // brief.
+  const [state, setState] = useState<{
+    projectId: string
+    members: readonly ProjectMemberWithProfile[]
+    phase: ReadPhase
+  }>({ projectId, members: [], phase: 'loading' })
+  const [nonce, setNonce] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    listProjectMembers(projectId)
+      .then((rows) => {
+        if (active) setState({ projectId, members: rows, phase: 'loaded' })
+      })
+      .catch(() => {
+        if (active) setState({ projectId, members: [], phase: 'failed' })
+      })
+    return () => {
+      active = false
+    }
+  }, [projectId, nonce])
+
+  // DERIVED, never stored. While the id we hold differs from the one asked for, the read for
+  // THIS project has not come back, so the honest answer is "loading" and an empty list --
+  // not the rows we happen to still be holding for a different project.
+  const stale = state.projectId !== projectId
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+
+  return {
+    members: stale ? [] : state.members,
+    phase: stale ? 'loading' : state.phase,
+    reload,
+  }
 }
 
 /**
@@ -120,6 +191,8 @@ export function SettingsTab() {
 
   const counts = useTicketCounts(project.id, statuses, statusesPhase === 'loaded')
   const [shown, onCadenceUpdated] = usePatchedProject(project)
+  const { user } = useAuth()
+  const { members, phase: membersPhase, reload: reloadMembers } = useProjectMembers(project.id)
 
   if (statusesPhase === 'failed') return <LoadFailure resource="statuses" onRetry={onRetry} />
   if (statusesPhase !== 'loaded') return <p className="text-muted-foreground text-sm">Loading…</p>
@@ -155,6 +228,37 @@ export function SettingsTab() {
           onUpdated={onCadenceUpdated}
         />
       )}
+
+      {/* SPRIN-102. Above the status list because who belongs to a project frames how it is
+          configured, and because this is the only section on the tab a non-admin can act on
+          at all. It carries its OWN phase rather than riding the statuses gate, so a failed
+          members read shows its own failure instead of blanking the tab.
+
+          `key` REMOUNTS on a project switch, for the reason CadenceSettings
+          documents below: this tab is a nested route element, so moving between projects
+          re-renders rather than unmounts it. Without the key the add form's `useForm`
+          defaults -- captured once, at mount -- would keep a half-typed address from the
+          PREVIOUS project while the list beneath updated, and Add would send it to the new
+          one. The hook's effect deps handle the DATA; they do not touch form state.
+
+          THE PREFIX IS NOT COSMETIC. `CadenceSettings` above is a SIBLING in this same
+          children list and already keys on `project.id`, so a bare `key={project.id}` here
+          is a DUPLICATE KEY among siblings -- React then duplicates and omits children, and
+          the measured symptom was TWO cadence sections in the tab after a project switch,
+          which broke two SPRIN-97 tests that had nothing to do with members. React warns
+          ("Encountered two children with the same key") but does not fail, so the only
+          signal was a sibling suite going red. Any future keyed section here needs its own
+          prefix too. */}
+      <MemberSettings
+        key={`members-${project.id}`}
+        projectId={project.id}
+        members={members}
+        phase={membersPhase}
+        role={roleOf(members, user?.id)}
+        currentUserId={user?.id}
+        onRetry={reloadMembers}
+        onChanged={reloadMembers}
+      />
 
       <StatusSettings
         projectId={project.id}

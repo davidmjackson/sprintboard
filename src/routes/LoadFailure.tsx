@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
  * rather than restating it.
  */
 export type LoadFailureResource =
-  'tickets' | 'sprints' | 'statuses' | 'custom fields' | 'custom field values'
+  'tickets' | 'sprints' | 'statuses' | 'custom fields' | 'custom field values' | 'members'
 
 /** The failure copy, keyed by resource. Lives here rather than in `domain.ts`: that module is
  *  the single home for status/type/column display names, which Rung 3 makes dynamic — this is
@@ -24,6 +24,13 @@ const FAILURE_COPY: Record<LoadFailureResource, string> = {
   // hides the section, but they fail independently and a user who retries needs to know which
   // one they are retrying.
   'custom field values': 'Could not load custom field values.',
+  // SPRIN-102. Added through the front door the docblock below describes: a new resource
+  // means a new FAILURE_COPY case, which is the review moment. Note what this sentence does
+  // NOT say -- it never distinguishes "the read failed" from "you may not read this",
+  // because a member who cannot see the membership list is not a state this schema can
+  // produce (members_read lets every member read every row of a project they belong to), and
+  // guessing at the cause would put a claim in front of the user that nothing established.
+  members: 'Could not load members.',
 }
 
 /**

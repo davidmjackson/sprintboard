@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SettingsTab } from './SettingsTab'
+import { AuthContext, type AuthState } from '@/lib/auth-context'
+import { listProjectMembers } from '@/lib/project-members'
 import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectField, ProjectFieldOption, ProjectStatus } from '@/lib/domain'
@@ -59,6 +61,16 @@ vi.mock('@/lib/projects', async (orig) => ({
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
 // stays real.
+// SPRIN-102. MOCKED SO THE TAB'S MEMBERS READ CANNOT REACH THE LIVE DATABASE. `SettingsTab`
+// now calls `listProjectMembers` through its own hook, and an unmocked read in a shell test
+// does not fail loudly -- it issues a real request against whatever `.env.local` points at.
+// The default resolves to a single admin row so every pre-existing test in this file renders
+// a loaded section rather than a permanent "Loading…".
+vi.mock('@/lib/project-members', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-members')>()),
+  listProjectMembers: vi.fn(),
+}))
+
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
   ticketCountsByStatus: vi.fn(),
@@ -209,12 +221,30 @@ function buildContext(ctx: ContextOverrides = {}): ProjectShellContext {
 /** The tab under its route, as an ELEMENT — so a test can re-render the identical tree with a
  *  different context and get a re-render rather than a remount, which is what a project switch
  *  actually is here (the tab is a nested route element, so react-router reuses it). */
+/**
+ * The signed-in user the tab sees. `SettingsTab` reads `useAuth()` as of SPRIN-102, to work
+ * out whether the viewer is an admin of this project, so every render needs a provider --
+ * without one `useAuth` THROWS by design rather than returning a null user.
+ *
+ * `u1` matches the admin row `listProjectMembers` resolves to by default below, so the tab
+ * renders its member controls in the ordinary case. A test wanting the non-admin view
+ * overrides the members mock, not this.
+ */
+const AUTH = { session: null, user: { id: 'u1' }, loading: false } as unknown as AuthState
+
 function tabTree(context: ProjectShellContext) {
   return (
     <MemoryRouter initialEntries={['/settings']}>
       <Routes>
         <Route path="/" element={<Outlet context={context} />}>
-          <Route path="settings" element={<SettingsTab />} />
+          <Route
+            path="settings"
+            element={
+              <AuthContext.Provider value={AUTH}>
+                <SettingsTab />
+              </AuthContext.Provider>
+            }
+          />
         </Route>
       </Routes>
     </MemoryRouter>
@@ -229,6 +259,18 @@ function renderTab(ctx: ContextOverrides = {}) {
 
 describe('SettingsTab', () => {
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     // The two write mocks are MODULE-level and nothing in this project configures
     // `clearMocks`/`restoreMocks`, so call counts accumulate across tests in file order.
@@ -386,6 +428,18 @@ describe('SettingsTab saves the sprint cadence (SPRIN-97)', () => {
   const scrum = { ...project, sprint_length_weeks: 3, sprint_start_weekday: 6 } as Project
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     vi.mocked(updateProjectCadence).mockReset()
   })
@@ -505,6 +559,18 @@ describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix 
     // behind — invisible coupling that `-t` filtering breaks (`TypeError: Cannot read
     // properties of undefined (reading 'then')`, because nothing had configured a resolved
     // value). Configuring it here is what makes these two tests independent of file order.
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
   })
 
@@ -548,6 +614,18 @@ describe('SettingsTab custom fields', () => {
   ] as unknown as ProjectField[]
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
   })
 
@@ -821,6 +899,18 @@ describe('SettingsTab custom field options (SPRIN-92 task 9, fix round 1)', () =
   }
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     vi.mocked(createProjectFieldOption).mockReset()
     vi.mocked(renameProjectFieldOption).mockReset()
@@ -913,5 +1003,140 @@ describe('SettingsTab custom field options (SPRIN-92 task 9, fix round 1)', () =
     // Neither create nor update grew — a swap onto either would have.
     expect(onOptionCreated).toHaveBeenCalledTimes(1)
     expect(onOptionUpdated).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * THE SEAM BETWEEN THIS TAB AND `MemberSettings` (SPRIN-102), added by that story's
+ * adversarial review, which found the seam completely unpinned.
+ *
+ * The gap was total and the demonstration is worth recording. `SettingsTab.test.tsx`
+ * configured the `listProjectMembers` mock in five `beforeEach` blocks and then asserted
+ * NOTHING about members; `MemberSettings.test.tsx` renders the component directly with
+ * every prop hand-supplied, including `role`. So nothing anywhere crossed the seam, and
+ * two mutations proved it:
+ *
+ *   - `role={roleOf(members, user?.id)}` -> `role={roleOf(members, undefined)}` on
+ *     SettingsTab.tsx strips the add form, BOTH role pickers and EVERY Remove button from
+ *     every project admin in the app -- the entire admin half of SPRIN-102 -- and
+ *     `npm run test:unit` stayed at 1437/1437 with lint and tsc clean. There is no
+ *     unused-variable tell, because `user` is still read on the next line.
+ *   - Deleting the whole `<MemberSettings />` element left `vitest run src/routes/` green
+ *     at 678 tests. (Lint does catch that one, via unused imports. It does not catch the
+ *     first.)
+ *
+ * The only mutation at this seam that went red was changing the `key` prefix -- and it
+ * went red in the SPRIN-97 *cadence* tests, i.e. the section's presence was observed only
+ * as a React duplicate-key side effect on a SIBLING, never on its own account.
+ *
+ * These tests therefore assert what the tab COMPUTES and passes down -- the role
+ * derivation and the members list -- rather than re-testing `MemberSettings`, which has its
+ * own file. `MemberSettings` is deliberately NOT mocked here: the real component renders,
+ * so the assertions below observe the actual composition.
+ */
+describe('SettingsTab wires the members section (SPRIN-102)', () => {
+  const ADMIN_ROW = {
+    project_id: 'p1',
+    user_id: 'u1',
+    role: 'admin' as const,
+    created_at: '2026-08-01T00:00:00Z',
+    email: 'ada@example.com',
+    display_name: 'Ada',
+  }
+  const MEMBER_ROW = {
+    project_id: 'p1',
+    user_id: 'u2',
+    role: 'member' as const,
+    created_at: '2026-08-02T00:00:00Z',
+    email: 'grace@example.com',
+    display_name: 'Grace',
+  }
+
+  beforeEach(() => {
+    vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
+  })
+
+  it('lists the project members it read', async () => {
+    vi.mocked(listProjectMembers).mockReset().mockResolvedValue([ADMIN_ROW, MEMBER_ROW])
+    renderTab({ project })
+
+    expect(await screen.findByText('Ada')).toBeInTheDocument()
+    expect(screen.getByText('Grace')).toBeInTheDocument()
+  })
+
+  it('reads the members for THIS project, not a hardcoded id', async () => {
+    vi.mocked(listProjectMembers).mockReset().mockResolvedValue([ADMIN_ROW])
+    renderTab({ project: { ...project, id: 'p-distinct' } as Project })
+
+    await waitFor(() => expect(listProjectMembers).toHaveBeenCalledWith('p-distinct'))
+  })
+
+  /**
+   * THE MUTATION-KILLING PAIR. The signed-in user is `u1` (see `AUTH`), so the tab must
+   * derive `admin` from the rows it read and hand that down. Break the derivation -- pass
+   * `undefined`, pass a literal, drop the prop -- and this goes red.
+   */
+  it('offers the admin controls when the signed-in user IS an admin of this project', async () => {
+    vi.mocked(listProjectMembers).mockReset().mockResolvedValue([ADMIN_ROW, MEMBER_ROW])
+    renderTab({ project })
+
+    expect(await screen.findByRole('button', { name: 'Add member' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove Grace' })).toBeInTheDocument()
+  })
+
+  it('offers NONE of them when the signed-in user is only a MEMBER here', async () => {
+    // Same two people, u1 demoted. Nothing else differs, so a test that passed by
+    // rendering the section at all -- rather than by the role derivation -- fails here.
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([{ ...ADMIN_ROW, role: 'member' as const }, MEMBER_ROW])
+    renderTab({ project })
+
+    expect(await screen.findByText('Ada')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add member' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Remove Grace/ })).not.toBeInTheDocument()
+  })
+
+  it('shows the failure block, not an empty list, when the members read fails', async () => {
+    vi.mocked(listProjectMembers).mockReset().mockRejectedValue(new Error('boom'))
+    renderTab({ project })
+
+    expect(await screen.findByText('Could not load members.')).toBeInTheDocument()
+  })
+
+  /**
+   * THE STALE-PROJECT GUARD in `useProjectMembers`, which its own comment calls
+   * "unrepresentable" and which the review found had no test at all. Mutating
+   * `const stale = state.projectId !== projectId` to `const stale = false` left the whole
+   * routes suite green, because the only project-switch test in this file resolved the
+   * SAME member rows for every project id and so could not observe it.
+   *
+   * The consequence is user-visible rather than theoretical: this tab is a nested route
+   * element, so switching projects RE-RENDERS instead of remounting. Without the guard the
+   * tab hands `MemberSettings` the PREVIOUS project's rows, and the role is derived from
+   * them -- so an admin of A viewing B's settings is offered admin controls wired to B.
+   * The RPCs would refuse the writes, but the user is shown another project's membership.
+   */
+  it("does not show the previous project's members after a project switch", async () => {
+    const other = { ...project, id: 'p2' } as Project
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockImplementation((projectId: string) =>
+        projectId === 'p1'
+          ? Promise.resolve([ADMIN_ROW, MEMBER_ROW])
+          : Promise.resolve([
+              { ...MEMBER_ROW, project_id: 'p2', user_id: 'u9', display_name: 'Zoe' },
+            ]),
+      )
+
+    const { rerender } = render(tabTree(buildContext({ project })))
+    expect(await screen.findByText('Grace')).toBeInTheDocument()
+
+    rerender(tabTree(buildContext({ project: other })))
+
+    // The old project's rows must be gone IMMEDIATELY, before the new read resolves --
+    // that is the guard. Asserting only the eventual state would pass without it.
+    expect(screen.queryByText('Grace')).not.toBeInTheDocument()
+    expect(await screen.findByText('Zoe')).toBeInTheDocument()
   })
 })
