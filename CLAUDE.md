@@ -108,15 +108,22 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   a live assertion that the column is genuinely writable. Deny by default, widen visibly.
 
 **The one genuinely deep door is RLS, and SPRIN-75 is now complete: every table in `public`
-resolves its project access through membership.** No table decides who may read or write a
-*project's* rows by asking `projects.owner_id` any more. **Two self-scoped predicates survive
-on purpose and are not exceptions to fix**: `projects_bootstrap_insert`, which is still
-`owner_id = (select auth.uid())` so that creating a project does not require a membership row
-that cannot exist yet; and the three `profiles` write verbs, which are `id = (select auth.uid())`
-because a self-write is not a project access decision at all. **This paragraph briefly claimed
-"no table anywhere in this schema still resolves a policy to bare `owner_id = auth.uid()`",
-which is false and contradicted this file's own policy list four paragraphs down** — the
-bootstrap INSERT is exactly that predicate, deliberately. The honest statement is the one
+resolves its project access through membership or configuration access.** **This paragraph has
+now been wrong twice, in two different ways, and both corrections stay visible rather than being
+swapped out silently.** It first claimed, flatly, "no table anywhere in this schema still
+resolves a policy to bare `owner_id = auth.uid()`" — false, and contradicted by this file's own
+policy list four paragraphs down: the bootstrap INSERT is exactly that predicate, deliberately.
+The first fix narrowed that to "no table decides who may read or write a *project's* rows by
+asking `projects.owner_id` any more," naming two deliberate exceptions. That was narrower but
+**still wrong** — it missed a third. **Three self-scoped predicates survive on purpose and are
+not exceptions to fix**: `projects_bootstrap_insert` (INSERT), still `owner_id = (select
+auth.uid())` so that creating a project does not require a membership row that cannot exist yet;
+the three `profiles` write verbs, `id = (select auth.uid())`, because a self-write is not a
+project access decision made about anyone else; and `projects_member_read`'s bootstrap read
+disjunct, `owner_id = (select auth.uid()) and not app_auth.project_has_members(id)` (see the
+SPRIN-101 paragraphs below), which lets a project's creator read it for the single instant
+between its INSERT and the AFTER-INSERT trigger seeding their own membership row — deliberate
+and self-scoped exactly as the other two are, not a leftover. The honest statement is the one
 above: membership and configuration access, not every predicate in the schema.
 
 **All ten tables are rewritten** — the count in this sentence read "nine" while the list that
@@ -411,16 +418,22 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
   app-layer rule plus a test.
 - **One active sprint per project:** enforced by a partial unique index. Surface
   the rejection as a clear message. Do not work around the index.
-- **RLS is on every table, and every table now resolves its PROJECT access through membership —
-  no table decides who reads or writes a project's rows by asking `projects.owner_id`.** This
-  line said "owner-scoped on every table" until SPRIN-100, then
+- **RLS is on every table, and every table now resolves its PROJECT access through membership
+  or configuration access.** This line said "owner-scoped on every table" until SPRIN-100, then
   "six tables now resolve to membership, only the four config tables still resolve to
   `owner_id = auth.uid()`, pending SPRIN-99" until SPRIN-99 closed that out: `project_statuses`,
   `project_fields`, `project_field_options` and `ticket_field_values` all moved the same way.
-  **It then briefly said "no table in `public` is owner-scoped any more", which is wrong**: two
-  self-scoped predicates survive deliberately — `projects_bootstrap_insert`
-  (`owner_id = (select auth.uid())`) and the three `profiles` write verbs
-  (`id = (select auth.uid())`). Neither is a project-access decision, and neither is a leftover.
+  **It then briefly said "no table in `public` is owner-scoped any more", which was wrong, and
+  the fix that followed — "no table decides who reads or writes a project's rows by asking
+  `projects.owner_id`," naming two exceptions — was narrower but still wrong: it missed a
+  third.** **Three self-scoped predicates survive deliberately** — `projects_bootstrap_insert`
+  (`owner_id = (select auth.uid())`, INSERT); the three `profiles` write verbs
+  (`id = (select auth.uid())`); and `projects_member_read`'s bootstrap read disjunct
+  (`owner_id = (select auth.uid()) and not app_auth.project_has_members(id)`), which lets a
+  project's creator read it for the single instant between its INSERT and the AFTER-INSERT
+  trigger that seeds their own membership row. None of the three is a leftover, and the third is
+  self-scoped exactly as the other two are — it only ever grants read on a project the caller
+  just created, and only until their own membership row exists.
   Do not stop checking the policy just because the migration is done — "resolves to membership"
   is not one shape, there are **three**: the board tables (`project_counters`, `sprints`,
   `tickets`) ask **member** on a single `for all` policy; `projects` and three of the four config

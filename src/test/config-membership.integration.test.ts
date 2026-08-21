@@ -278,9 +278,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
     )
     // Proves the fixture did what it claims rather than silently matching nothing: exactly one
     // row moved, it is the new user's, and it is still `admin`.
-    if (JSON.stringify(moved) !== JSON.stringify([{ user_id: toUserId, role: 'admin' }])) {
-      throw new Error(`Fixture: the admin swap moved ${JSON.stringify(moved)}`)
-    }
+    expect(moved).toEqual([{ user_id: toUserId, role: 'admin' }])
   }
 
   /** The `done` row as the service role sees it -- the read-back for every refused write. */
