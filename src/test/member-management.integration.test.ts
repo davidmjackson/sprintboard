@@ -118,6 +118,24 @@ const INSUFFICIENT_PRIVILEGE = '42501'
 const INVALID_PARAMETER = '22023'
 /** The PRIVILEGE layer's refusal -- the revoke this story applies. */
 const PRIVILEGE_REFUSAL = /permission denied for table project_members/
+
+/**
+ * The FUNCTION-level privilege refusal, which is a different control from the table-level
+ * one above and from the RPC's own admin guard -- and all three answer 42501.
+ *
+ * Added by the SPRIN-102 review, which found the anon test asserting the SQLSTATE alone.
+ * That is not enough here, and the repo has the lesson already: two controls sharing one
+ * SQLSTATE are told apart only by the MESSAGE. On this call the two candidates are
+ *   - anon holds no EXECUTE  -> `permission denied for function add_project_member_by_email`
+ *   - the RPC's own guard    -> `Only a project admin may add members`
+ * Both are 42501. The second is what anon would get if the `revoke execute ... from anon`
+ * were dropped, because the function is `security definer` owned by postgres: anon would
+ * EXECUTE definer-privileged code, reach the admin check, fail it for a null auth.uid(),
+ * and raise 42501 -- leaving a code-only assertion green while the property in its own
+ * name was false. Measured live during the review, not assumed.
+ */
+const FUNCTION_PRIVILEGE_REFUSAL = /permission denied for function/
+const ADMIN_GUARD_REFUSAL = /Only a project admin may/
 /** An RLS refusal, which on this table would now mean the revoke had been undone. */
 const RLS_REFUSAL = /violates row-level security policy/
 
@@ -314,6 +332,57 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
       expect(data).toBe('already_member')
     })
 
+    it('HONOURS p_role: adding someone as an admin really makes them an admin', async () => {
+      // THE SUITE DID NOT PROVE THIS UNTIL THE SPRIN-102 REVIEW, and the gap was total:
+      // replacing `values (p_project_id, v_user_id, p_role)` with a hardcoded
+      // `values (p_project_id, v_user_id, 'member')` in the migration survived all 29
+      // tests. Every other add in this file passes 'member'; the one that passes 'admin'
+      // names an EXISTING member, so it hits `on conflict do nothing` and never reaches
+      // the INSERT's role at all. The client-side tests that mention the role only assert
+      // the argument reached a MOCK, which says nothing about what the database does with
+      // it. AC2 lets an admin add someone directly as an admin, so an admin could pick
+      // Role = Admin, see 'added', and get a plain member -- success reported at every
+      // layer.
+      //
+      // Uses the STRANGER on the role project, and cleans up after itself, so the fixture
+      // ends exactly as it started for the tests that follow.
+      await aClient.rpc('remove_project_member', {
+        p_project_id: roleProjectId,
+        p_user_id: sId,
+      })
+
+      const { data, error } = await aClient.rpc('add_project_member_by_email', {
+        p_project_id: roleProjectId,
+        p_email: sEmail,
+        p_role: 'admin',
+      })
+
+      expect(error).toBeNull()
+      expect(data).toBe('added')
+      // The assertion the mutation dies on: read the ROLE back from the database.
+      expect(await roleOf(roleProjectId, sId)).toBe('admin')
+
+      // ...and the negative half, so this cannot pass by the INSERT hardcoding 'admin'
+      // instead: the same call with 'member' must produce a member.
+      await aClient.rpc('remove_project_member', {
+        p_project_id: roleProjectId,
+        p_user_id: sId,
+      })
+      const asMember = await aClient.rpc('add_project_member_by_email', {
+        p_project_id: roleProjectId,
+        p_email: sEmail,
+        p_role: 'member',
+      })
+      expect(asMember.data).toBe('added')
+      expect(await roleOf(roleProjectId, sId)).toBe('member')
+
+      await aClient.rpc('remove_project_member', {
+        p_project_id: roleProjectId,
+        p_user_id: sId,
+      })
+      expect(await roleOf(roleProjectId, sId)).toBeNull()
+    })
+
     it('does NOT promote an existing member when the add names a higher role', async () => {
       // The tempting implementation is an upsert that sets the role. AC5 asks for the add
       // to be REPORTED, and a silent promotion out of the add box is not what an admin
@@ -413,6 +482,37 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
       // function's own admin check, and before `auth.uid()` is consulted.
       expect(error).not.toBeNull()
       expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+
+      // THE CODE ALONE PROVED NOTHING, AND THIS TEST USED TO STOP THERE. Section 4 of the
+      // migration argues at length that revoking from PUBLIC is not enough because the
+      // `public` schema's default ACL grants anon EXECUTE explicitly -- so anon must be
+      // NAMED. Dropping that one `revoke ... from anon` is precisely the regression this
+      // test exists to catch, and a bare 42501 assertion CANNOT catch it: anon would then
+      // execute the definer function, fail its admin check, and raise 42501 anyway.
+      // Discriminate on the message, and pin BOTH directions so neither can drift.
+      expect(error?.message).toMatch(FUNCTION_PRIVILEGE_REFUSAL)
+      expect(error?.message).not.toMatch(ADMIN_GUARD_REFUSAL)
+    })
+
+    it('the SAME anon refusal reaches the other two RPCs, not just the add', async () => {
+      // The revoke is three statements and the suite only ever exercised one of them, so
+      // dropping either of the other two was invisible. Same message discrimination.
+      const setRole = await anonClient().rpc('set_project_member_role', {
+        p_project_id: roleProjectId,
+        p_user_id: mId,
+        p_role: 'admin',
+      })
+      expect(setRole.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(setRole.error?.message).toMatch(FUNCTION_PRIVILEGE_REFUSAL)
+      expect(setRole.error?.message).not.toMatch(ADMIN_GUARD_REFUSAL)
+
+      const remove = await anonClient().rpc('remove_project_member', {
+        p_project_id: roleProjectId,
+        p_user_id: mId,
+      })
+      expect(remove.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(remove.error?.message).toMatch(FUNCTION_PRIVILEGE_REFUSAL)
+      expect(remove.error?.message).not.toMatch(ADMIN_GUARD_REFUSAL)
     })
   })
 
@@ -517,8 +617,21 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
     it('never leaves a project with zero members', async () => {
       // The SPRIN-101 residual, closed by construction rather than by a separate rule: an
       // admin row IS a member row, so "at least one admin" implies "at least one member",
-      // and `projects_member_read`'s bootstrap disjunct can never hand a removed owner
-      // their read back. Scoped to this file's four projects.
+      // so no path THROUGH THESE THREE FUNCTIONS can empty a project, and
+      // `projects_member_read`'s bootstrap disjunct is never handed a removed owner's read
+      // back BY THEM. Scoped to this file's four projects.
+      //
+      // THE QUALIFIER IS LOAD-BEARING AND THIS COMMENT USED TO OMIT IT. It said the
+      // disjunct "can never" be reached, full stop, which is false and was caught by the
+      // SPRIN-102 review: deleting a project's last admin from `auth.users` CASCADES into
+      // project_members, a cascade fires no trigger and consults no function, and the
+      // project is left populated but admin-less -- unrecoverable, because SPRIN-101 made
+      // projects_admin_update AND projects_admin_delete both resolve to
+      // app_auth.is_project_admin. The migration header states the bound correctly ("no
+      // path through these three functions"); this comment had dropped the qualifier and
+      // so claimed more than the schema delivers. Deleting a user is a service-role act,
+      // not something an authenticated caller can do, which is why it is an accepted bound
+      // rather than a hole -- but do not let this line say "never" again.
       for (const project of [addProjectId, soloProjectId, roleProjectId, removalProjectId]) {
         const rows = await membership(project)
         expect(rows.length).toBeGreaterThan(0)
