@@ -1520,6 +1520,16 @@ create policy members_admin_delete on project_members
 -- is the house convention rather than a SPRIN-98 regression. Note the asymmetry
 -- anyway: the anon line one above uses the broad `revoke all` and this one does not.
 -- Tightening it across the schema belongs to SPRIN-75's sweep, not to one table.
+-- SUPERSEDED BY SPRIN-102 -- read the section at the FOOT of this file before
+-- trusting any of the four statements below or the six paragraphs above them.
+-- Every write grant here was revoked again: `authenticated` now holds NO INSERT,
+-- UPDATE, DELETE or TRUNCATE on this table and there are no column grants left at
+-- all, so the measured ACL is `authenticated=rxtm` and not the `rdDxtm` plus
+-- `project_id=a user_id=a role=aw` recorded above. Three SECURITY DEFINER RPCs are
+-- the only write path. The statements are kept as applied history -- this file
+-- records what ran, in order -- but the end state is SPRIN-102's, not this one's.
+-- In particular the TRUNCATE paragraph above is now out of date for THIS table:
+-- SPRIN-102 revoked it here, though the rest of the schema still carries it.
 revoke all on project_members from anon;
 revoke insert, update, delete on project_members from authenticated;
 grant insert (project_id, user_id, role) on project_members to authenticated;
@@ -2174,3 +2184,201 @@ create policy tfv_member_delete on ticket_field_values
   for delete
   to authenticated
   using (app_auth.is_project_member(project_id));
+
+-- ============================================================
+-- SPRIN-102 -- member management by email (epic SPRIN-75, story 6)
+-- ============================================================
+-- Applied 2026-08-21 -- hand-applied by David from
+-- docs/migrations/sprin-102-member-management.sql. Verified from the CATALOGUE, not
+-- from the editor reporting "Success": relacl, attacl, has_table_privilege, pg_policies
+-- and pg_proc were each read back.
+--
+-- WHAT CHANGES, IN ONE SENTENCE. project_members stops being writable over PostgREST at
+-- all, and three SECURITY DEFINER RPCs become the only write path, carrying the
+-- last-admin guard the epic has owed since SPRIN-98 landed.
+--
+-- WHY THE GUARD IS NOT A TRIGGER -- READ BEFORE "SIMPLIFYING" IT. A ROW trigger counting
+-- siblings is already ruled out by this repo: it sees a fresh SPI snapshot per row, so
+-- during a cascade it counts rows on their way out and starts refusing deletes that must
+-- succeed. A STATEMENT trigger with a transition table fixes that but breaks a DIFFERENT
+-- path: deleting an auth.users row cascades into BOTH projects and project_members in an
+-- order this schema does not pin, so a user who was some project's sole admin but not its
+-- only member leaves that project populated and admin-less, the trigger raises, and the
+-- USER DELETE fails. E2E teardown deletes a signed-up user on every run, so that is a
+-- required check going red. Making the RPCs the only write path removes the question
+-- rather than answering it: A CASCADE FIRES NO TRIGGER, so no cascade can be refused.
+--
+-- WHY A ZERO-MEMBER PROJECT IS UNREACHABLE. An admin row IS a member row, so "at least one
+-- admin" implies "at least one member" and no path through these functions can empty a
+-- project. That is what settles the decision SPRIN-101's review left open, and it is why
+-- projects_member_read's bootstrap disjunct stays exactly as SPRIN-101 wrote it. Anyone
+-- adding a FOURTH write path inherits that obligation.
+
+-- 1. add_project_member_by_email. THE ORDER OF THE FIRST TWO STATEMENTS IS THE SECURITY
+-- PROPERTY: the admin check runs before the address is so much as looked at. A definer
+-- function bypasses RLS, so the policy layer will NOT do this check for us, and if the
+-- lookup ran first a non-admin would get a working email-enumeration oracle out of a
+-- function that then refused them. The refusal is indistinguishable for a registered and
+-- an unregistered address because nothing has been read at the point it is raised.
+--
+-- It remains an enumeration oracle FOR PROJECT ADMINS, by construction -- 'no_such_user'
+-- is a statement about the address. That is the accepted bound (Jira does the same), and
+-- it is why the return value carries a TAG and never a user id, display name or row.
+--
+-- MATCHING IS EXACT against a lowercased input, NOT lower(p.email) = lower(...).
+-- profiles_email_key is a plain case-sensitive UNIQUE, so two rows differing only by case
+-- are possible in principle; under a case-insensitive match SELECT INTO would take one
+-- ARBITRARILY and silently add the wrong person. Exact matching fails closed instead.
+create or replace function public.add_project_member_by_email(
+  p_project_id uuid, p_email text, p_role text
+) returns text language plpgsql security definer set search_path = ''
+as $$
+declare v_user_id uuid;
+begin
+  if not app_auth.is_project_admin(p_project_id) then
+    raise exception 'Only a project admin may add members' using errcode = '42501';
+  end if;
+  if p_role is null or p_role not in ('admin', 'member') then
+    raise exception 'Unrecognised role: %', p_role using errcode = '22023';
+  end if;
+  select p.id into v_user_id from public.profiles p where p.email = lower(btrim(p_email));
+  if v_user_id is null then return 'no_such_user'; end if;
+  insert into public.project_members (project_id, user_id, role)
+  values (p_project_id, v_user_id, p_role)
+  on conflict (project_id, user_id) do nothing;
+  if not found then return 'already_member'; end if;
+  return 'added';
+end;
+$$;
+
+-- 2. set_project_member_role. THE LOCK IS NOT DECORATION: without it two admins demoting
+-- each other concurrently both read a count of 2, both pass the guard, and the project
+-- ends with ZERO admins -- the precise state this function exists to prevent. The delete
+-- path below takes the SAME lock on the SAME rows, so demote-vs-remove races are covered
+-- too, not only demote-vs-demote.
+create or replace function public.set_project_member_role(
+  p_project_id uuid, p_user_id uuid, p_role text
+) returns text language plpgsql security definer set search_path = ''
+as $$
+declare v_current text; v_admin_rows int;
+begin
+  if not app_auth.is_project_admin(p_project_id) then
+    raise exception 'Only a project admin may change a member role' using errcode = '42501';
+  end if;
+  if p_role is null or p_role not in ('admin', 'member') then
+    raise exception 'Unrecognised role: %', p_role using errcode = '22023';
+  end if;
+  select m.role into v_current from public.project_members m
+   where m.project_id = p_project_id and m.user_id = p_user_id;
+  if v_current is null then return 'not_a_member'; end if;
+  if v_current = p_role then return 'unchanged'; end if;
+  if v_current = 'admin' then
+    perform 1 from public.project_members m
+     where m.project_id = p_project_id and m.role = 'admin' for update;
+    select count(*) into v_admin_rows from public.project_members m
+     where m.project_id = p_project_id and m.role = 'admin';
+    if v_admin_rows <= 1 then return 'last_admin'; end if;
+  end if;
+  update public.project_members m set role = p_role
+   where m.project_id = p_project_id and m.user_id = p_user_id;
+  return 'updated';
+end;
+$$;
+
+-- 3. remove_project_member. Removing YOURSELF is permitted and is the ordinary way an
+-- admin hands over: promote a second admin, then remove your own row. It is refused only
+-- when you are the last admin -- the same rule applied to everyone, not a special case.
+create or replace function public.remove_project_member(
+  p_project_id uuid, p_user_id uuid
+) returns text language plpgsql security definer set search_path = ''
+as $$
+declare v_current text; v_admin_rows int;
+begin
+  if not app_auth.is_project_admin(p_project_id) then
+    raise exception 'Only a project admin may remove members' using errcode = '42501';
+  end if;
+  select m.role into v_current from public.project_members m
+   where m.project_id = p_project_id and m.user_id = p_user_id;
+  if v_current is null then return 'not_a_member'; end if;
+  if v_current = 'admin' then
+    perform 1 from public.project_members m
+     where m.project_id = p_project_id and m.role = 'admin' for update;
+    select count(*) into v_admin_rows from public.project_members m
+     where m.project_id = p_project_id and m.role = 'admin';
+    if v_admin_rows <= 1 then return 'last_admin'; end if;
+  end if;
+  delete from public.project_members m
+   where m.project_id = p_project_id and m.user_id = p_user_id;
+  return 'removed';
+end;
+$$;
+
+-- EXECUTE PRIVILEGES -- revoking from PUBLIC is NOT enough. The public schema carries a
+-- DEFAULT ACL for functions granting anon EXECUTE explicitly, so `revoke ... from public`
+-- leaves anon holding it. anon must be NAMED. Same pattern as handle_new_user,
+-- seed_project_statuses and seed_project_admin. These three live in `public` rather than
+-- app_auth because PostgREST only publishes exposed schemas and the client must call them.
+revoke execute on function public.add_project_member_by_email(uuid, text, text) from public, anon;
+revoke execute on function public.set_project_member_role(uuid, uuid, text) from public, anon;
+revoke execute on function public.remove_project_member(uuid, uuid) from public, anon;
+grant execute on function public.add_project_member_by_email(uuid, text, text) to authenticated;
+grant execute on function public.set_project_member_role(uuid, uuid, text) to authenticated;
+grant execute on function public.remove_project_member(uuid, uuid) to authenticated;
+
+-- THE WRITE GRANTS GO. Written TABLE-WIDE because a table-level revoke CASCADES to column
+-- grants, while `revoke insert (col)` against a table-wide grant is a SILENT NO-OP.
+-- Measured before: authenticated=rdDxtm plus project_id=a, user_id=a, role=aw. Measured
+-- after: authenticated=rxtm and NO column ACLs at all -- confirmed from pg_attribute, not
+-- assumed. TRUNCATE goes with them: it is the uppercase D, it is NOT covered by
+-- `revoke delete`, and RLS cannot police it at all. SELECT deliberately SURVIVES, so the
+-- members list still renders under members_read with no RPC.
+revoke insert, update, delete, truncate on project_members from authenticated;
+
+-- THE THREE WRITE POLICIES STAY, as defence in depth rather than as the control, so that
+-- re-granting a verb later cannot silently reopen a row-level hole at the same moment.
+-- MIND TWO CONSEQUENCES. First, a refused write now earns 42501 with `permission denied
+-- for table project_members` from the PRIVILEGE layer, NOT `new row violates row-level
+-- security policy` -- two controls, one SQLSTATE, so an assertion must match on the
+-- MESSAGE. Second, those policies are now a guard NO LIVE SUITE CAN OBSERVE: their only
+-- witness is pg_policies, in pg_catalog, which PostgREST does not expose even to a
+-- service-role client. Dropping all three would leave the whole suite green. Verify them
+-- from the catalogue by hand when touching this table's grants.
+
+-- REPAIR, shipped even though it was a provable no-op on the day (3 projects, 3 member
+-- rows, 0 without an admin). A sole admin has been able to delete their own membership row
+-- since SPRIN-98, and SPRIN-101 made the consequence worse: projects_admin_update and
+-- projects_admin_delete both resolve to app_auth.is_project_admin, so a zero-admin project
+-- can no longer be reconfigured OR removed by any authenticated user, and its whole cascade
+-- subtree goes with it. ONE statement repairs both shapes -- an owner holding a 'member'
+-- row gets promoted, an owner holding no row gets one inserted -- which is why it is an
+-- INSERT ... DO UPDATE rather than the more obvious UPDATE.
+insert into public.project_members (project_id, user_id, role)
+select p.id, p.owner_id, 'admin' from public.projects p
+where not exists (select 1 from public.project_members a
+                  where a.project_id = p.id and a.role = 'admin')
+on conflict (project_id, user_id) do update set role = 'admin';
+
+-- CONSENT: THE DECISION SPRIN-105 EXPLICITLY HANDED THIS STORY, ANSWERED HERE.
+-- The SPRIN-105 section above notes that nothing requires a subject's consent to become a
+-- co-member, that co-membership exposes their display_name and email to the project, and
+-- that the only reason this was not exploitable was the absence of a uuid oracle -- naming
+-- SPRIN-102 as "exactly that oracle in reverse" and leaving the consent decision here.
+--
+-- THE ANSWER IS: NO CONSENT STEP, DELIBERATELY, and the boundary moved in two directions
+-- at once rather than only widening.
+--
+--   * WIDER: an admin can now add a member knowing only an email address, where before
+--     they needed a uuid the app never surfaced. add_project_member_by_email is that
+--     oracle, bounded to project admins, returning a TAG and never a row.
+--   * NARROWER, and this is the half easy to miss: SPRIN-105's stated hole was that ANY
+--     authenticated user could create a project and INSERT an arbitrary user_id into
+--     project_members, because members_admin_insert constrains only project_id. The revoke
+--     above CLOSES that outright -- there is no direct INSERT any more, for anyone. The
+--     same route also had a DELETE + INSERT variant that re-pointed an existing row, which
+--     SPRIN-98 recorded as open; it is closed by the same revoke.
+--
+-- What an attacker can still do is create a project and add an address they ALREADY KNOW,
+-- learning that it is registered and that person's display_name. That is the Jira model
+-- and it is accepted, not overlooked. It is bounded by the ordering property at the top of
+-- this section -- non-admins learn nothing -- and by the tag-only return. If consent is
+-- ever wanted, it is an invitation table and a new story, not a tweak to these functions.

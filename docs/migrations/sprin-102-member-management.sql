@@ -380,8 +380,12 @@ commit;
 -- ============================================================================
 -- AFTER APPLYING -- verify from the CATALOG, not from "Success"
 -- ============================================================================
---   * project_members relacl: authenticated=rxt only -- a (INSERT), w (UPDATE),
---     d (DELETE) and D (TRUNCATE) all gone. anon still ABSENT. service_role unchanged.
+--   * project_members relacl: authenticated=rxtm -- a (INSERT), w (UPDATE), d (DELETE)
+--     and D (TRUNCATE) all gone. anon still ABSENT. service_role unchanged.
+--     THIS LINE READ "rxt only" BEFORE THE MIGRATION WAS APPLIED, AND WAS WRONG. m
+--     (MAINTAIN) was in the pre-state (authenticated=rdDxtm) and is not in the revoke
+--     list, so it survives by design. Corrected from the measured post-state rather
+--     than left to read as a failed check by the next person who runs the checklist.
 --   * column attacl on project_members: NOTHING on project_id, user_id or role. The
 --     table-level revoke cascades; confirm it rather than assuming it, because a column
 --     grant surviving a table revoke is precisely the asymmetry this repo has been bitten
@@ -391,12 +395,58 @@ commit;
 --   * All FOUR policies still present and unchanged.
 --   * The three new functions: prosecdef = true, proconfig = {search_path=}, and proacl
 --     listing postgres, service_role and authenticated but NOT anon and no bare "=X/".
---   * Every project still has exactly one admin; 3 projects, 3 member rows.
+--   * Every project has AT LEAST one admin; measured 3 projects, 3 member rows, and as
+--     it happens exactly one admin each. "At least" is the invariant this migration
+--     enforces -- "exactly" is a fact about today's data, and promoting a second admin
+--     is the feature. Do not turn the measurement back into an assertion.
 --
--- ADVISORS: expect NO new lints. This migration adds no table, no index and no policy.
--- The three functions are SECURITY DEFINER with search_path pinned empty, which is the
--- shape the advisor asks for, and they add no auth_rls_initplan because they are not
--- policy expressions. Baseline to compare against is the one measured after SPRIN-99:
--- 1 security WARN (leaked-password protection, pre-existing) and 8 performance INFOs
--- (unindexed_foreign_keys: 4 on ticket_field_values, 3 on tickets, 1 on
--- project_field_options), with auth_rls_initplan at ZERO across the schema.
+-- ============================================================================
+-- ADVISORS -- THIS SECTION PREDICTED "NO NEW LINTS" AND WAS WRONG
+-- ============================================================================
+-- Measured after applying, 2026-08-21: security went 1 WARN -> 4. Performance is
+-- unchanged at 8 INFOs and auth_rls_initplan is still ZERO across the schema, both as
+-- predicted. The prediction that failed was the security half, and the original wording
+-- is kept above the correction rather than swapped out silently.
+--
+-- The three new WARNs are one per RPC, all `authenticated_security_definer_function_
+-- executable` (lint 0029): "Function public.<name> can be executed by the authenticated
+-- role as a SECURITY DEFINER function via /rest/v1/rpc/<name>."
+--
+-- WHY THE PREDICTION FAILED. It reasoned about the lints this migration could add by
+-- what it CREATES -- no table, no index, no policy -- and about search_path, which the
+-- advisor does check. It never considered that the SHAPE ITSELF is what 0029 flags. The
+-- lint is REACHABILITY-GATED, and these three functions are the first public-schema,
+-- authenticated-callable SECURITY DEFINER functions this schema has ever had. Measured:
+-- every other SECURITY DEFINER function in `public` (handle_new_user, seed_project_admin,
+-- seed_project_statuses, create_project_counter, resolve_initial_ticket_status and the
+-- two project_statuses guards) has EXECUTE revoked from authenticated because they are
+-- trigger functions; and the four app_auth definers ARE authenticated-executable but sit
+-- in an UNEXPOSED schema, so 0029's /rest/v1/rpc/ condition never holds for them. Nothing
+-- in this schema had ever tripped it, so nothing warned that it could.
+--
+-- ACCEPTED, ON DAVID'S EXPLICIT CALL, 2026-08-21. These three WARNs are the design, not a
+-- defect, and there is no option that keeps the feature and silences the lint truthfully:
+--
+--   * SECURITY INVOKER defeats add_project_member_by_email outright. Resolving an address
+--     belonging to someone the admin shares NO project with is the entire reason the
+--     function exists, and profiles_read deliberately refuses exactly that (SPRIN-105).
+--   * Revoking EXECUTE from authenticated leaves the functions uncallable -- no feature.
+--   * Moving the bodies to app_auth behind thin SECURITY INVOKER wrappers in `public`
+--     WOULD silence the lint, because it is reachability-gated. It was considered and
+--     REJECTED as lint-laundering: the security property is completely unchanged, an
+--     authenticated caller still reaches definer-privileged code over REST with one extra
+--     hop, and it would collide with the standing rule about adding a fifth app_auth
+--     function taking a foreign-id parameter. A clean advisor page bought by making the
+--     code less honest is not a trade this repo makes.
+--
+-- What actually carries the safety here is not the lint's absence but the FIRST STATEMENT
+-- of each function: app_auth.is_project_admin, checked before anything is read. Section 1
+-- explains why that ordering is the security property.
+--
+-- SO THE BASELINE MOVES, and this is its first standing exception. A future session
+-- comparing against the post-SPRIN-99 figure of 1 security / 8 performance will read
+-- three expected WARNs as a regression. The figure to compare against from here is
+-- 4 security / 8 performance: 1 leaked-password-protection WARN (pre-existing,
+-- unrelated) plus these 3, and 8 unindexed_foreign_keys INFOs (4 on ticket_field_values,
+-- 3 on tickets, 1 on project_field_options), with auth_rls_initplan at ZERO. CLAUDE.md
+-- carries the same correction.

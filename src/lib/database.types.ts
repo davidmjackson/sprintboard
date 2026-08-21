@@ -542,6 +542,14 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      add_project_member_by_email: {
+        Args: { p_email: string; p_project_id: string; p_role: string }
+        Returns: string
+      }
+      remove_project_member: {
+        Args: { p_project_id: string; p_user_id: string }
+        Returns: string
+      }
       reorder_project_statuses: {
         Args: { p_project_id: string; p_slugs: string[] }
         Returns: {
@@ -561,6 +569,10 @@ export type Database = {
           isOneToOne: false
           isSetofReturn: true
         }
+      }
+      set_project_member_role: {
+        Args: { p_project_id: string; p_role: string; p_user_id: string }
+        Returns: string
       }
     }
     Enums: {

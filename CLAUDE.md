@@ -240,12 +240,38 @@ most stories rather than a rare one.
 **The advisor baseline is NOT zero, and this file used to say it was.** That wording was
 aspirational when written and has been false for some time — a story that took it literally
 would either chase pre-existing lints it did not cause or, worse, read a red result as its own
-regression. Re-measured **2026-08-21, after SPRIN-99 applied**: **1 security WARN**
-(leaked-password protection disabled, pre-existing) and **8 performance lints**, all
-`unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`, 3 on `tickets`, 1 on
-`project_field_options` — and **zero** `auth_rls_initplan` WARNs anywhere in the schema. It
-read **1 security / 11 performance**, with 3 `auth_rls_initplan` WARNs on `project_statuses`
-alone, from SPRIN-101 until SPRIN-99 cleared them.
+regression. Re-measured **2026-08-21, after SPRIN-102 applied**: **4 security WARNs** and
+**8 performance lints**, all `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`, 3
+on `tickets`, 1 on `project_field_options` — and **zero** `auth_rls_initplan` WARNs anywhere
+in the schema. It read **1 security / 8 performance** after SPRIN-99 and before SPRIN-102,
+and **1 security / 11 performance** — with 3 `auth_rls_initplan` WARNs on `project_statuses`
+alone — from SPRIN-101 until SPRIN-99 cleared them.
+
+**Three of those four security WARNs are SPRIN-102's, they are EXPECTED, and this is the
+first standing exception to "add no new lints".** They are one per RPC, all
+`authenticated_security_definer_function_executable` (lint 0029), on
+`add_project_member_by_email`, `set_project_member_role` and `remove_project_member`. The
+fourth is the pre-existing, unrelated leaked-password-protection WARN. **Do not "fix" the
+three.** They are the design, accepted on David's explicit call on 2026-08-21 after the
+alternatives were priced: `SECURITY INVOKER` defeats the email lookup outright (resolving an
+address belonging to someone the admin shares no project with is the whole point, and
+`profiles_read` deliberately refuses it); revoking EXECUTE leaves them uncallable; and hiding
+the bodies in `app_auth` behind thin invoker wrappers in `public` would silence the lint
+while changing the security property not at all — rejected as lint-laundering. What carries
+the safety is the **first statement of each function**, `app_auth.is_project_admin`, checked
+before anything is read.
+
+**The mechanism generalises, so read it before assuming a definer function is lint-free.**
+Lint 0029 is **reachability-gated**, and SPRIN-102's three are the first public-schema,
+authenticated-callable `SECURITY DEFINER` functions this schema has ever had. Every other
+`public` definer function (`handle_new_user`, `seed_project_admin`, `seed_project_statuses`,
+`create_project_counter`, `resolve_initial_ticket_status` and the two `project_statuses`
+guards) has EXECUTE **revoked** from `authenticated` because they are trigger functions; the
+four `app_auth` definers **are** authenticated-executable but sit in an **unexposed** schema,
+so 0029's `/rest/v1/rpc/` condition never holds for them. That is why nothing warned this was
+coming: SPRIN-102's own migration predicted "expect NO new lints", having reasoned about what
+it *creates* rather than about the shape itself. A **fourth** public RPC adds a **fifth** WARN,
+by construction — expect it, and do not read it as a regression either.
 
 **SPRIN-100 took three of those WARNs off the board for free**, and the mechanism is worth
 copying rather than rediscovering: replacing a bare `auth.uid()` predicate with a call to a

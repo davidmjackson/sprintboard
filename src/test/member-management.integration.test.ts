@@ -186,7 +186,9 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
    */
   async function seedMember(project: string, userId: string): Promise<void> {
     fixtureOk(
-      await admin.from('project_members').insert({ project_id: project, user_id: userId, role: 'member' }),
+      await admin
+        .from('project_members')
+        .insert({ project_id: project, user_id: userId, role: 'member' }),
       'seed a member row',
     )
   }
@@ -530,10 +532,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
       // Without this, the assertion after removal proves nothing: a member who never had
       // access reads zero rows both times. This is the control that makes the next test
       // mean something.
-      const { data, error } = await mClient
-        .from('tickets')
-        .select('id')
-        .eq('id', removalTicketId)
+      const { data, error } = await mClient.from('tickets').select('id').eq('id', removalTicketId)
 
       expect(error).toBeNull()
       expect(data).toEqual([{ id: removalTicketId }])
