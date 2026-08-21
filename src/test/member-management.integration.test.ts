@@ -629,6 +629,69 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-102 membership is managed only by the
       expect(await roleOf(roleProjectId, mId)).toBe('member')
     })
 
+    it('leave the PROJECT row byte-identical -- they touch project_members and nothing else', async () => {
+      // THIS TEST IS THE EVIDENCE `project-type-immutability.test.ts` CITES BY NAME. That
+      // guard forbids any `rpc(...)` call whose name is not on its allowlist, because an RPC
+      // is a write path no TypeScript analysis can see the inside of; these three had to be
+      // added to it, and its own rule is that a name added there needs live evidence
+      // somewhere plus a note saying where. This is where.
+      //
+      // It matters more for these than for `reorder_project_statuses`, which is
+      // `security invoker` and therefore fenced in by the caller's own RLS. All three of
+      // these are `security definer`, so RLS would NOT stop one of them writing `projects`
+      // if a future migration added such a statement. Reading the bodies says they do not;
+      // this says so against the database that actually runs them.
+      //
+      // Every column, not just `project_type`: a definer function that could write one could
+      // write any, and `name`/`key` are immutable by GRANT alone since SPRIN-82/97.
+      const before = await admin.from('projects').select('*').eq('id', roleProjectId).single()
+
+      const promote = await aClient.rpc('set_project_member_role', {
+        p_project_id: roleProjectId,
+        p_user_id: mId,
+        p_role: 'admin',
+      })
+      const demote = await aClient.rpc('set_project_member_role', {
+        p_project_id: roleProjectId,
+        p_user_id: mId,
+        p_role: 'member',
+      })
+      // REMOVE BEFORE ADDING, so the add's tag does not depend on what earlier tests in this
+      // file left behind. Vitest runs tests within a file SEQUENTIALLY and this suite shares
+      // fixtures across describes, so an earlier test had already added the stranger to this
+      // project -- the first draft asserted 'added' here and got 'already_member', which is
+      // the correct answer to the question it accidentally asked. This result is deliberately
+      // NOT asserted: whether it is 'removed' or 'not_a_member' is exactly the prior state
+      // this test should not care about.
+      await aClient.rpc('remove_project_member', { p_project_id: roleProjectId, p_user_id: sId })
+
+      const added = await aClient.rpc('add_project_member_by_email', {
+        p_project_id: roleProjectId,
+        p_email: sEmail,
+        p_role: 'member',
+      })
+      const removed = await aClient.rpc('remove_project_member', {
+        p_project_id: roleProjectId,
+        p_user_id: sId,
+      })
+
+      // POSITIVE CONTROL, and without it this whole test is vacuous: an equality assertion
+      // on the project row passes perfectly if all four calls were refused and NOTHING
+      // happened. Pinning each tag is what makes "the project row did not change" a
+      // statement about four writes that really landed rather than about four no-ops.
+      expect([promote.data, demote.data, added.data, removed.data]).toEqual([
+        'updated',
+        'updated',
+        'added',
+        'removed',
+      ])
+
+      const after = await admin.from('projects').select('*').eq('id', roleProjectId).single()
+
+      expect(after.error).toBeNull()
+      expect(after.data).toEqual(before.data)
+    })
+
     it('POSITIVE CONTROL: the same admin can still READ the membership rows', async () => {
       // Without this, every test above would pass against a table `authenticated` had lost
       // ALL access to -- including the SELECT the members list is rendered from.

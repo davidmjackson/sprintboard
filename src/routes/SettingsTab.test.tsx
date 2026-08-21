@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom'
 
 import { SettingsTab } from './SettingsTab'
+import { AuthContext, type AuthState } from '@/lib/auth-context'
+import { listProjectMembers } from '@/lib/project-members'
 import type { ProjectShellContext } from './ProjectShell'
 import type { ReadPhase } from '@/lib/project-reads'
 import type { Project, ProjectField, ProjectFieldOption, ProjectStatus } from '@/lib/domain'
@@ -59,6 +61,16 @@ vi.mock('@/lib/projects', async (orig) => ({
 
 // Only the counts read is network-touching from this tab's point of view; every pure helper
 // stays real.
+// SPRIN-102. MOCKED SO THE TAB'S MEMBERS READ CANNOT REACH THE LIVE DATABASE. `SettingsTab`
+// now calls `listProjectMembers` through its own hook, and an unmocked read in a shell test
+// does not fail loudly -- it issues a real request against whatever `.env.local` points at.
+// The default resolves to a single admin row so every pre-existing test in this file renders
+// a loaded section rather than a permanent "Loading…".
+vi.mock('@/lib/project-members', async (orig) => ({
+  ...(await orig<typeof import('@/lib/project-members')>()),
+  listProjectMembers: vi.fn(),
+}))
+
 vi.mock('@/lib/project-statuses', async (orig) => ({
   ...(await orig<typeof import('@/lib/project-statuses')>()),
   ticketCountsByStatus: vi.fn(),
@@ -209,12 +221,30 @@ function buildContext(ctx: ContextOverrides = {}): ProjectShellContext {
 /** The tab under its route, as an ELEMENT — so a test can re-render the identical tree with a
  *  different context and get a re-render rather than a remount, which is what a project switch
  *  actually is here (the tab is a nested route element, so react-router reuses it). */
+/**
+ * The signed-in user the tab sees. `SettingsTab` reads `useAuth()` as of SPRIN-102, to work
+ * out whether the viewer is an admin of this project, so every render needs a provider --
+ * without one `useAuth` THROWS by design rather than returning a null user.
+ *
+ * `u1` matches the admin row `listProjectMembers` resolves to by default below, so the tab
+ * renders its member controls in the ordinary case. A test wanting the non-admin view
+ * overrides the members mock, not this.
+ */
+const AUTH = { session: null, user: { id: 'u1' }, loading: false } as unknown as AuthState
+
 function tabTree(context: ProjectShellContext) {
   return (
     <MemoryRouter initialEntries={['/settings']}>
       <Routes>
         <Route path="/" element={<Outlet context={context} />}>
-          <Route path="settings" element={<SettingsTab />} />
+          <Route
+            path="settings"
+            element={
+              <AuthContext.Provider value={AUTH}>
+                <SettingsTab />
+              </AuthContext.Provider>
+            }
+          />
         </Route>
       </Routes>
     </MemoryRouter>
@@ -229,6 +259,18 @@ function renderTab(ctx: ContextOverrides = {}) {
 
 describe('SettingsTab', () => {
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     // The two write mocks are MODULE-level and nothing in this project configures
     // `clearMocks`/`restoreMocks`, so call counts accumulate across tests in file order.
@@ -386,6 +428,18 @@ describe('SettingsTab saves the sprint cadence (SPRIN-97)', () => {
   const scrum = { ...project, sprint_length_weeks: 3, sprint_start_weekday: 6 } as Project
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     vi.mocked(updateProjectCadence).mockReset()
   })
@@ -505,6 +559,18 @@ describe('the wiring between SettingsTab and the WIP limit field (SPRIN-85, fix 
     // behind — invisible coupling that `-t` filtering breaks (`TypeError: Cannot read
     // properties of undefined (reading 'then')`, because nothing had configured a resolved
     // value). Configuring it here is what makes these two tests independent of file order.
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
   })
 
@@ -548,6 +614,18 @@ describe('SettingsTab custom fields', () => {
   ] as unknown as ProjectField[]
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
   })
 
@@ -821,6 +899,18 @@ describe('SettingsTab custom field options (SPRIN-92 task 9, fix round 1)', () =
   }
 
   beforeEach(() => {
+    vi.mocked(listProjectMembers)
+      .mockReset()
+      .mockResolvedValue([
+        {
+          project_id: 'p1',
+          user_id: 'u1',
+          role: 'admin',
+          created_at: '2026-08-01T00:00:00Z',
+          email: 'ada@example.com',
+          display_name: 'Ada',
+        },
+      ])
     vi.mocked(ticketCountsByStatus).mockReset().mockResolvedValue(new Map())
     vi.mocked(createProjectFieldOption).mockReset()
     vi.mocked(renameProjectFieldOption).mockReset()

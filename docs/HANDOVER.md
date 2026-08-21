@@ -1642,6 +1642,72 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   the failing suites in isolation.** If they pass, it is the budget, not the branch. If CI ever
   reds this way, the fix is raising the GoTrue auth rate limit in the Supabase dashboard, not a
   code change.
+  - **UPDATED BY SPRIN-102 (session 76): this bites in practice, and the session that hit it
+    also nearly misdiagnosed it — twice.** SPRIN-102 added a thirteenth live suite (6 auth calls:
+    3 `createUser` + 3 `signIn`, the same shape as its three membership siblings). Four local
+    `npm test` runs inside about half an hour all went red with `Request rate limit reached`,
+    naming a DIFFERENT set of victims each time. Re-measured across all thirteen suites:
+    **~56 auth calls** (`signIn` plus `createUser`) per full run, not 29 — the older figure
+    counted sign-ins alone. The discriminator above held perfectly: every failing suite passed
+    **28/28 and 18/18 in isolation**, immediately.
+  - **BUT BE CAREFUL WHAT YOU CONCLUDE FROM THAT, because the session first got it wrong.** After
+    a 7-minute cooldown failed to clear it, the reasonable-looking inference was "thirteen suites
+    structurally exceed the ceiling". That does not follow, and it was probably false: FOUR full
+    runs at ~56 calls is ~224 calls in half an hour, and the limiter's window is hourly — so the
+    budget had been exhausted by the diagnosing session's OWN traffic, which is exactly the
+    confound that makes this hard to measure. A clean reading needs a genuinely quiet hour and
+    then ONE run. CI was green at twelve suites shortly before, which is the evidence against the
+    structural reading. **Do not conclude the suite is over the ceiling from runs you polluted
+    yourself** — and note the corollary `CLAUDE.md` already warns about: a local run can burn the
+    budget that a concurrent CI run needs.
+  - **THE FAILURE WEARS A CONVINCING DISGUISE, and this is the part to remember.** The visible
+    error was not an auth error at all — it was `completeSprint` returning
+    `{ ok: false, error: 'unknown' }` where the test expected `'stale'`. The app layer maps any
+    unrecognised failure to `unknown`, so a rate-limited sign-in surfaces as a plausible
+    domain-logic assertion failure with the real cause nowhere in the message. None of the four
+    signatures in `CLAUDE.md` matches it, so the rule there — "anything else is real" — points
+    the wrong way for this one. **Grep the whole run for `rate limit` before believing any live
+    assertion failure**, and only then reach for the isolation discriminator.
+  - The recorded fix is unchanged and is now worth actually doing: **raise the GoTrue auth rate
+    limit in the Supabase dashboard.** It is David's to make, it is not a code change, and every
+    future story that adds a live suite makes it more pressing.
+
+## Known-unpinned, added by SPRIN-102 (session 76)
+
+- **The three surviving write policies on `project_members` are a guard NO test in this repo can
+  observe.** `members_admin_insert`, `members_admin_update` and `members_admin_delete` were kept
+  deliberately as defence in depth, so that re-granting a verb later cannot silently reopen a
+  row-level hole at the same moment — but the revoke means the privilege layer refuses every
+  direct write before any policy is consulted, so nothing behavioural can reach them. Their only
+  witness is `pg_policies`, in `pg_catalog`, which PostgREST does not expose even to a
+  service-role client. **Dropping all three would leave the entire suite green.** Verify from the
+  catalogue by hand whenever this table's grants are touched. Also recorded in
+  `docs/standards-audit-2026-07-25.md` beside the other two unobservable guards.
+- **Three NEW security advisor WARNs are EXPECTED and must not be "fixed".** One per RPC, all
+  `authenticated_security_definer_function_executable` (lint 0029). The baseline moves from
+  1 security / 8 performance to **4 / 8**, with `auth_rls_initplan` still at zero. Accepted on
+  David's explicit call after the alternatives were priced — see the ADVISORS section at the foot
+  of `docs/migrations/sprin-102-member-management.sql` for the full argument. The mechanism
+  generalises: lint 0029 is **reachability-gated**, and a fourth public RPC adds a fifth WARN by
+  construction.
+- **`profiles.email` can still drift from `auth.users.email`, and SPRIN-102 did NOT close it.**
+  SPRIN-105 flagged this as something SPRIN-102 "must re-read before trusting the column as an
+  identity key", and the re-read was done: the column is backfilled once and mirrored on every
+  future signup by `handle_new_user`, but nothing re-syncs an existing row when an address changes
+  in `auth.users`. It stays open because **there is still no email-change path anywhere in the
+  app**, so the mirror cannot go stale today. What SPRIN-102 DID settle is the neighbouring
+  question SPRIN-105 left undecided: matching is **exact against a lowercased input**, never
+  `lower(p.email) = lower(...)`, because `profiles_email_key` is a plain case-sensitive UNIQUE and
+  a case-insensitive match over two case-differing rows would take one arbitrarily and silently
+  add the wrong person. Build an email-change path and the sync trigger becomes required, not
+  optional.
+- **A duplicate React key between sibling settings sections is invisible except as a sibling
+  suite going red.** `CadenceSettings` keys on `project.id`; adding `MemberSettings` with the same
+  bare `key={project.id}` made two children of one list share a key, and React responded by
+  duplicating and omitting children — the measured symptom was **two cadence sections** after a
+  project switch, which broke two SPRIN-97 tests that have nothing to do with members. React warns
+  ("Encountered two children with the same key") on stderr but does not fail. `MemberSettings` now
+  keys on `` `members-${project.id}` ``; any future keyed section on that tab needs its own prefix.
 
 ## Settled — do not re-raise
 

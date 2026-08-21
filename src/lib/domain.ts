@@ -117,6 +117,27 @@ export type ProjectType = 'scrum' | 'kanban'
  */
 export type CustomFieldType = 'text' | 'paragraph' | 'number' | 'date' | 'select'
 
+/**
+ * What a member is to a project (SPRIN-98, epic SPRIN-75).
+ *
+ * An `admin` reconfigures the project — statuses, custom fields, cadence, and who else
+ * belongs to it. A `member` does ordinary board work. The two are not nested roles in the
+ * database's eyes: `app_auth.is_project_admin` and `is_project_member` are separate
+ * predicates, and it is the DATA that makes admin a superset, because an admin row IS a
+ * member row. Nothing in the schema would stop a third role being added between them.
+ *
+ * Still `text` + a `check` constraint (`project_members_role_check`), never a Postgres
+ * enum, for the same reason as every other vocabulary in this file.
+ *
+ * **The order of the array below is load-bearing**, exactly as it is for the other
+ * vocabularies: `domain.test.ts` parses the check constraint out of
+ * `docs/sprintboard_phase1_schema.sql` and compares it ORDERED. Until SPRIN-102 there was
+ * NO drift test for this table at all — the constant simply did not exist — so the schema
+ * doc and the client could disagree with nothing to notice. Adding the constant without
+ * adding the matcher would have left that exactly as it was.
+ */
+export type ProjectRole = 'admin' | 'member'
+
 export const TICKET_TYPES = [
   'epic',
   'story',
@@ -125,6 +146,8 @@ export const TICKET_TYPES = [
 ] as const satisfies readonly TicketType[]
 
 export const PROJECT_TYPES = ['scrum', 'kanban'] as const satisfies readonly ProjectType[]
+
+export const PROJECT_ROLES = ['admin', 'member'] as const satisfies readonly ProjectRole[]
 
 export const CUSTOM_FIELD_TYPES = [
   'text',
@@ -212,6 +235,16 @@ export const PROJECT_TYPE_LABELS: Record<ProjectType, string> = {
 }
 
 /**
+ * How a role is named in the UI. Exhaustive over `ProjectRole` for the same reason as
+ * every other label map here: a third role becomes unshippable without a label, rather
+ * than rendering as a raw slug in the members list.
+ */
+export const PROJECT_ROLE_LABELS: Record<ProjectRole, string> = {
+  admin: 'Admin',
+  member: 'Member',
+}
+
+/**
  * Human-readable custom-field-type labels, keyed by type. Same rule as every label map
  * above: display names live here and nowhere else, so the settings list and story 2's add
  * form cannot word the same type two ways.
@@ -285,6 +318,10 @@ export type AssertProjectTypesExhaustive = Expect<
   Exact<ProjectType, (typeof PROJECT_TYPES)[number]>
 >
 
+export type AssertProjectRolesExhaustive = Expect<
+  Exact<ProjectRole, (typeof PROJECT_ROLES)[number]>
+>
+
 export type AssertCustomFieldTypesExhaustive = Expect<
   Exact<CustomFieldType, (typeof CUSTOM_FIELD_TYPES)[number]>
 >
@@ -333,6 +370,56 @@ export type AssertProjectFieldOptionUpdateColumns = Expect<
 export type Profile = Tables<'profiles'>
 export type Project = Omit<Tables<'projects'>, 'project_type'> & { project_type: ProjectType }
 export type Sprint = Omit<Tables<'sprints'>, 'status'> & { status: SprintStatus }
+
+/**
+ * One project's membership row, with `role` narrowed to the domain union.
+ *
+ * There is deliberately no INSERT or UPDATE counterpart, and that absence is the point
+ * rather than an omission. Since SPRIN-102 `authenticated` holds NO insert, update, delete
+ * or truncate privilege on `project_members` at all — three `SECURITY DEFINER` RPCs are the
+ * only write path. A `ProjectMemberInsert` type would describe a request PostgREST refuses
+ * with 42501 before any policy is consulted, which is exactly the sort of shape that makes
+ * an impossible call look supported. Writes go through `src/lib/project-members.ts`.
+ */
+export type ProjectMember = Omit<Tables<'project_members'>, 'role'> & { role: ProjectRole }
+
+/**
+ * A membership row joined to the profile of the person it names.
+ *
+ * `email` and `display_name` are both nullable on `profiles` and are NOT filled in for
+ * every member — `profiles_read` scopes profile visibility to CO-MEMBERSHIP, so this join
+ * only resolves because the caller is themselves a member of the same project. A member
+ * whose profile row is missing renders by id rather than disappearing; see
+ * `listProjectMembers`, which does not drop such a row.
+ */
+export type ProjectMemberWithProfile = ProjectMember & {
+  email: string | null
+  display_name: string | null
+}
+
+/* ------------------------------------------------------------------ *
+ * The three member-management RPCs return a TAG, never a row.
+ *
+ * That is a deliberate disclosure boundary, not a convenience: an admin adding an address
+ * learns whether it is registered and nothing else about whoever holds it, unless the add
+ * succeeds and they become co-members. Widening any of these to return a row or a user id
+ * would turn a bounded oracle into an unbounded one — read the migration header before
+ * changing a signature.
+ *
+ * Each union is exhaustive over what its function can return, so a `switch` over one is
+ * checkable. They are plain unions rather than parsed from the SQL: nothing can verify them
+ * against the live functions at compile time, so `member-management.integration.test.ts` is
+ * what pins every tag, live, by asserting the exact string each path returns.
+ * ------------------------------------------------------------------ */
+
+/** `added` on success; `already_member` leaves the existing role UNCHANGED, by design. */
+export type AddMemberResult = 'added' | 'already_member' | 'no_such_user'
+
+/** `last_admin` is the guard refusing to demote the only admin a project has. */
+export type SetMemberRoleResult = 'updated' | 'unchanged' | 'not_a_member' | 'last_admin'
+
+/** `last_admin` here refuses to remove the only admin, which is what keeps a project usable. */
+export type RemoveMemberResult = 'removed' | 'not_a_member' | 'last_admin'
 
 /**
  * One project's status row. A board column IS one of these, ordered by `position` —
@@ -576,6 +663,10 @@ export function isStatusCategory(value: string): value is StatusCategory {
 
 export function isProjectType(value: string): value is ProjectType {
   return (PROJECT_TYPES as readonly string[]).includes(value)
+}
+
+export function isProjectRole(value: string): value is ProjectRole {
+  return (PROJECT_ROLES as readonly string[]).includes(value)
 }
 
 export function isCustomFieldType(value: string): value is CustomFieldType {

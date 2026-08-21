@@ -5,6 +5,8 @@ import {
   CUSTOM_FIELD_TYPES,
   CUSTOM_FIELD_TYPE_LABELS,
   DEFAULT_PROJECT_STATUSES,
+  PROJECT_ROLES,
+  PROJECT_ROLE_LABELS,
   PROJECT_TYPES,
   PROJECT_TYPE_LABELS,
   SPRINT_CADENCE_COLUMNS,
@@ -849,6 +851,41 @@ describe('domain vocabulary matches the database check constraints', () => {
    */
   it('project types match the schema', () => {
     expect(checkConstraintValues('projects', 'project_type')).toEqual([...PROJECT_TYPES])
+  })
+
+  /**
+   * SPRIN-102. The FIRST drift test this table has ever had. `project_members` landed in
+   * SPRIN-98 with a `role` check constraint and no client constant, so there was nothing
+   * to compare it against and nothing to notice if the two disagreed; SPRIN-102 added
+   * `PROJECT_ROLES` because it is the first story to render a role in the UI, and the
+   * constant without this matcher would have reproduced the same gap one layer up.
+   *
+   * Same shape and same caveat as the assertions around it: both sides are derived, so the
+   * anchor that stops it being circular is the hard-coded list in "lists both project
+   * roles" below. Delete that and this pins the two lists to each other and nothing else.
+   */
+  it('project roles match the schema', () => {
+    expect(checkConstraintValues('project_members', 'role')).toEqual([...PROJECT_ROLES])
+  })
+
+  /**
+   * THE ANCHOR for the assertion above. Hard-coded on purpose -- it is the only statement
+   * in this file that is not derived from either the schema doc or the constant, so it is
+   * what stops the pair drifting together into the same wrong answer.
+   */
+  it('lists both project roles', () => {
+    expect([...PROJECT_ROLES]).toEqual(['admin', 'member'])
+  })
+
+  /**
+   * Every role renders as something a person can read. Exhaustiveness is already a compile
+   * error via `Record<ProjectRole, string>`, so what this adds is that the label is not an
+   * empty string -- the same pairing `PROJECT_TYPE_LABELS` gets.
+   */
+  it('gives every project role a non-empty label', () => {
+    for (const role of PROJECT_ROLES) {
+      expect(PROJECT_ROLE_LABELS[role]).not.toBe('')
+    }
   })
 
   /**

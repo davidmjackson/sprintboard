@@ -141,7 +141,9 @@ config tables `project_statuses`, `project_fields`, `project_field_options` and
 `ticket_field_values` (SPRIN-99)**. Teams, roles and permissions is done as a schema property;
 what remains of the epic is the app-layer follow-ups already tracked as SPRIN-102/103/104.
 
-**That is not one shape, and "harmonise" is the wrong instinct — there are THREE.** The board
+**That is not one shape, and "harmonise" is the wrong instinct — there are FOUR.** (This
+paragraph said THREE until SPRIN-102 added the fourth; the three below are unchanged and the
+new one is stated at the end.) The board
 tables are single `for all` policies asking **member**, on purpose: on `sprints` and `tickets`
 read must stay co-extensive with write or `completeSprint`'s guard silently stops holding.
 `projects` and three of the four config tables (`project_statuses`, `project_fields`,
@@ -156,6 +158,21 @@ verb before assuming a policy's shape. SPRIN-101's four `projects` policies are
 `owner_id = (select auth.uid())`, purely so creating a project does not require a membership
 that does not exist yet), `projects_admin_update` and `projects_admin_delete` (both
 `app_auth.is_project_admin(id)`).
+
+**THE FOURTH SHAPE IS `project_members`, and it is not a policy shape at all — it is a GRANT
+shape.** SPRIN-102 revoked INSERT, UPDATE, DELETE and TRUNCATE from `authenticated` on that
+table and made three `SECURITY DEFINER` RPCs
+(`add_project_member_by_email`, `set_project_member_role`, `remove_project_member`) the ONLY
+write path. So `members_read` (SELECT, membership) is the only one of its four policies that
+anything can still reach: `members_admin_insert`, `members_admin_update` and
+`members_admin_delete` all sit behind a privilege check that refuses first, and are kept purely
+so that re-granting a verb later cannot silently reopen a row-level hole at the same moment.
+**Reading `pg_policies` for this table will therefore tell you something true and useless** —
+the policies describe a control that is no longer the one operating. Check `relacl` too. Two
+consequences worth carrying: a refused write here earns `permission denied for table
+project_members` from the privilege layer, NOT the RLS wording, and only the MESSAGE tells the
+two apart; and those three policies are now a guard **no live suite can observe**, because
+`pg_catalog` is not exposed to PostgREST even for a service-role client.
 
 **Two consequences of that split, both live:**
 - **`owner_id` immutability now rests on the GRANT alone.** The old `for all` policy's
@@ -461,12 +478,15 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
   self-scoped exactly as the other two are — it only ever grants read on a project the caller
   just created, and only until their own membership row exists.
   Do not stop checking the policy just because the migration is done — "resolves to membership"
-  is not one shape, there are **three**: the board tables (`project_counters`, `sprints`,
+  is not one shape, there are **four**: the board tables (`project_counters`, `sprints`,
   `tickets`) ask **member** on a single `for all` policy; `projects` and three of the four config
   tables (`project_statuses`, `project_fields`, `project_field_options`) ask **member to read,
-  admin to write**; and `ticket_field_values` asks **member on every verb** — setting a custom
-  field's value is board work, defining the field is the admin act. Check the table and the verb
-  both.
+  admin to write**; `ticket_field_values` asks **member on every verb** — setting a custom
+  field's value is board work, defining the field is the admin act; and since SPRIN-102
+  `project_members` is a **GRANT shape rather than a policy shape**, where only its SELECT policy
+  is reachable and all three write policies sit behind a revoke, unreachable and unobservable.
+  Check the table and the verb both — and for `project_members`, check `relacl` rather than
+  `pg_policies`, which will tell you something true and useless.
 
 ## Security rules (non-negotiable)
 - Anon key only in the browser. The service-role key must never ship client-side.
@@ -501,9 +521,9 @@ run that collects only the unit-test file count means exactly that, and must be 
 as a failure.
 
 **The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
-**twelve more files** than `test:unit` — the twelve `*.integration.test.ts` suites: RLS,
+**thirteen more files** than `test:unit` — the thirteen `*.integration.test.ts` suites: RLS,
 keepalive, signup, login, project, project-members, profiles, board-membership,
-projects-membership, config, and the cross-tenant write paths. That difference is what stays put. The
+projects-membership, config, member-management, and the cross-tenant write paths. That difference is what stays put. The
 absolute numbers do not:
 every story that adds
 a unit-test file moves both, and they have been wrong in this file twice in a single session
@@ -513,7 +533,9 @@ after SPRIN-105 added `profiles.integration.test.ts`: **81 vs 72**. Re-measured
 **2026-08-17**, after SPRIN-100 added `board-membership.integration.test.ts`: **82 vs 72**.
 Re-measured **2026-08-20**, after SPRIN-101 added
 `projects-membership.integration.test.ts`: **83 vs 72**. Re-measured **2026-08-21**, after
-SPRIN-99 added `config-membership.integration.test.ts`: **84 vs 72**.
+SPRIN-99 added `config-membership.integration.test.ts`: **84 vs 72**. Re-measured
+**2026-08-21**, after SPRIN-102 added `member-management.integration.test.ts`:
+**85 vs 72**.
 Treat every one of these
 as a timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` (all files) and the same command with
@@ -524,9 +546,13 @@ seven to eight, SPRIN-105 took it from eight to nine with
 `profiles.integration.test.ts`, SPRIN-100 took it to ten with
 `board-membership.integration.test.ts` for the board-table membership boundary, SPRIN-101
 took it to eleven with `projects-membership.integration.test.ts` for the
-`projects` table itself, and SPRIN-99 has just taken it to **twelve** with
+`projects` table itself, SPRIN-99 took it to twelve with
 `config-membership.integration.test.ts` for the four config tables — the last tables in
-`public` still owner-scoped before this story. That is not a
+`public` still owner-scoped before that story — and SPRIN-102 has just taken it to
+**thirteen** with `member-management.integration.test.ts`. That last one is the first live
+suite here whose subject is **not a policy**: `project_members`' write policies still exist
+but sit unreachable behind the revoke, so what it pins is the three RPCs' contract and the
+last-admin guard. That is not a
 contradiction of the rule above: the invariant is that the gap equals the number of live
 suites, so a story adding one owes this line an update in the same commit — this is that
 update. A gap that has silently *shrunk* is the failure this tripwire exists for.
