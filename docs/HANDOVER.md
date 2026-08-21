@@ -1618,6 +1618,31 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   it would need its own `lower(email)` index (the current unique constraint is on the raw value)
   and its own decision about whether two differently-cased addresses should collide.
 
+## Known-unpinned, added by SPRIN-99 (session 74)
+
+- **The nine admin-verb policies are pinned BEHAVIOURALLY, and the killing mutation was reasoned,
+  not executed.** `config-membership.integration.test.ts` now contains a project whose sole admin
+  row was moved to a non-owner, so a non-owner admin succeeds at configuration writes and an
+  owner-without-an-admin-row is refused them. Under the pre-migration `owner_id = auth.uid()`
+  predicate those assertions flip and `beforeAll` itself dies, so the mutation is killed twice
+  over — but *executing* it needs SQL against the live database, which no test can do. Two
+  independent reviewers confirmed the equivalence by tracing the fixture's closed actor set. If
+  you ever get a safe way to mutate policies, this is the first one to try for real.
+- **`WITH CHECK` on the UPDATE policies is property-pinned, not clause-pinned, and no test can do
+  better.** Postgres evaluates an UPDATE policy's `USING` expression as its `WITH CHECK` when none
+  is written, so deleting the literal clause is a semantic no-op while the two share a predicate.
+  What IS pinned is the property it protects — a member cannot move a `ticket_field_values` row
+  into a project they do not belong to — which fails the moment the two clauses are made to differ.
+  Do not "fix" the absence of a clause-level test; there is nothing to fix.
+- **A full `npm test` performs ~29 sign-ins and sits near the free-tier GoTrue ceiling.** SPRIN-99
+  added 3 (`tickets.integration.test.ts` alone holds 11). CI passes cleanly — it was green first
+  time on 84 files with zero skipped — but a developer running several full verifies in an hour
+  will exhaust the budget locally and see unrelated suites fail with `Request rate limit reached`,
+  often with a plausible-looking assertion failure standing in front of it. **Discriminator: run
+  the failing suites in isolation.** If they pass, it is the budget, not the branch. If CI ever
+  reds this way, the fix is raising the GoTrue auth rate limit in the Supabase dashboard, not a
+  code change.
+
 ## Settled — do not re-raise
 
 - **"Fused accessible names"** — disproven. It is a jsdom artefact; no browser produces those
