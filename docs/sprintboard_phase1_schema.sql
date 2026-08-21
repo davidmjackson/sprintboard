@@ -1163,9 +1163,12 @@ grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenti
 -- must RESTATE EVERY GRANTED COLUMN, not just add its new one.
 --
 -- SELECT is deliberately left at the default for both roles on both tables: authenticated
--- needs it, and anon reads zero rows because `auth.uid()` is NULL, so the policies' EXISTS
--- matches no project. That is RLS emptying the result, NOT the absence of a policy for anon —
--- these policies carry no TO clause, so they apply to `public`, which includes anon.
+-- needs it, and anon reads zero rows -- but not for the reason this comment used to give.
+-- Before SPRIN-99 these two policies carried no TO clause, so they applied to `public`, anon
+-- included, and anon's own EXISTS(auth.uid() = NULL) filtered the result. SPRIN-99 rewrote
+-- both `to authenticated` (see that section at the foot), so anon now matches NO policy on
+-- either table at all -- the app_auth predicate is never evaluated as anon, and RLS returns
+-- zero rows without reaching it. Same outcome, different and stronger mechanism.
 -- ------------------------------------------------------------
 
 -- ticket_field_values (SPRIN-88). INSERT and UPDATE on ALL EIGHT columns, which departs from
@@ -1173,7 +1176,7 @@ grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenti
 -- UPDATE SET c = excluded.c` for every column in the payload, and Postgres requires UPDATE on
 -- every column in a SET list — so a narrow `grant update (value_*)` makes every SECOND write
 -- to a field 42501. The identity columns are defended by tfv_ticket_fk/tfv_field_fk (composite
--- on project_id), tfv_type_fk and tfv_owner_update's WITH CHECK, not by this grant. The full
+-- on project_id), tfv_type_fk and tfv_member_update's WITH CHECK, not by this grant. The full
 -- argument is in docs/migrations/sprin-88-ticket-field-values.sql.
 revoke insert, update, delete on ticket_field_values from authenticated, anon;
 
@@ -1202,7 +1205,7 @@ grant insert (project_id, field_id, slug, label, position)
 -- surface, so a writable position would be machinery with no caller.
 grant update (label) on project_field_options to authenticated;
 
--- Table-wide DELETE, so options_owner_delete is the ONLY thing in front of it. That is why
+-- Table-wide DELETE, so options_admin_delete is the ONLY thing in front of it. That is why
 -- rls.integration.test.ts asserts a stranger's delete removes zero rows, rather than only
 -- asserting the owner's own delete works.
 grant delete on project_field_options to authenticated;
@@ -1248,7 +1251,7 @@ grant insert (project_id, slug, name, type) on project_fields to authenticated;
 -- ticket_field_values stays sound.
 grant update (name) on project_fields to authenticated;
 
--- SPRIN-93. Table-wide, because Postgres has no column-level DELETE — so fields_owner_delete
+-- SPRIN-93. Table-wide, because Postgres has no column-level DELETE — so fields_admin_delete
 -- is the ONLY thing in front of it, which is why rls.integration.test.ts asserts a stranger's
 -- delete removes ZERO ROWS rather than only that the owner's own delete works. Its blast
 -- radius is the largest of the three tables holding one: this delete cascades into ticket data
@@ -1256,13 +1259,15 @@ grant update (name) on project_fields to authenticated;
 grant delete on project_fields to authenticated;
 
 -- SELECT is deliberately left as the default grant for both roles: authenticated needs it,
--- and anon reads zero rows.
+-- and anon reads zero rows -- but not for the reason this comment used to give.
 --
--- NOT because there is no read policy for anon — there is. These four are created with no
--- `TO` clause, so they apply to `public`, which includes anon (verified against pg_policies:
--- roles = {public} on all four). anon reads nothing because `auth.uid()` is NULL, so the
--- EXISTS matches no project. Anyone adding a public-sharing SELECT policy here must scope it
--- explicitly; believing anon is excluded by policy absence would open this table silently.
+-- Before SPRIN-99 these four policies carried no `TO` clause, so they applied to `public`,
+-- anon included (verified against pg_policies: roles = {public} on all four), and anon's own
+-- EXISTS(auth.uid() = NULL) filtered every row. SPRIN-99 rewrote all four `to authenticated`
+-- (see that section at the foot), so anon now matches NO policy on this table at all -- the
+-- app_auth predicate is never evaluated as anon, and RLS returns zero rows without reaching
+-- it. Anyone adding a public-sharing SELECT policy here must scope it explicitly; believing
+-- anon is excluded by policy absence would open this table silently.
 
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors
@@ -1279,7 +1284,7 @@ create unique index project_statuses_project_name_unique
 -- with no later statement in that transaction for the deferral to reach. One statement
 -- inside one function is the only shape where the deferral does the job it was written for.
 --
--- SECURITY INVOKER, not definer: the caller's own rights apply, so statuses_owner_update
+-- SECURITY INVOKER, not definer: the caller's own rights apply, so statuses_admin_update
 -- still governs every row touched and a cross-tenant p_project_id updates nothing. Unlike
 -- seed_project_statuses(), this function is not trying to do anything the caller may not
 -- do, so it must not be granted the privilege to. The empty pinned search_path travels with
