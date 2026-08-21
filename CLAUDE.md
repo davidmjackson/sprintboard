@@ -107,26 +107,52 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   and the constant renamed); the doc-vs-migration matcher in `domain.test.ts` kept in step; and
   a live assertion that the column is genuinely writable. Deny by default, widen visibly.
 
-**The one genuinely deep door is RLS, and it is now ON the feature list — last, as SPRIN-75.**
-Most tables still resolve every policy to `owner_id = auth.uid()`, and rewriting *all* of those
-to a membership check is still the security boundary of the whole app — that scope has not
-shrunk. **Six tables are already rewritten**, ahead of the rest, as stories inside this same
+**The one genuinely deep door is RLS, and SPRIN-75 is now complete: every table in `public`
+resolves its project access through membership or configuration access.** **This paragraph has
+now been wrong twice, in two different ways, and both corrections stay visible rather than being
+swapped out silently.** It first claimed, flatly, "no table anywhere in this schema still
+resolves a policy to bare `owner_id = auth.uid()`" — false, and contradicted by this file's own
+policy list four paragraphs down: the bootstrap INSERT is exactly that predicate, deliberately.
+The first fix narrowed that to "no table decides who may read or write a *project's* rows by
+asking `projects.owner_id` any more," naming two deliberate exceptions. That was narrower but
+**still wrong** — it missed a third. **Three self-scoped predicates survive on purpose and are
+not exceptions to fix**: `projects_bootstrap_insert` (INSERT), still `owner_id = (select
+auth.uid())` so that creating a project does not require a membership row that cannot exist yet;
+the three `profiles` write verbs, `id = (select auth.uid())`, because a self-write is not a
+project access decision made about anyone else; and `projects_member_read`'s bootstrap read
+disjunct, `owner_id = (select auth.uid()) and not app_auth.project_has_members(id)` (see the
+SPRIN-101 paragraphs below), which lets a project's creator read it for the single instant
+between its INSERT and the AFTER-INSERT trigger seeding their own membership row — deliberate
+and self-scoped exactly as the other two are, not a leftover. The honest statement is the one
+above: membership and configuration access, not every predicate in the schema.
+
+**All ten tables are rewritten** — the count in this sentence read "nine" while the list that
+follows it named ten, so trust the list: it is `project_members`, `profiles`, `project_counters`,
+`sprints`, `tickets`, `projects`, `project_statuses`, `project_fields`, `project_field_options`
+and `ticket_field_values`, which is every table in `public`. As stories inside this same
 epic: `project_members` (SPRIN-98, four policies resolving through
 `app_auth.is_project_member`/`is_project_admin`); `profiles` (SPRIN-105, four verb-split
 policies where SELECT resolves through `app_auth.shares_project_with` and the three write verbs
 stay `id = (select auth.uid())`); the three board tables `project_counters`, `sprints` and
 `tickets` (SPRIN-100, each still a single `for all` — see the next paragraph, that shape is
 load-bearing — resolving through `app_auth.is_project_member(project_id)` and now carrying
-`to authenticated`); and **`projects` itself (SPRIN-101, four verb-split policies)**. **What is
-left is the four config tables (SPRIN-99), and nothing else.** Teams, roles and permissions
-means rewriting those the same way.
+`to authenticated`); `projects` itself (SPRIN-101, four verb-split policies); and **the four
+config tables `project_statuses`, `project_fields`, `project_field_options` and
+`ticket_field_values` (SPRIN-99)**. Teams, roles and permissions is done as a schema property;
+what remains of the epic is the app-layer follow-ups already tracked as SPRIN-102/103/104.
 
-**`projects` is verb-split ON PURPOSE, and the board tables are single `for all` ON PURPOSE.
-Do not "harmonise" them.** The asymmetry is the model, not an inconsistency left to tidy: on
-`sprints` and `tickets` read must stay co-extensive with write or `completeSprint`'s guard
-silently stops holding; on `projects` read is *meant* to be broader than write, because every
-member reads the project they work on and only an **admin** reconfigures it. SPRIN-101's four
-are `projects_member_read` (SELECT, membership), `projects_bootstrap_insert` (INSERT, still
+**That is not one shape, and "harmonise" is the wrong instinct — there are THREE.** The board
+tables are single `for all` policies asking **member**, on purpose: on `sprints` and `tickets`
+read must stay co-extensive with write or `completeSprint`'s guard silently stops holding.
+`projects` and three of the four config tables (`project_statuses`, `project_fields`,
+`project_field_options`) are verb-split, asking **member to read, admin to write**: every
+member reads the project/config they work with, and only an **admin** reconfigures it.
+`ticket_field_values` is the third shape — verb-split like its config siblings, but every verb
+asks **member**, with no admin gate — because setting a custom field's *value* on a ticket is
+ordinary board work, the same act as editing `story_points`, while *defining* the field (a
+`project_fields`/`project_field_options` row) is the admin act. Check both the table and the
+verb before assuming a policy's shape. SPRIN-101's four `projects` policies are
+`projects_member_read` (SELECT, membership), `projects_bootstrap_insert` (INSERT, still
 `owner_id = (select auth.uid())`, purely so creating a project does not require a membership
 that does not exist yet), `projects_admin_update` and `projects_admin_delete` (both
 `app_auth.is_project_admin(id)`).
@@ -214,12 +240,12 @@ most stories rather than a rare one.
 **The advisor baseline is NOT zero, and this file used to say it was.** That wording was
 aspirational when written and has been false for some time — a story that took it literally
 would either chase pre-existing lints it did not cause or, worse, read a red result as its own
-regression. Re-measured **2026-08-20, after SPRIN-101 and SPRIN-101b applied**: **1 security
-WARN** (leaked-password protection disabled) and **11 performance lints** (the same 8
+regression. Re-measured **2026-08-21, after SPRIN-99 applied**: **1 security WARN**
+(leaked-password protection disabled, pre-existing) and **8 performance lints**, all
 `unindexed_foreign_keys` INFOs — 4 on `ticket_field_values`, 3 on `tickets`, 1 on
-`project_field_options` — and **3** `auth_rls_initplan` WARNs on **one** table,
-`project_statuses`). It read **12**, with **4** WARNs across **two** tables, from SPRIN-100
-until SPRIN-101 cleared `projects`.
+`project_field_options` — and **zero** `auth_rls_initplan` WARNs anywhere in the schema. It
+read **1 security / 11 performance**, with 3 `auth_rls_initplan` WARNs on `project_statuses`
+alone, from SPRIN-101 until SPRIN-99 cleared them.
 
 **SPRIN-100 took three of those WARNs off the board for free**, and the mechanism is worth
 copying rather than rediscovering: replacing a bare `auth.uid()` predicate with a call to a
@@ -227,8 +253,11 @@ copying rather than rediscovering: replacing a bare `auth.uid()` predicate with 
 `(select auth.uid())` does. `counters_owner`, `sprints_owner` and `tickets_owner` all cleared
 when they moved to `app_auth.is_project_member`. **SPRIN-101 took a fourth the same way** —
 `projects_owner` became four policies whose predicates are `app_auth` calls, and `projects`
-cleared entirely. The remaining three are all on `project_statuses` (`statuses_owner_read`,
-`_insert`, `_update`), and they are SPRIN-99's to clear.
+cleared entirely. **SPRIN-99 took the last three, the same way again** — `statuses_owner_read`,
+`_insert` and `_update` on `project_statuses` moved to `app_auth` predicates, and the
+`auth_rls_initplan` WARN count for the whole schema went to zero. That is four stories running
+where this WARN cleared as a side effect of doing the membership rewrite properly, never once
+as a dedicated sweep — see the retired bullet below.
 
 It read **15** and **7 across five tables** until that re-measurement. This paragraph said
 **14** and **6 / 3+3** until
@@ -261,22 +290,31 @@ baseline, not against zero** — the same discipline as the test-file tripwire a
 GAP is the invariant and the absolute counts move with every story. Re-derive the numbers with
 `get_advisors` rather than trusting this paragraph; they are a timestamped observation.
 
-Two of those are settled and must not be re-litigated. The three `ticket_field_values` INFOs
+One of those is settled and must not be re-litigated. The **four** `ticket_field_values` INFOs
 are **David's explicit call** — keep the `(field_id)` index, add nothing, accept them (the
-advisor's prefix rule goes unsatisfied, not any query a cascade actually performs). The
-`auth_rls_initplan` sweep belongs to **SPRIN-75**, not to whichever feature story next touches
-a policy: it is now **three WARNs on one table** — `project_statuses` (`statuses_owner_read`,
-`statuses_owner_insert`, `statuses_owner_update`), which is SPRIN-99's table.
+advisor's prefix rule goes unsatisfied, not any query a cascade actually performs). **This
+line said "three" and the count is now four** (`tfv_field_fk`, `tfv_option_fk`, `tfv_ticket_fk`
+and `tfv_type_fk`, re-derived from `get_advisors` on 2026-08-21, and matching the "4 on
+`ticket_field_values`" in the re-measured baseline above). The decision is unchanged; only the
+count moved — at some point after the sentence was written, and nobody updated it. Re-derive it
+rather than trusting the number.
 
-It was eight across six tables until SPRIN-105 rewrote `profiles_self` in the wrapped form as a
+**RETIRED, visibly rather than silently, because the bullet that used to sit here predicted
+exactly this.** It said the `auth_rls_initplan` sweep belonged to SPRIN-75 and that the last
+three WARNs — `statuses_owner_read`, `statuses_owner_insert`, `statuses_owner_update` on
+`project_statuses` — were SPRIN-99's table to clear, and that if that story did its job the
+sweep would have nothing left to do and the bullet would retire itself. SPRIN-99 did: all three
+moved to `app_auth` predicates in the same migration that rewrote the table for membership, and
+`auth_rls_initplan` now reads **zero** across the whole schema. The history it was tracking: it
+was eight across six tables until SPRIN-105 rewrote `profiles_self` in the wrapped form as a
 side effect of an unrelated policy split, then **seven across five** until SPRIN-100 moved
 `counters_owner`, `sprints_owner` and `tickets_owner` to a `STABLE` definer predicate and took
-all three tables out of the list at once, and **four across two** until SPRIN-101 did the same
-for `projects`. **All three reductions were side effects of doing the membership rewrite
-properly, not of a sweep** — which is the argument, now with three worked examples, for letting
-the last three fall out of SPRIN-99 (`project_statuses`) the same way rather than paying for a
-separate mechanical pass. If that story does its job, the sweep has nothing left to do and this
-bullet retires itself.
+all three tables out of the list at once, **four across two** until SPRIN-101 did the same for
+`projects`, and **zero** once SPRIN-99 did the same for `project_statuses`. All four reductions
+were side effects of doing the membership rewrite properly, never a dedicated mechanical pass —
+so there is no sweep left for anyone to pick up, and no `auth_rls_initplan` bullet to keep
+current. A future table would need to reintroduce a bare `auth.uid()` predicate before this
+class of WARN could return.
 
 **CORRECTION, made explicit because this file's own ethos forbids a silent one:** the
 "six tables" figure just above replaces a **five-tables** figure this file previously stated
@@ -287,10 +325,19 @@ in the total of eight. Six is the correct historical figure. That fix landed in 
 commit as the "seven WARNs across five tables" re-measurement above and was not flagged as a
 correction at the time; it is flagged here instead of being left as silent drift.
 
-`project_fields`, `ticket_field_values`,
-`statuses_owner_delete` and now all four of `profiles`'s split policies already use the
-`(select auth.uid())` form, so the fix has working precedent in this schema — re-derive the
-list with `get_advisors` rather than trusting this paragraph, the same as the count above it.
+**RETIRED WITH IT, and this correction is the point.** The paragraph that sat here said
+"`project_fields`, `ticket_field_values`, `statuses_owner_delete` and now all four of
+`profiles`'s split policies already use the `(select auth.uid())` form, so the fix has working
+precedent in this schema." **All three of the first citations were destroyed by SPRIN-99's own
+migration** — `project_fields`'s and `ticket_field_values`'s owner policies were dropped and
+replaced by `app_auth` predicates, and `statuses_owner_delete` no longer exists at all. It
+survived the same commit that deleted the policies it named, which is exactly the decay this
+file keeps warning about, arriving inside the story that caused it. The `profiles` half is
+still true. The precedent that actually matters now is the *other* one, stated three paragraphs
+up and demonstrated four times: a `STABLE SECURITY DEFINER` predicate takes the uid read out of
+the per-row path just as `(select auth.uid())` does, so a policy written against `app_auth`
+never raises this WARN in the first place. Re-derive any list of policy bodies from
+`pg_policies` rather than from this file.
 
 **Why we still are not hedging further.** There is no production data and no user base, so
 almost every schema decision is reversible at near-zero cost. The real risk remains premature
@@ -371,13 +418,29 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
   app-layer rule plus a test.
 - **One active sprint per project:** enforced by a partial unique index. Surface
   the rejection as a clear message. Do not work around the index.
-- **RLS is on every table, but it is no longer owner-scoped on every table.** This line said
-  "owner-scoped on every table" until SPRIN-100. **Six** tables now resolve to membership —
-  `project_members`, `profiles`, `project_counters`, `sprints`, `tickets` and, since SPRIN-101,
-  `projects` — and only the four config tables still resolve to `owner_id = auth.uid()`, pending
-  SPRIN-99. Do not describe the schema as uniformly one or the other; check the policy. And note
-  that "resolves to membership" is not one shape: the board tables ask **member**, `projects`
-  asks **member to read and admin to write**. Check the verb too.
+- **RLS is on every table, and every table now resolves its PROJECT access through membership
+  or configuration access.** This line said "owner-scoped on every table" until SPRIN-100, then
+  "six tables now resolve to membership, only the four config tables still resolve to
+  `owner_id = auth.uid()`, pending SPRIN-99" until SPRIN-99 closed that out: `project_statuses`,
+  `project_fields`, `project_field_options` and `ticket_field_values` all moved the same way.
+  **It then briefly said "no table in `public` is owner-scoped any more", which was wrong, and
+  the fix that followed — "no table decides who reads or writes a project's rows by asking
+  `projects.owner_id`," naming two exceptions — was narrower but still wrong: it missed a
+  third.** **Three self-scoped predicates survive deliberately** — `projects_bootstrap_insert`
+  (`owner_id = (select auth.uid())`, INSERT); the three `profiles` write verbs
+  (`id = (select auth.uid())`); and `projects_member_read`'s bootstrap read disjunct
+  (`owner_id = (select auth.uid()) and not app_auth.project_has_members(id)`), which lets a
+  project's creator read it for the single instant between its INSERT and the AFTER-INSERT
+  trigger that seeds their own membership row. None of the three is a leftover, and the third is
+  self-scoped exactly as the other two are — it only ever grants read on a project the caller
+  just created, and only until their own membership row exists.
+  Do not stop checking the policy just because the migration is done — "resolves to membership"
+  is not one shape, there are **three**: the board tables (`project_counters`, `sprints`,
+  `tickets`) ask **member** on a single `for all` policy; `projects` and three of the four config
+  tables (`project_statuses`, `project_fields`, `project_field_options`) ask **member to read,
+  admin to write**; and `ticket_field_values` asks **member on every verb** — setting a custom
+  field's value is board work, defining the field is the admin act. Check the table and the verb
+  both.
 
 ## Security rules (non-negotiable)
 - Anon key only in the browser. The service-role key must never ship client-side.
@@ -412,9 +475,9 @@ run that collects only the unit-test file count means exactly that, and must be 
 as a failure.
 
 **The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
-**eleven more files** than `test:unit` — the eleven `*.integration.test.ts` suites: RLS,
+**twelve more files** than `test:unit` — the twelve `*.integration.test.ts` suites: RLS,
 keepalive, signup, login, project, project-members, profiles, board-membership,
-projects-membership, and the cross-tenant write paths. That difference is what stays put. The
+projects-membership, config, and the cross-tenant write paths. That difference is what stays put. The
 absolute numbers do not:
 every story that adds
 a unit-test file moves both, and they have been wrong in this file twice in a single session
@@ -423,7 +486,8 @@ story deleted two threshold-test files and added one gate test. Re-measured **20
 after SPRIN-105 added `profiles.integration.test.ts`: **81 vs 72**. Re-measured
 **2026-08-17**, after SPRIN-100 added `board-membership.integration.test.ts`: **82 vs 72**.
 Re-measured **2026-08-20**, after SPRIN-101 added
-`projects-membership.integration.test.ts`: **83 vs 72**.
+`projects-membership.integration.test.ts`: **83 vs 72**. Re-measured **2026-08-21**, after
+SPRIN-99 added `config-membership.integration.test.ts`: **84 vs 72**.
 Treat every one of these
 as a timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` (all files) and the same command with
@@ -432,9 +496,11 @@ as a timestamped observation, not a constant, and re-derive it with
 **The GAP itself moves when a story adds an integration suite** — SPRIN-98 took it from
 seven to eight, SPRIN-105 took it from eight to nine with
 `profiles.integration.test.ts`, SPRIN-100 took it to ten with
-`board-membership.integration.test.ts` for the board-table membership boundary, and SPRIN-101
-has just taken it to **eleven** with `projects-membership.integration.test.ts` for the
-`projects` table itself. That is not a
+`board-membership.integration.test.ts` for the board-table membership boundary, SPRIN-101
+took it to eleven with `projects-membership.integration.test.ts` for the
+`projects` table itself, and SPRIN-99 has just taken it to **twelve** with
+`config-membership.integration.test.ts` for the four config tables — the last tables in
+`public` still owner-scoped before this story. That is not a
 contradiction of the rule above: the invariant is that the gap equals the number of live
 suites, so a story adding one owes this line an update in the same commit — this is that
 update. A gap that has silently *shrunk* is the failure this tripwire exists for.
@@ -442,8 +508,9 @@ update. A gap that has silently *shrunk* is the failure this tripwire exists for
 **AND THE PROSE IS ONLY HALF THE CONTROL.** `verify-gate.test.mjs`'s `LIVE_SUITES` array is
 the executable half, and SPRIN-105 updated this paragraph while leaving that array at eight —
 so its own suite was collectable-but-unregistered for a whole story, which is precisely the
-state the array exists to make impossible. SPRIN-100 registered both, and SPRIN-101 registered
-both in the same commit that created the suite. Update the array in the same commit as this
+state the array exists to make impossible. SPRIN-100 registered both, SPRIN-101 registered
+both in the same commit that created the suite, and SPRIN-99 does the same for
+`config-membership.integration.test.ts`. Update the array in the same commit as this
 line, every time.
 
 If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the

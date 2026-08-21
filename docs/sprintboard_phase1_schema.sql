@@ -796,7 +796,11 @@ revoke execute on function assign_ticket_key() from public, anon, authenticated;
 -- leaves with the project's initial slug; an insert that NAMES a status is left alone.
 --
 -- SECURITY DEFINER for the same reason as project_statuses_delete_guard(): this read must
--- not depend on statuses_owner_read staying broad enough for whoever is inserting. SB002
+-- not depend on the live SELECT policy on project_statuses staying broad enough for
+-- whoever is inserting. That policy was statuses_owner_read when this comment was
+-- written; SPRIN-99 deleted it and the policy is now statuses_member_read. The point
+-- of the DEFINER is precisely that this sentence does not have to be kept current --
+-- but the policy NAME did, so it is stated as a property rather than a name. SB002
 -- is the "no initial status" case, which the delete guard and promotion trigger are
 -- supposed to make unreachable — it is a loud failure, not a fallback.
 -- ============================================================
@@ -988,38 +992,19 @@ alter table tickets           enable row level security;
 -- INSERT policy for the trigger to satisfy, so EVERY project creation fails at insert time,
 -- for every user. The same trap applies to the other tables here whose triggers are
 -- definer-owned.
-create policy statuses_owner_read on project_statuses
-  for select
-  using (exists (select 1 from projects p
-                 where p.id = project_statuses.project_id
-                   and p.owner_id = auth.uid()));
-
-create policy statuses_owner_insert on project_statuses
-  for insert
-  with check (exists (select 1 from projects p
-                      where p.id = project_statuses.project_id
-                        and p.owner_id = auth.uid()));
-
-create policy statuses_owner_update on project_statuses
-  for update
-  using      (exists (select 1 from projects p
-                      where p.id = project_statuses.project_id
-                        and p.owner_id = auth.uid()))
-  with check (exists (select 1 from projects p
-                      where p.id = project_statuses.project_id
-                        and p.owner_id = auth.uid()));
-
--- `(select auth.uid())`, not the bare `auth.uid()` the three policies above use, and the
--- inconsistency is DELIBERATE. Wrapped in a scalar subquery the call plans as an InitPlan,
--- evaluated once per query instead of once per row, which keeps this policy out of
--- Supabase's auth_rls_initplan advisor. The other eight warnings are pre-existing and are
--- SPRIN-75's to fix together, when every policy here is rewritten to a membership check;
--- SPRIN-80's job was to add none. Do not "make it consistent" in the wrong direction.
-create policy statuses_owner_delete on project_statuses
-  for delete
-  using (exists (select 1 from projects p
-                 where p.id = project_statuses.project_id
-                   and p.owner_id = (select auth.uid())));
+-- statuses_owner_read/insert/update/delete: MOVED. SPRIN-99 replaced these four
+-- owner-scoped policies with statuses_member_read (SELECT, membership) and
+-- statuses_admin_insert/update/delete (admin role required), all `to
+-- authenticated`. All four now call app_auth.is_project_member /
+-- is_project_admin and so cannot be declared this early -- app_auth and
+-- project_members do not exist until the SPRIN-98 section at the foot of this
+-- file. Same forward-reference reasoning as profiles_read and counters_owner
+-- above. The live definitions are in the SPRIN-99 section at the foot, alongside
+-- project_fields, project_field_options and ticket_field_values. Between here
+-- and there a fresh run of this file has no policy on project_statuses at all,
+-- which is fail-closed and therefore safe, not a gap. The verb-split rationale
+-- above this note -- KEEP THE FOUR APART, DELETE bounded by trigger and fk,
+-- UPDATE column-restricted -- is architectural and unchanged by the rewrite.
 
 -- ALTER DEFAULT PRIVILEGES already granted both roles table-level DELETE (measured:
 -- relacl read `authenticated=ardDxtm`), so the grant is a formality and the REVOKE is the
@@ -1125,114 +1110,42 @@ revoke update on projects from authenticated, anon;
 -- this list on the client side and the AST guard reads it; keep the three in step.
 grant update (sprint_length_weeks, sprint_start_weekday) on projects to authenticated;
 
--- SPRIN-90: project_fields. Four owner-scoped policies, all written with `(select
--- auth.uid())` rather than the bare call — wrapped in a scalar subquery it plans as an
--- InitPlan, evaluated once per query instead of once per row, which keeps them out of
--- Supabase's auth_rls_initplan advisor. Eight such warnings are outstanding on the older
--- tables above and are SPRIN-75's to fix when every policy is rewritten to a membership
--- check; this table's job was to add ZERO, and it did (verified with get_advisors after
--- applying). Do not "make it consistent" with the bare-call policies — wrong direction.
---
--- DO NOT add `force row level security` here either, for the reason recorded on
--- project_statuses: definer-owned triggers are exempt from RLS only while FORCE is off.
-create policy fields_owner_read on project_fields
-  for select
-  using (exists (select 1 from projects p
-                 where p.id = project_fields.project_id
-                   and p.owner_id = (select auth.uid())));
+-- project_fields: MOVED. SPRIN-99 replaced the four owner-scoped policies that
+-- used to sit here (fields_owner_read/insert/update/delete) with
+-- fields_member_read (SELECT, membership) and fields_admin_insert/update/delete
+-- (admin role required), all `to authenticated`. All four now call
+-- app_auth.is_project_member / is_project_admin and so cannot be declared this
+-- early -- app_auth and project_members do not exist until the SPRIN-98 section
+-- at the foot of this file. Same forward-reference reasoning as profiles_read and
+-- counters_owner above. The live definitions are in the SPRIN-99 section at the
+-- foot. Between here and there a fresh run of this file has no policy on
+-- project_fields at all, which is fail-closed and therefore safe, not a gap.
 
-create policy fields_owner_insert on project_fields
-  for insert
-  with check (exists (select 1 from projects p
-                      where p.id = project_fields.project_id
-                        and p.owner_id = (select auth.uid())));
+-- ticket_field_values: MOVED. SPRIN-99 replaced the four owner-scoped policies
+-- that used to sit here (tfv_owner_read/insert/update/delete) with
+-- tfv_member_read/insert/update/delete -- MEMBER on every verb, not admin-only,
+-- because setting a custom field's value is board work rather than
+-- configuration. All four now call app_auth.is_project_member and so cannot be
+-- declared this early -- app_auth and project_members do not exist until the
+-- SPRIN-98 section at the foot of this file. Same forward-reference reasoning as
+-- profiles_read and counters_owner above. The live definitions, and the argument
+-- for why a project_id-only predicate is still sufficient given this table's
+-- composite foreign keys (tfv_ticket_fk and tfv_field_fk, both keyed on
+-- project_id), are in the SPRIN-99 section at the foot. Between here and there a
+-- fresh run of this file has no policy on ticket_field_values at all, which is
+-- fail-closed and therefore safe, not a gap.
 
-create policy fields_owner_update on project_fields
-  for update
-  using      (exists (select 1 from projects p
-                      where p.id = project_fields.project_id
-                        and p.owner_id = (select auth.uid())))
-  with check (exists (select 1 from projects p
-                      where p.id = project_fields.project_id
-                        and p.owner_id = (select auth.uid())));
-
-create policy fields_owner_delete on project_fields
-  for delete
-  using (exists (select 1 from projects p
-                 where p.id = project_fields.project_id
-                   and p.owner_id = (select auth.uid())));
-
--- ticket_field_values (SPRIN-88). Owner-scoped through `projects`, like every table above,
--- and all four written `(select auth.uid())` so this table adds ZERO auth_rls_initplan
--- warnings to the eight the older tables carry.
---
--- **These policies read `project_id` AND NOTHING ELSE**, which is the fact worth carrying
--- forward. `ticket_id`, `field_id` and `field_type` are invisible to RLS and are governed by
--- the composite foreign keys alone — including against another tenant. Establishing that cost
--- a CI failure and a security review. When SPRIN-75 rewrites these to a membership check, do
--- NOT narrow those fks to single columns on the theory that "RLS handles tenancy": it handles
--- exactly one of the four identity columns.
-create policy tfv_owner_read on ticket_field_values
-  for select
-  using (exists (select 1 from projects p
-                 where p.id = ticket_field_values.project_id
-                   and p.owner_id = (select auth.uid())));
-
-create policy tfv_owner_insert on ticket_field_values
-  for insert
-  with check (exists (select 1 from projects p
-                      where p.id = ticket_field_values.project_id
-                        and p.owner_id = (select auth.uid())));
-
--- The WITH CHECK is what stops an owner re-pointing a row at a project they do not own, given
--- that the grant deliberately permits UPDATE on project_id. Note Postgres would fall back to
--- the USING expression if it were omitted, so deleting it is not observable by mutation — the
--- live test "the owner cannot move a value row into a project they do not own" is what pins
--- the behaviour.
-create policy tfv_owner_update on ticket_field_values
-  for update
-  using      (exists (select 1 from projects p
-                      where p.id = ticket_field_values.project_id
-                        and p.owner_id = (select auth.uid())))
-  with check (exists (select 1 from projects p
-                      where p.id = ticket_field_values.project_id
-                        and p.owner_id = (select auth.uid())));
-
-create policy tfv_owner_delete on ticket_field_values
-  for delete
-  using (exists (select 1 from projects p
-                 where p.id = ticket_field_values.project_id
-                   and p.owner_id = (select auth.uid())));
-
--- project_field_options (SPRIN-92). Four policies, shaped exactly like tfv_owner_*: no
--- TO clause, `(select auth.uid())` throughout — adds ZERO auth_rls_initplan warnings
--- (measured: still 8 after applying).
-create policy options_owner_read on project_field_options
-  for select
-  using (exists (select 1 from projects p
-                 where p.id = project_field_options.project_id
-                   and p.owner_id = (select auth.uid())));
-
-create policy options_owner_insert on project_field_options
-  for insert
-  with check (exists (select 1 from projects p
-                      where p.id = project_field_options.project_id
-                        and p.owner_id = (select auth.uid())));
-
-create policy options_owner_update on project_field_options
-  for update
-  using      (exists (select 1 from projects p
-                      where p.id = project_field_options.project_id
-                        and p.owner_id = (select auth.uid())))
-  with check (exists (select 1 from projects p
-                      where p.id = project_field_options.project_id
-                        and p.owner_id = (select auth.uid())));
-
-create policy options_owner_delete on project_field_options
-  for delete
-  using (exists (select 1 from projects p
-                 where p.id = project_field_options.project_id
-                   and p.owner_id = (select auth.uid())));
+-- project_field_options: MOVED. SPRIN-99 replaced the four owner-scoped policies
+-- that used to sit here (options_owner_read/insert/update/delete) with
+-- options_member_read (SELECT, membership) and options_admin_insert/update/delete
+-- (admin role required), all `to authenticated`. All four now call
+-- app_auth.is_project_member / is_project_admin and so cannot be declared this
+-- early -- app_auth and project_members do not exist until the SPRIN-98 section
+-- at the foot of this file. Same forward-reference reasoning as profiles_read and
+-- counters_owner above. The live definitions are in the SPRIN-99 section at the
+-- foot. Between here and there a fresh run of this file has no policy on
+-- project_field_options at all, which is fail-closed and therefore safe, not a
+-- gap.
 
 -- ------------------------------------------------------------
 -- GRANTS for the two custom-field write tables.
@@ -1254,9 +1167,12 @@ create policy options_owner_delete on project_field_options
 -- must RESTATE EVERY GRANTED COLUMN, not just add its new one.
 --
 -- SELECT is deliberately left at the default for both roles on both tables: authenticated
--- needs it, and anon reads zero rows because `auth.uid()` is NULL, so the policies' EXISTS
--- matches no project. That is RLS emptying the result, NOT the absence of a policy for anon —
--- these policies carry no TO clause, so they apply to `public`, which includes anon.
+-- needs it, and anon reads zero rows -- but not for the reason this comment used to give.
+-- Before SPRIN-99 these two policies carried no TO clause, so they applied to `public`, anon
+-- included, and anon's own EXISTS(auth.uid() = NULL) filtered the result. SPRIN-99 rewrote
+-- both `to authenticated` (see that section at the foot), so anon now matches NO policy on
+-- either table at all -- the app_auth predicate is never evaluated as anon, and RLS returns
+-- zero rows without reaching it. Same outcome, different and stronger mechanism.
 -- ------------------------------------------------------------
 
 -- ticket_field_values (SPRIN-88). INSERT and UPDATE on ALL EIGHT columns, which departs from
@@ -1264,7 +1180,7 @@ create policy options_owner_delete on project_field_options
 -- UPDATE SET c = excluded.c` for every column in the payload, and Postgres requires UPDATE on
 -- every column in a SET list — so a narrow `grant update (value_*)` makes every SECOND write
 -- to a field 42501. The identity columns are defended by tfv_ticket_fk/tfv_field_fk (composite
--- on project_id), tfv_type_fk and tfv_owner_update's WITH CHECK, not by this grant. The full
+-- on project_id), tfv_type_fk and tfv_member_update's WITH CHECK, not by this grant. The full
 -- argument is in docs/migrations/sprin-88-ticket-field-values.sql.
 revoke insert, update, delete on ticket_field_values from authenticated, anon;
 
@@ -1293,7 +1209,7 @@ grant insert (project_id, field_id, slug, label, position)
 -- surface, so a writable position would be machinery with no caller.
 grant update (label) on project_field_options to authenticated;
 
--- Table-wide DELETE, so options_owner_delete is the ONLY thing in front of it. That is why
+-- Table-wide DELETE, so options_admin_delete is the ONLY thing in front of it. That is why
 -- rls.integration.test.ts asserts a stranger's delete removes zero rows, rather than only
 -- asserting the owner's own delete works.
 grant delete on project_field_options to authenticated;
@@ -1339,7 +1255,7 @@ grant insert (project_id, slug, name, type) on project_fields to authenticated;
 -- ticket_field_values stays sound.
 grant update (name) on project_fields to authenticated;
 
--- SPRIN-93. Table-wide, because Postgres has no column-level DELETE — so fields_owner_delete
+-- SPRIN-93. Table-wide, because Postgres has no column-level DELETE — so fields_admin_delete
 -- is the ONLY thing in front of it, which is why rls.integration.test.ts asserts a stranger's
 -- delete removes ZERO ROWS rather than only that the owner's own delete works. Its blast
 -- radius is the largest of the three tables holding one: this delete cascades into ticket data
@@ -1347,13 +1263,15 @@ grant update (name) on project_fields to authenticated;
 grant delete on project_fields to authenticated;
 
 -- SELECT is deliberately left as the default grant for both roles: authenticated needs it,
--- and anon reads zero rows.
+-- and anon reads zero rows -- but not for the reason this comment used to give.
 --
--- NOT because there is no read policy for anon — there is. These four are created with no
--- `TO` clause, so they apply to `public`, which includes anon (verified against pg_policies:
--- roles = {public} on all four). anon reads nothing because `auth.uid()` is NULL, so the
--- EXISTS matches no project. Anyone adding a public-sharing SELECT policy here must scope it
--- explicitly; believing anon is excluded by policy absence would open this table silently.
+-- Before SPRIN-99 these four policies carried no `TO` clause, so they applied to `public`,
+-- anon included (verified against pg_policies: roles = {public} on all four), and anon's own
+-- EXISTS(auth.uid() = NULL) filtered every row. SPRIN-99 rewrote all four `to authenticated`
+-- (see that section at the foot), so anon now matches NO policy on this table at all -- the
+-- app_auth predicate is never evaluated as anon, and RLS returns zero rows without reaching
+-- it. Anyone adding a public-sharing SELECT policy here must scope it explicitly; believing
+-- anon is excluded by policy absence would open this table silently.
 
 -- AC4's edge. An INDEX rather than a table constraint because the key is an expression and
 -- `unique (...)` on a table will not take one. lower(btrim(...)) mirrors
@@ -1370,7 +1288,7 @@ create unique index project_statuses_project_name_unique
 -- with no later statement in that transaction for the deferral to reach. One statement
 -- inside one function is the only shape where the deferral does the job it was written for.
 --
--- SECURITY INVOKER, not definer: the caller's own rights apply, so statuses_owner_update
+-- SECURITY INVOKER, not definer: the caller's own rights apply, so statuses_admin_update
 -- still governs every row touched and a cross-tenant p_project_id updates nothing. Unlike
 -- seed_project_statuses(), this function is not trying to do anything the caller may not
 -- do, so it must not be granted the privilege to. The empty pinned search_path travels with
@@ -1418,7 +1336,9 @@ commit;
 -- to `owner_id = auth.uid()`. It is no longer the only one, and it is no longer
 -- inert: SPRIN-100 pointed the three board tables at `app_auth.is_project_member`,
 -- so these rows now decide who can read and write every sprint, ticket and counter.
--- SPRIN-101 (`projects`) and SPRIN-99 (the config tables) are what remain.
+-- Nothing remains: this line said "SPRIN-101 (`projects`) and SPRIN-99 (the config
+-- tables) are what remain" until both landed, SPRIN-101 on 2026-08-20 and SPRIN-99
+-- on 2026-08-21. Every table in `public` now reads these rows to decide access.
 --
 -- This paragraph said "it is inert, populated, and waiting" until SPRIN-100, which
 -- is exactly the sentence that stops being true the moment the first consumer lands.
@@ -2068,3 +1988,189 @@ create policy projects_admin_delete on projects
   for delete
   to authenticated
   using (app_auth.is_project_admin(projects.id));
+
+-- ============================================================
+-- SPRIN-99 -- the four config tables resolve to membership (epic SPRIN-75, story 5)
+-- ============================================================
+-- APPLIED 2026-08-21, and re-verified from the catalogue on the same day: all
+-- sixteen policies below are live, every one of them `to authenticated`. This
+-- line said "NOT YET APPLIED as of this commit" while CLAUDE.md, changed in the
+-- same commit, said "after SPRIN-99 applied" -- the branch contradicted itself
+-- about its own migration, and pg_policies settles it. Corrected rather than
+-- silently swapped, because a doc that quietly changes its mind about applied
+-- state is worse than one that is merely stale. This section mirrors
+-- docs/migrations/sprin-99-config-tables-membership.sql, which carries the full
+-- argument and the measurements it rests on. Verify applied state from the
+-- catalogue, never from a line in a file.
+--
+-- This is the LAST owner-scoped group in the schema: no table in `public`
+-- resolves its MEMBERSHIP or CONFIGURATION access through projects.owner_id any
+-- more. This paragraph used to claim, flatly, that no table in `public` resolves
+-- to `owner_id = auth.uid()`. That was an overstatement and always was: two
+-- self-scoped predicates survive on purpose -- projects_bootstrap_insert
+-- (`owner_id = (select auth.uid())`, so creating a project does not need a
+-- membership row that cannot exist yet) and the three profiles write policies
+-- (`id = (select auth.uid())`, self-writes that never widened).
+--
+-- statuses_owner_*, fields_owner_*, options_owner_* and tfv_owner_* -- sixteen
+-- owner-scoped policies across project_statuses, project_fields,
+-- project_field_options and ticket_field_values -- become sixteen policies
+-- resolving through app_auth.is_project_member / is_project_admin. Their old
+-- bodies sat in the main body of this file and have been replaced there by
+-- pointers to this section, because every one of them now calls an app_auth
+-- predicate and would be a forward reference declared that early. Same treatment
+-- as profiles_read, counters_owner and projects_member_read above.
+--
+-- THREE OF THE FOUR TABLES ARE ADMIN-WRITE, MEMBER-READ -- project_statuses,
+-- project_fields and project_field_options are configuration: any member reads
+-- them, only an admin defines or changes them. ticket_field_values is
+-- MEMBER-WRITE ON EVERY VERB, because setting a custom field's value on a ticket
+-- is daily board work, not the administrative act of defining the field.
+-- Confirmed by David, 2026-08-21. The accepted cost is that a member can
+-- overwrite a teammate's custom field values; there is no per-field permission
+-- model and building one is not in this epic.
+--
+-- ALL SIXTEEN WERE ALREADY VERB-SPLIT, so read-broader-than-write costs no
+-- structural change here -- the opposite of the board tables, where a single
+-- `for all` policy is load-bearing because completeSprint's guard relies on read
+-- and write being co-extensive. Do not "harmonise" the two shapes: on `sprints`
+-- and `tickets` the single policy IS the guarantee; here the split IS the
+-- feature.
+--
+-- WHY A PREDICATE ON project_id ALONE IS SUFFICIENT ON ticket_field_values. RLS
+-- WITH CHECK fires BEFORE foreign-key validation, and a policy guards only the
+-- columns it reads -- so a project_id predicate normally leaves the other fk
+-- columns tenant-unguarded. Here it does not, but by a TRANSITIVE argument, not
+-- the direct one this paragraph used to give. It said "every fk on this table is
+-- COMPOSITE on project_id" and listed two constraints; the table has FOUR, and
+-- only two carry project_id (re-measured from pg_constraint, 2026-08-21):
+--
+--     tfv_ticket_fk (ticket_id, project_id) -> tickets(id, project_id)
+--     tfv_field_fk  (field_id,  project_id) -> project_fields(id, project_id)
+--     tfv_option_fk (field_id,  value_option) ->
+--                                    project_field_options(field_id, slug)
+--     tfv_type_fk   (field_id,  field_type)  -> project_fields(id, type)
+--
+-- ticket_id and field_id are pinned to project_id directly, by the first two. The
+-- other two mention no project_id at all: they are keyed on field_id, which is
+-- ITSELF pinned to project_id by tfv_field_fk, so an option or a type can only be
+-- one belonging to a field of the project the row claims. Every fk is therefore
+-- tenant-correlated, two of them only at one remove -- which means the whole
+-- argument rests on tfv_field_fk staying composite on project_id. Narrow that one
+-- constraint and two of the other three quietly stop being tenant-scoped, with
+-- nothing in the policy text to show for it.
+--
+-- WHY `to authenticated` ON ALL SIXTEEN. Measured 2026-08-21 from pg_class.relacl:
+-- all four tables grant anon SELECT, and project_statuses additionally grants
+-- anon INSERT. A policy with no TO clause covers `public`, anon included, and
+-- policy expressions are evaluated as the CALLING role; anon holds no USAGE on
+-- app_auth and no EXECUTE on its functions. Without the clause an anonymous
+-- request would raise `permission denied for schema app_auth` (42501) where
+-- today it is filtered to a clean empty result. With it, anon matches no policy
+-- at all. Same rule SPRIN-100 and SPRIN-101 established; these four tables are
+-- next.
+--
+-- NO GRANT CHANGES IN THIS MIGRATION. The column grants already encode the
+-- writable surface and are orthogonal to WHO may write; changing both layers at
+-- once would make any failure ambiguous between them.
+--
+-- NO BOOTSTRAP PROBLEM HERE, UNLIKE SPRIN-101. All three `projects` AFTER INSERT
+-- triggers -- create_project_counter, seed_project_admin and
+-- seed_project_statuses -- are SECURITY DEFINER, so seeding bypasses RLS entirely
+-- and there is no ordering race between the membership row and the status rows.
+-- Verified from pg_proc.prosecdef, 2026-08-21. The one INVOKER function touching
+-- these tables is reorder_project_statuses, which touches project_statuses alone
+-- and carries no hidden ownership check.
+
+-- ---------------------------------------------------------------- project_statuses
+create policy statuses_member_read on project_statuses
+  for select
+  to authenticated
+  using (app_auth.is_project_member(project_id));
+
+create policy statuses_admin_insert on project_statuses
+  for insert
+  to authenticated
+  with check (app_auth.is_project_admin(project_id));
+
+-- The predicate is repeated in WITH CHECK rather than left to default, so a row
+-- cannot be updated INTO a project the caller does not administer.
+create policy statuses_admin_update on project_statuses
+  for update
+  to authenticated
+  using      (app_auth.is_project_admin(project_id))
+  with check (app_auth.is_project_admin(project_id));
+
+create policy statuses_admin_delete on project_statuses
+  for delete
+  to authenticated
+  using (app_auth.is_project_admin(project_id));
+
+-- ------------------------------------------------------------------ project_fields
+create policy fields_member_read on project_fields
+  for select
+  to authenticated
+  using (app_auth.is_project_member(project_id));
+
+create policy fields_admin_insert on project_fields
+  for insert
+  to authenticated
+  with check (app_auth.is_project_admin(project_id));
+
+create policy fields_admin_update on project_fields
+  for update
+  to authenticated
+  using      (app_auth.is_project_admin(project_id))
+  with check (app_auth.is_project_admin(project_id));
+
+create policy fields_admin_delete on project_fields
+  for delete
+  to authenticated
+  using (app_auth.is_project_admin(project_id));
+
+-- ----------------------------------------------------------- project_field_options
+create policy options_member_read on project_field_options
+  for select
+  to authenticated
+  using (app_auth.is_project_member(project_id));
+
+create policy options_admin_insert on project_field_options
+  for insert
+  to authenticated
+  with check (app_auth.is_project_admin(project_id));
+
+create policy options_admin_update on project_field_options
+  for update
+  to authenticated
+  using      (app_auth.is_project_admin(project_id))
+  with check (app_auth.is_project_admin(project_id));
+
+create policy options_admin_delete on project_field_options
+  for delete
+  to authenticated
+  using (app_auth.is_project_admin(project_id));
+
+-- ------------------------------------------------------------- ticket_field_values
+-- MEMBER on every verb: this table is board work, not configuration. See above.
+create policy tfv_member_read on ticket_field_values
+  for select
+  to authenticated
+  using (app_auth.is_project_member(project_id));
+
+create policy tfv_member_insert on ticket_field_values
+  for insert
+  to authenticated
+  with check (app_auth.is_project_member(project_id));
+
+-- WITH CHECK matters most here: project_id is itself writable on this table, so
+-- without it a member could move a value row between two projects.
+create policy tfv_member_update on ticket_field_values
+  for update
+  to authenticated
+  using      (app_auth.is_project_member(project_id))
+  with check (app_auth.is_project_member(project_id));
+
+create policy tfv_member_delete on ticket_field_values
+  for delete
+  to authenticated
+  using (app_auth.is_project_member(project_id));
