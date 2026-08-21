@@ -108,8 +108,21 @@ less, and each is easy to undo by accident while thinking you are tidying up.
   a live assertion that the column is genuinely writable. Deny by default, widen visibly.
 
 **The one genuinely deep door is RLS, and SPRIN-75 is now complete: every table in `public`
-resolves to membership.** No table anywhere in this schema still resolves a policy to bare
-`owner_id = auth.uid()`. **All nine tables are rewritten**, as stories inside this same
+resolves its project access through membership.** No table decides who may read or write a
+*project's* rows by asking `projects.owner_id` any more. **Two self-scoped predicates survive
+on purpose and are not exceptions to fix**: `projects_bootstrap_insert`, which is still
+`owner_id = (select auth.uid())` so that creating a project does not require a membership row
+that cannot exist yet; and the three `profiles` write verbs, which are `id = (select auth.uid())`
+because a self-write is not a project access decision at all. **This paragraph briefly claimed
+"no table anywhere in this schema still resolves a policy to bare `owner_id = auth.uid()`",
+which is false and contradicted this file's own policy list four paragraphs down** — the
+bootstrap INSERT is exactly that predicate, deliberately. The honest statement is the one
+above: membership and configuration access, not every predicate in the schema.
+
+**All ten tables are rewritten** — the count in this sentence read "nine" while the list that
+follows it named ten, so trust the list: it is `project_members`, `profiles`, `project_counters`,
+`sprints`, `tickets`, `projects`, `project_statuses`, `project_fields`, `project_field_options`
+and `ticket_field_values`, which is every table in `public`. As stories inside this same
 epic: `project_members` (SPRIN-98, four policies resolving through
 `app_auth.is_project_member`/`is_project_admin`); `profiles` (SPRIN-105, four verb-split
 policies where SELECT resolves through `app_auth.shares_project_with` and the three write verbs
@@ -270,9 +283,14 @@ baseline, not against zero** — the same discipline as the test-file tripwire a
 GAP is the invariant and the absolute counts move with every story. Re-derive the numbers with
 `get_advisors` rather than trusting this paragraph; they are a timestamped observation.
 
-One of those is settled and must not be re-litigated. The three `ticket_field_values` INFOs
+One of those is settled and must not be re-litigated. The **four** `ticket_field_values` INFOs
 are **David's explicit call** — keep the `(field_id)` index, add nothing, accept them (the
-advisor's prefix rule goes unsatisfied, not any query a cascade actually performs).
+advisor's prefix rule goes unsatisfied, not any query a cascade actually performs). **This
+line said "three" and the count is now four** (`tfv_field_fk`, `tfv_option_fk`, `tfv_ticket_fk`
+and `tfv_type_fk`, re-derived from `get_advisors` on 2026-08-21, and matching the "4 on
+`ticket_field_values`" in the re-measured baseline above). The decision is unchanged; only the
+count moved — at some point after the sentence was written, and nobody updated it. Re-derive it
+rather than trusting the number.
 
 **RETIRED, visibly rather than silently, because the bullet that used to sit here predicted
 exactly this.** It said the `auth_rls_initplan` sweep belonged to SPRIN-75 and that the last
@@ -300,10 +318,19 @@ in the total of eight. Six is the correct historical figure. That fix landed in 
 commit as the "seven WARNs across five tables" re-measurement above and was not flagged as a
 correction at the time; it is flagged here instead of being left as silent drift.
 
-`project_fields`, `ticket_field_values`,
-`statuses_owner_delete` and now all four of `profiles`'s split policies already use the
-`(select auth.uid())` form, so the fix has working precedent in this schema — re-derive the
-list with `get_advisors` rather than trusting this paragraph, the same as the count above it.
+**RETIRED WITH IT, and this correction is the point.** The paragraph that sat here said
+"`project_fields`, `ticket_field_values`, `statuses_owner_delete` and now all four of
+`profiles`'s split policies already use the `(select auth.uid())` form, so the fix has working
+precedent in this schema." **All three of the first citations were destroyed by SPRIN-99's own
+migration** — `project_fields`'s and `ticket_field_values`'s owner policies were dropped and
+replaced by `app_auth` predicates, and `statuses_owner_delete` no longer exists at all. It
+survived the same commit that deleted the policies it named, which is exactly the decay this
+file keeps warning about, arriving inside the story that caused it. The `profiles` half is
+still true. The precedent that actually matters now is the *other* one, stated three paragraphs
+up and demonstrated four times: a `STABLE SECURITY DEFINER` predicate takes the uid read out of
+the per-row path just as `(select auth.uid())` does, so a policy written against `app_auth`
+never raises this WARN in the first place. Re-derive any list of policy bodies from
+`pg_policies` rather than from this file.
 
 **Why we still are not hedging further.** There is no production data and no user base, so
 almost every schema decision is reversible at near-zero cost. The real risk remains premature
@@ -384,11 +411,16 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
   app-layer rule plus a test.
 - **One active sprint per project:** enforced by a partial unique index. Surface
   the rejection as a clear message. Do not work around the index.
-- **RLS is on every table, and every table now resolves to membership — no table in `public`
-  is owner-scoped any more.** This line said "owner-scoped on every table" until SPRIN-100, then
+- **RLS is on every table, and every table now resolves its PROJECT access through membership —
+  no table decides who reads or writes a project's rows by asking `projects.owner_id`.** This
+  line said "owner-scoped on every table" until SPRIN-100, then
   "six tables now resolve to membership, only the four config tables still resolve to
   `owner_id = auth.uid()`, pending SPRIN-99" until SPRIN-99 closed that out: `project_statuses`,
   `project_fields`, `project_field_options` and `ticket_field_values` all moved the same way.
+  **It then briefly said "no table in `public` is owner-scoped any more", which is wrong**: two
+  self-scoped predicates survive deliberately — `projects_bootstrap_insert`
+  (`owner_id = (select auth.uid())`) and the three `profiles` write verbs
+  (`id = (select auth.uid())`). Neither is a project-access decision, and neither is a leftover.
   Do not stop checking the policy just because the migration is done — "resolves to membership"
   is not one shape, there are **three**: the board tables (`project_counters`, `sprints`,
   `tickets`) ask **member** on a single `for all` policy; `projects` and three of the four config

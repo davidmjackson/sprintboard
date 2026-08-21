@@ -1,7 +1,14 @@
 -- SPRIN-99: the four config tables move from ownership to membership.
 --
--- This is the LAST owner-scoped group in the schema. After this migration no table
--- in `public` resolves to `owner_id = auth.uid()`.
+-- This is the LAST owner-scoped group in the schema: after this migration no table in
+-- `public` resolves its MEMBERSHIP or CONFIGURATION access through `projects.owner_id`.
+--
+-- CORRECTION (post-apply, comment only). These two lines used to read "no table in
+-- `public` resolves to `owner_id = auth.uid()`", full stop, which is false and always
+-- was. Two deliberate self-scoped predicates survive and are not this story's to remove:
+-- `projects_bootstrap_insert` (`owner_id = (select auth.uid())`, so creating a project
+-- does not require a membership row that cannot exist yet) and the three `profiles`
+-- write policies (`id = (select auth.uid())`, self-writes that never widened).
 --
 -- 1. WHY EVERY POLICY BELOW CARRIES "to authenticated"
 --
@@ -23,16 +30,36 @@
 --
 -- 3. WHY A PREDICATE ON project_id ALONE IS SUFFICIENT ON ticket_field_values
 --
--- RLS WITH CHECK fires BEFORE foreign-key validation, and a policy guards only the
--- columns it reads -- so a project_id predicate normally leaves the other fk columns
--- tenant-unguarded. Here it does not, because every fk on this table is COMPOSITE on
--- project_id:
+-- CORRECTION (post-apply, comment only -- no DDL below was changed). This section used
+-- to assert that "every fk on this table is COMPOSITE on project_id", cited as verified
+-- from pg_constraint on 2026-08-21, and listed two constraints. That was FALSE: the
+-- table has FOUR foreign keys and only two of them carry project_id. The conclusion
+-- survives, but it needs the transitive argument spelled out below rather than the
+-- direct one that was claimed. Re-measured from pg_constraint, 2026-08-21:
 --
 --     tfv_ticket_fk (ticket_id, project_id) -> tickets(id, project_id)
 --     tfv_field_fk  (field_id,  project_id) -> project_fields(id, project_id)
+--     tfv_option_fk (field_id,  value_option) -> project_field_options(field_id, slug)
+--     tfv_type_fk   (field_id,  field_type)   -> project_fields(id, type)
 --
--- A row claiming your project_id cannot reference another tenant's ticket or field:
--- the composite key has no matching parent. Verified from pg_constraint, 2026-08-21.
+-- RLS WITH CHECK fires BEFORE foreign-key validation, and a policy guards only the
+-- columns it reads -- so a project_id predicate normally leaves the other fk columns
+-- tenant-unguarded. Here it does not, in two steps:
+--
+--   * DIRECTLY, for ticket_id and field_id. Both are keyed to project_id by a composite
+--     fk, so a row claiming your project_id cannot name another tenant's ticket or field:
+--     the composite key has no matching parent.
+--   * TRANSITIVELY, for value_option and field_type. Neither of their fks mentions
+--     project_id, so neither is pinned to a tenant by itself. Both are keyed on field_id
+--     as their other column, and field_id is already pinned to project_id by
+--     tfv_field_fk -- so an option or a type can only be one belonging to a field of the
+--     project the row claims. The correlation is inherited through field_id, not carried
+--     by the constraint itself.
+--
+-- The practical consequence of the correction: this reasoning depends on tfv_field_fk
+-- STAYING composite on project_id. Narrow that one constraint to (field_id) alone and
+-- two of the other three fks quietly stop being tenant-scoped, with nothing in the
+-- policy text to show for it.
 --
 -- 4. WHY ticket_field_values IS MEMBER-WRITABLE WHILE THE OTHER THREE ARE NOT
 --

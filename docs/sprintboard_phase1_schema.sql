@@ -796,7 +796,11 @@ revoke execute on function assign_ticket_key() from public, anon, authenticated;
 -- leaves with the project's initial slug; an insert that NAMES a status is left alone.
 --
 -- SECURITY DEFINER for the same reason as project_statuses_delete_guard(): this read must
--- not depend on statuses_owner_read staying broad enough for whoever is inserting. SB002
+-- not depend on the live SELECT policy on project_statuses staying broad enough for
+-- whoever is inserting. That policy was statuses_owner_read when this comment was
+-- written; SPRIN-99 deleted it and the policy is now statuses_member_read. The point
+-- of the DEFINER is precisely that this sentence does not have to be kept current --
+-- but the policy NAME did, so it is stated as a property rather than a name. SB002
 -- is the "no initial status" case, which the delete guard and promotion trigger are
 -- supposed to make unreachable — it is a loud failure, not a fallback.
 -- ============================================================
@@ -1332,7 +1336,9 @@ commit;
 -- to `owner_id = auth.uid()`. It is no longer the only one, and it is no longer
 -- inert: SPRIN-100 pointed the three board tables at `app_auth.is_project_member`,
 -- so these rows now decide who can read and write every sprint, ticket and counter.
--- SPRIN-101 (`projects`) and SPRIN-99 (the config tables) are what remain.
+-- Nothing remains: this line said "SPRIN-101 (`projects`) and SPRIN-99 (the config
+-- tables) are what remain" until both landed, SPRIN-101 on 2026-08-20 and SPRIN-99
+-- on 2026-08-21. Every table in `public` now reads these rows to decide access.
 --
 -- This paragraph said "it is inert, populated, and waiting" until SPRIN-100, which
 -- is exactly the sentence that stops being true the moment the first consumer lands.
@@ -1986,13 +1992,25 @@ create policy projects_admin_delete on projects
 -- ============================================================
 -- SPRIN-99 -- the four config tables resolve to membership (epic SPRIN-75, story 5)
 -- ============================================================
--- NOT YET APPLIED as of this commit. This section mirrors
+-- APPLIED 2026-08-21, and re-verified from the catalogue on the same day: all
+-- sixteen policies below are live, every one of them `to authenticated`. This
+-- line said "NOT YET APPLIED as of this commit" while CLAUDE.md, changed in the
+-- same commit, said "after SPRIN-99 applied" -- the branch contradicted itself
+-- about its own migration, and pg_policies settles it. Corrected rather than
+-- silently swapped, because a doc that quietly changes its mind about applied
+-- state is worse than one that is merely stale. This section mirrors
 -- docs/migrations/sprin-99-config-tables-membership.sql, which carries the full
 -- argument and the measurements it rests on. Verify applied state from the
--- catalogue once David has hand-applied it, rather than from this line.
+-- catalogue, never from a line in a file.
 --
--- This is the LAST owner-scoped group in the schema. Once applied, no table in
--- `public` resolves to `owner_id = auth.uid()`.
+-- This is the LAST owner-scoped group in the schema: no table in `public`
+-- resolves its MEMBERSHIP or CONFIGURATION access through projects.owner_id any
+-- more. This paragraph used to claim, flatly, that no table in `public` resolves
+-- to `owner_id = auth.uid()`. That was an overstatement and always was: two
+-- self-scoped predicates survive on purpose -- projects_bootstrap_insert
+-- (`owner_id = (select auth.uid())`, so creating a project does not need a
+-- membership row that cannot exist yet) and the three profiles write policies
+-- (`id = (select auth.uid())`, self-writes that never widened).
 --
 -- statuses_owner_*, fields_owner_*, options_owner_* and tfv_owner_* -- sixteen
 -- owner-scoped policies across project_statuses, project_fields,
@@ -2022,12 +2040,25 @@ create policy projects_admin_delete on projects
 -- WHY A PREDICATE ON project_id ALONE IS SUFFICIENT ON ticket_field_values. RLS
 -- WITH CHECK fires BEFORE foreign-key validation, and a policy guards only the
 -- columns it reads -- so a project_id predicate normally leaves the other fk
--- columns tenant-unguarded. Here it does not, because every fk on this table is
--- COMPOSITE on project_id: tfv_ticket_fk (ticket_id, project_id) ->
--- tickets(id, project_id) and tfv_field_fk (field_id, project_id) ->
--- project_fields(id, project_id). A row claiming your project_id cannot
--- reference another tenant's ticket or field: the composite key has no matching
--- parent. Verified from pg_constraint, 2026-08-21.
+-- columns tenant-unguarded. Here it does not, but by a TRANSITIVE argument, not
+-- the direct one this paragraph used to give. It said "every fk on this table is
+-- COMPOSITE on project_id" and listed two constraints; the table has FOUR, and
+-- only two carry project_id (re-measured from pg_constraint, 2026-08-21):
+--
+--     tfv_ticket_fk (ticket_id, project_id) -> tickets(id, project_id)
+--     tfv_field_fk  (field_id,  project_id) -> project_fields(id, project_id)
+--     tfv_option_fk (field_id,  value_option) ->
+--                                    project_field_options(field_id, slug)
+--     tfv_type_fk   (field_id,  field_type)  -> project_fields(id, type)
+--
+-- ticket_id and field_id are pinned to project_id directly, by the first two. The
+-- other two mention no project_id at all: they are keyed on field_id, which is
+-- ITSELF pinned to project_id by tfv_field_fk, so an option or a type can only be
+-- one belonging to a field of the project the row claims. Every fk is therefore
+-- tenant-correlated, two of them only at one remove -- which means the whole
+-- argument rests on tfv_field_fk staying composite on project_id. Narrow that one
+-- constraint and two of the other three quietly stop being tenant-scoped, with
+-- nothing in the policy text to show for it.
 --
 -- WHY `to authenticated` ON ALL SIXTEEN. Measured 2026-08-21 from pg_class.relacl:
 -- all four tables grant anon SELECT, and project_statuses additionally grants

@@ -62,8 +62,11 @@ assertServiceRoleOrExplain()
  * NO SECOND ADMIN IS EVER ADDED TO A PROJECT. `project-members.integration.test.ts` asserts
  * a whole-DATABASE invariant that every project has EXACTLY ONE admin; a second `admin` row
  * anywhere, even transiently, turns that sibling suite red for reasons nothing in its own
- * diff explains. M joins A's project as a plain `member`, and every other membership row in
- * play is one `seed_project_admin` created for a project's own creator.
+ * diff explains. M joins A's project as a plain `member`; every other membership row in play
+ * is one `seed_project_admin` created for a project's own creator; and the one row this file
+ * reassigns -- the admin of `swapProjectId`, moved from A to M so that "admin" and "owner"
+ * finally name two different people -- MOVES in a single UPDATE, never insert-then-delete.
+ * See the docblock on that block for why a two-statement swap is a flake generator.
  *
  * EVERY ASSERTION IS SCOPED to a fixture this file created. Under a membership model an
  * unscoped select is a whole-table invariant whose answer depends on every concurrently
@@ -142,6 +145,14 @@ const RENAMED_FIELD_NAME = 'Renamed by the admin'
 const RENAMED_OPTION_LABEL = 'Relabelled by the admin'
 /** M's own value row, in M's own project -- the WITH CHECK subject. */
 const M_VALUE = 'Set by M at home'
+/** The swapped-admin project: what M (admin, not owner) writes, and A (owner, not admin) may not. */
+const SWAP_STATUS_NAME = 'Added by the non-owner admin'
+const SWAP_STATUS_RENAMED = 'Renamed by the non-owner admin'
+const SWAP_FIELD_NAME = 'Non-owner field'
+const SWAP_FIELD_RENAMED = 'Non-owner field renamed'
+const SWAP_OPTION_SLUG = 'swap_high'
+const SWAP_OPTION_LABEL = 'Non-owner option'
+const SWAP_OPTION_RELABELLED = 'Non-owner option relabelled'
 
 describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membership', () => {
   const admin = hasServiceRoleKey ? adminClient() : (undefined as never)
@@ -161,6 +172,16 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
   let otherProjectId: string
   /** M's OWN project, where M is the admin. Without it, admin-scoping is untestable. */
   let mProjectId: string
+  /**
+   * A project A OWNS whose single admin row has been MOVED to M. It is the only place in this
+   * file where "the admin" and "the owner" are different people, and therefore the only place
+   * that can tell an admin-role predicate apart from an ownership one.
+   */
+  let swapProjectId: string
+  /** The seeded `done` status of `swapProjectId` -- the read-back target for A's refused writes. */
+  let swapDoneStatusId: string
+  /** A select field and one of its options in `swapProjectId`, both created by M as its admin. */
+  let swapFieldId: string
 
   let doneStatusId: string
   /** An extra status A created: renamed and then deleted by A as the positive controls. */
@@ -225,14 +246,41 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
     return fixtureRow({ data, error }, `create the ticket "${summary}"`).id
   }
 
-  async function seededStatusId(slug: string): Promise<string> {
+  async function seededStatusId(project: string, slug: string): Promise<string> {
     const { data, error } = await admin
       .from('project_statuses')
       .select('id')
-      .eq('project_id', projectId)
+      .eq('project_id', project)
       .eq('slug', slug)
       .single()
     return fixtureRow({ data, error }, `find the seeded "${slug}" status`).id
+  }
+
+  /**
+   * Moves a project's SOLE admin row from one user to another in ONE statement, so the project
+   * never holds two admins or zero. `project-members.integration.test.ts` asserts "exactly one
+   * admin" over EVERY project in the database in a single snapshot, and Vitest runs test FILES
+   * in parallel -- an insert-then-delete pair (or a delete-then-insert one) opens a window that
+   * snapshot can land inside, reddening a sibling suite on the required `verify` check for a
+   * reason nothing in its own diff explains. The primary key is (project_id, user_id), so
+   * UPDATE-ing `user_id` moves the row wholesale. Same technique, and same reasoning, as
+   * `projects-membership.integration.test.ts`.
+   */
+  async function moveAdminTo(project: string, fromUserId: string, toUserId: string): Promise<void> {
+    const moved = fixtureRow(
+      await admin
+        .from('project_members')
+        .update({ user_id: toUserId })
+        .eq('project_id', project)
+        .eq('user_id', fromUserId)
+        .select('user_id, role'),
+      'move the admin row',
+    )
+    // Proves the fixture did what it claims rather than silently matching nothing: exactly one
+    // row moved, it is the new user's, and it is still `admin`.
+    if (JSON.stringify(moved) !== JSON.stringify([{ user_id: toUserId, role: 'admin' }])) {
+      throw new Error(`Fixture: the admin swap moved ${JSON.stringify(moved)}`)
+    }
   }
 
   /** The `done` row as the service role sees it -- the read-back for every refused write. */
@@ -281,7 +329,21 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       'add M as a member',
     )
 
-    doneStatusId = await seededStatusId('done')
+    doneStatusId = await seededStatusId(projectId, 'done')
+
+    // THE SWAPPED-ADMIN PROJECT. A creates it, so `seed_project_admin` makes A its sole admin
+    // and `seed_project_statuses` seeds its four slugs; then that one admin row MOVES to M.
+    // A keeps `owner_id` -- which is immutable, and now grants nothing -- and holds no
+    // membership row at all. M administers a project M does not own; A owns a project M
+    // administers. That is the only configuration in which an admin-role predicate and an
+    // ownership predicate give different answers, which is the whole point of it.
+    swapProjectId = await createProject({
+      client: aClient,
+      ownerId: aId,
+      name: 'SPRIN-99 swapped admin',
+    })
+    await moveAdminTo(swapProjectId, aId, mId)
+    swapDoneStatusId = await seededStatusId(swapProjectId, 'done')
 
     ownerStatusId = fixtureRow(
       await aClient
@@ -410,6 +472,35 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         value_text: M_VALUE,
       }),
       "add M's value",
+    )
+
+    // The field and option A is refused below, created in A's OWN project by M, using M's
+    // admin role and nothing else. Under the pre-migration owner predicate these two writes
+    // fail outright and the whole suite goes red in setup -- which is a kill, but a mute one,
+    // so the assertions in the swapped-admin block below say it out loud as well.
+    swapFieldId = fixtureRow(
+      await mClient
+        .from('project_fields')
+        .insert({
+          project_id: swapProjectId,
+          slug: 'swap_severity',
+          name: SWAP_FIELD_NAME,
+          type: 'select',
+        })
+        .select('id')
+        .single(),
+      "add the non-owner admin's field",
+    ).id
+
+    fixtureOk(
+      await mClient.from('project_field_options').insert({
+        project_id: swapProjectId,
+        field_id: swapFieldId,
+        slug: SWAP_OPTION_SLUG,
+        label: SWAP_OPTION_LABEL,
+        position: 1,
+      }),
+      "add the non-owner admin's option",
     )
   }, 60_000)
 
@@ -1159,6 +1250,241 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .select('slug')
       expect(own.error).toBeNull()
       expect(own.data).toEqual([{ slug: 'm_own' }])
+    }, 30_000)
+  })
+
+  /**
+   * ADMIN IS NOT OWNER, AND WITHOUT THIS BLOCK THE WHOLE FILE PINS THE WRONG PREDICATE.
+   *
+   * `seed_project_admin` makes a project's CREATOR its sole admin, so everywhere else in this
+   * file "the admin" and "the owner" are the same person: A owns and administers `projectId`
+   * and `otherProjectId`, M owns and administers `mProjectId`. That makes the nine admin-verb
+   * policies -- `statuses_`/`fields_`/`options_` x `_admin_insert`/`_admin_update`/
+   * `_admin_delete` -- INDISTINGUISHABLE from the pre-migration ones they replaced.
+   *
+   * THE MUTATION THESE TWO TESTS KILL, stated so it can be re-run: revert all nine policies to
+   *
+   *     exists (select 1 from projects p
+   *              where p.id = <tbl>.project_id and p.owner_id = auth.uid())
+   *
+   * and every other assertion in this file still passes -- A is the owner of `projectId` and
+   * stays allowed everything; M is neither owner nor admin there and stays refused. The story's
+   * entire subject, configuration gated on the ROLE rather than on ownership, would have no
+   * test that could see it.
+   *
+   * The two halves need each other, and the SECOND is the one that does the killing:
+   *
+   *   1. M, `admin` of `swapProjectId` and NOT its owner, SUCCEEDS at configuration writes.
+   *      Under the owner predicate M is refused, and this goes red.
+   *   2. A, the OWNER of that same project and holder of no membership row in it, is REFUSED
+   *      the identical writes. Under the owner predicate A is ALLOWED, and this goes red --
+   *      and unlike (1) there is no reading of the policy that makes the failure benign.
+   *
+   * Both are needed because (1) alone is also satisfied by a policy that has stopped checking
+   * anything at all, and (2) alone is also satisfied by a policy that refuses everyone.
+   *
+   * `is_project_admin` has no `owner_id` branch, so `owner_id` is a pure audit column here --
+   * the same property `projects-membership.integration.test.ts` pins on the `projects` table
+   * itself. This is that property, one layer down, on the config tables.
+   */
+  describe('configuration is gated on the admin ROLE, not on ownership', () => {
+    it('lets an admin who does not own the project write its configuration', async () => {
+      const inserted = await mClient
+        .from('project_statuses')
+        .insert({
+          project_id: swapProjectId,
+          slug: 'swap_added',
+          name: SWAP_STATUS_NAME,
+          category: 'in_progress',
+          position: 7,
+        })
+        .select('id, name')
+      expect(inserted.error).toBeNull()
+      expect(inserted.data?.length).toBe(1)
+      const addedStatusId = inserted.data![0]!.id
+
+      const renamed = await mClient
+        .from('project_statuses')
+        .update({ name: SWAP_STATUS_RENAMED })
+        .eq('id', addedStatusId)
+        .select('name')
+      expect(renamed.error).toBeNull()
+      expect(renamed.data).toEqual([{ name: SWAP_STATUS_RENAMED }])
+
+      // `name` on project_fields and `label` on project_field_options are the only columns
+      // `authenticated` may UPDATE on those two tables -- the same granted-column discipline
+      // every negative in this file follows, kept here so the positive and its mirror in the
+      // next test are the SAME statement with a different caller.
+      const fieldRenamed = await mClient
+        .from('project_fields')
+        .update({ name: SWAP_FIELD_RENAMED })
+        .eq('id', swapFieldId)
+        .select('name')
+      expect(fieldRenamed.error).toBeNull()
+      expect(fieldRenamed.data).toEqual([{ name: SWAP_FIELD_RENAMED }])
+
+      const optionRelabelled = await mClient
+        .from('project_field_options')
+        .update({ label: SWAP_OPTION_RELABELLED })
+        .eq('field_id', swapFieldId)
+        .eq('slug', SWAP_OPTION_SLUG)
+        .select('label')
+      expect(optionRelabelled.error).toBeNull()
+      expect(optionRelabelled.data).toEqual([{ label: SWAP_OPTION_RELABELLED }])
+
+      // DELETE last, and read back with the service role: a delete that returns a row while
+      // leaving it in place would pass the assertion above on its own.
+      const deleted = await mClient
+        .from('project_statuses')
+        .delete()
+        .eq('id', addedStatusId)
+        .select('id')
+      expect(deleted.error).toBeNull()
+      expect(deleted.data).toEqual([{ id: addedStatusId }])
+
+      const gone = await admin.from('project_statuses').select('id').eq('id', addedStatusId)
+      expect(gone.data).toEqual([])
+
+      // The two surviving rows really do hold what the admin wrote, read past RLS.
+      const fieldIntact = await admin
+        .from('project_fields')
+        .select('name')
+        .eq('id', swapFieldId)
+        .single()
+      expect(fieldIntact.data).toEqual({ name: SWAP_FIELD_RENAMED })
+    }, 30_000)
+
+    it('refuses the project OWNER every one of those writes once they hold no admin row', async () => {
+      // Read first: A cannot even see the configuration of a project A owns, because
+      // `statuses_member_read` asks for membership and A holds none here.
+      const visible = await aClient
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', swapProjectId)
+      expect(visible.error).toBeNull()
+      expect(visible.data).toEqual([])
+
+      // INSERT is governed by WITH CHECK and RAISES. The message match separates the policy
+      // from the grant: `authenticated` DOES hold table-level INSERT on project_statuses.
+      const status = await aClient.from('project_statuses').insert({
+        project_id: swapProjectId,
+        slug: 'owner_planted',
+        name: 'Planted by the owner',
+        category: 'todo',
+        position: 95,
+      })
+      expect(status.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(status.error?.message).toMatch(RLS_REFUSAL)
+
+      const field = await aClient
+        .from('project_fields')
+        .insert({ project_id: swapProjectId, slug: 'owner_field', name: 'Planted', type: 'text' })
+      expect(field.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(field.error?.message).toMatch(RLS_REFUSAL)
+
+      const option = await aClient.from('project_field_options').insert({
+        project_id: swapProjectId,
+        field_id: swapFieldId,
+        slug: 'owner_option',
+        label: 'Planted',
+        position: 95,
+      })
+      expect(option.error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(option.error?.message).toMatch(RLS_REFUSAL)
+
+      // UPDATE and DELETE are governed by USING, which FILTERS -- so the row COUNT is the
+      // assertion, and every zero-row result is paired with a service-role read-back.
+      const statusRenamed = await aClient
+        .from('project_statuses')
+        .update({ name: 'Hijacked by the owner' })
+        .eq('id', swapDoneStatusId)
+        .select('id')
+      expect(statusRenamed.error).toBeNull()
+      expect(statusRenamed.data).toEqual([])
+
+      const fieldRenamed = await aClient
+        .from('project_fields')
+        .update({ name: 'Hijacked by the owner' })
+        .eq('id', swapFieldId)
+        .select('id')
+      expect(fieldRenamed.error).toBeNull()
+      expect(fieldRenamed.data).toEqual([])
+
+      const optionRelabelled = await aClient
+        .from('project_field_options')
+        .update({ label: 'Hijacked by the owner' })
+        .eq('field_id', swapFieldId)
+        .eq('slug', SWAP_OPTION_SLUG)
+        .select('slug')
+      expect(optionRelabelled.error).toBeNull()
+      expect(optionRelabelled.data).toEqual([])
+
+      const statusDeleted = await aClient
+        .from('project_statuses')
+        .delete()
+        .eq('id', swapDoneStatusId)
+        .select('id')
+      expect(statusDeleted.error).toBeNull()
+      expect(statusDeleted.data).toEqual([])
+
+      // The field delete matters most of the three: `authenticated` holds TABLE-WIDE delete
+      // here, so the policy is the only control, and a field delete cascades through
+      // `tfv_field_fk` to every value row that used it.
+      const fieldDeleted = await aClient
+        .from('project_fields')
+        .delete()
+        .eq('id', swapFieldId)
+        .select('id')
+      expect(fieldDeleted.error).toBeNull()
+      expect(fieldDeleted.data).toEqual([])
+
+      const optionDeleted = await aClient
+        .from('project_field_options')
+        .delete()
+        .eq('field_id', swapFieldId)
+        .eq('slug', SWAP_OPTION_SLUG)
+        .select('slug')
+      expect(optionDeleted.error).toBeNull()
+      expect(optionDeleted.data).toEqual([])
+
+      // READ-BACKS. Nothing moved, and what survives is what the NON-OWNER admin last wrote.
+      const doneIntact = await admin
+        .from('project_statuses')
+        .select('name')
+        .eq('id', swapDoneStatusId)
+        .maybeSingle()
+      expect(doneIntact.data).toEqual({ name: DONE_NAME })
+
+      const fieldIntact = await admin
+        .from('project_fields')
+        .select('name')
+        .eq('id', swapFieldId)
+        .maybeSingle()
+      expect(fieldIntact.data).toEqual({ name: SWAP_FIELD_RENAMED })
+
+      const optionIntact = await admin
+        .from('project_field_options')
+        .select('label')
+        .eq('field_id', swapFieldId)
+        .eq('slug', SWAP_OPTION_SLUG)
+      expect(optionIntact.data).toEqual([{ label: SWAP_OPTION_RELABELLED }])
+
+      // POSITIVE CONTROL, and it has to be A rather than anyone else: the identical statement
+      // in `projectId`, where A DOES hold the admin row, succeeds. So the eight refusals above
+      // are about A's role in THIS project -- not a broken session, an expired token, or a
+      // client that silently downgraded to anon.
+      const atHome = await aClient
+        .from('project_statuses')
+        .insert({
+          project_id: projectId,
+          slug: 'a_still_admin',
+          name: 'Planted where A is the admin',
+          category: 'todo',
+          position: 96,
+        })
+        .select('slug')
+      expect(atHome.error).toBeNull()
+      expect(atHome.data).toEqual([{ slug: 'a_still_admin' }])
     }, 30_000)
   })
 
