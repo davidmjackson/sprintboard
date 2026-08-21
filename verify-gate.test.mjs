@@ -467,6 +467,12 @@ describe('npm test really collects the live integration suites', () => {
     // which is the whole point of the two notes above; SPRIN-98 and SPRIN-105 each updated
     // CLAUDE.md's prose half and left this array behind, one story apart.
     'src/test/projects-membership.integration.test.ts',
+    // SPRIN-99. The four config tables (project_statuses, project_fields,
+    // project_field_options, ticket_field_values) resolving to membership -- the last
+    // tables in `public` still owner-scoped before this story, and the one where
+    // ticket_field_values deliberately asks member on every verb rather than the
+    // member-read/admin-write split the other three use.
+    'src/test/config-membership.integration.test.ts',
   ]
 
   const collected = (() => {
