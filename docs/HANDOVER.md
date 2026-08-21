@@ -1634,32 +1634,39 @@ database through it and it cannot read `pg_catalog`. Supabase advisors are not i
   What IS pinned is the property it protects — a member cannot move a `ticket_field_values` row
   into a project they do not belong to — which fails the moment the two clauses are made to differ.
   Do not "fix" the absence of a clause-level test; there is nothing to fix.
-- **A full `npm test` performs ~29 sign-ins and sits near the free-tier GoTrue ceiling.** SPRIN-99
-  added 3 (`tickets.integration.test.ts` alone holds 11). CI passes cleanly — it was green first
-  time on 84 files with zero skipped — but a developer running several full verifies in an hour
-  will exhaust the budget locally and see unrelated suites fail with `Request rate limit reached`,
-  often with a plausible-looking assertion failure standing in front of it. **Discriminator: run
-  the failing suites in isolation.** If they pass, it is the budget, not the branch. If CI ever
-  reds this way, the fix is raising the GoTrue auth rate limit in the Supabase dashboard, not a
-  code change.
-  - **UPDATED BY SPRIN-102 (session 76): this bites in practice, and the session that hit it
-    also nearly misdiagnosed it — twice.** SPRIN-102 added a thirteenth live suite (6 auth calls:
-    3 `createUser` + 3 `signIn`, the same shape as its three membership siblings). Four local
-    `npm test` runs inside about half an hour all went red with `Request rate limit reached`,
-    naming a DIFFERENT set of victims each time. Re-measured across all thirteen suites:
-    **~56 auth calls** (`signIn` plus `createUser`) per full run, not 29 — the older figure
-    counted sign-ins alone. The discriminator above held perfectly: every failing suite passed
-    **28/28 and 18/18 in isolation**, immediately.
-  - **BUT BE CAREFUL WHAT YOU CONCLUDE FROM THAT, because the session first got it wrong.** After
-    a 7-minute cooldown failed to clear it, the reasonable-looking inference was "thirteen suites
-    structurally exceed the ceiling". That does not follow, and it was probably false: FOUR full
-    runs at ~56 calls is ~224 calls in half an hour, and the limiter's window is hourly — so the
-    budget had been exhausted by the diagnosing session's OWN traffic, which is exactly the
-    confound that makes this hard to measure. A clean reading needs a genuinely quiet hour and
-    then ONE run. CI was green at twelve suites shortly before, which is the evidence against the
-    structural reading. **Do not conclude the suite is over the ceiling from runs you polluted
-    yourself** — and note the corollary `CLAUDE.md` already warns about: a local run can burn the
-    budget that a concurrent CI run needs.
+- **A full `npm test` performs 37 sign-ins against a FIVE-MINUTE `/token` limit.** (This bullet
+  said "~29 sign-ins" against an hourly budget, and pointed at the wrong dashboard setting; both
+  errors are corrected in the sub-points below, which SPRIN-102 established from `auth_logs`.)
+  `tickets.integration.test.ts` alone holds 11 of the 37, all on the two SHARED `rls-a`/`rls-b`
+  fixture users. A developer running several full verifies in quick succession will exhaust the
+  window and see unrelated suites fail with `Request rate limit reached`, often with a
+  plausible-looking assertion failure standing in front of it. **Discriminator: run the failing
+  suites in isolation.** If they pass, it is the budget, not the branch.
+  - **SETTLED BY SPRIN-102 (session 76), AND THE OLD FIGURES ABOVE ARE WRONG.** Two of them:
+    a full run performs **37 sign-in calls**, not 29, and the limiter that binds is **not** the
+    one the bullet above sends you to. Read the next three points instead of the paragraph above.
+  - **THE BINDING LIMIT IS `/token`, WHICH THE DASHBOARD CALLS "Rate limit for token refreshes".**
+    Proven from `auth_logs`, not inferred: every refusal is
+    `path=/token`, `grant_type=password`, `error_code=over_request_rate_limit`, keyed on one
+    `remote_addr`. Password sign-in goes through `/token`, so despite its name that setting
+    governs it. **Raising "Rate limit for sign ups and sign ins" does NOTHING for this** -- it was
+    tried first and the auth log shows it moving only the `GOTRUE_RATE_LIMIT_OTP` family
+    (Signups/Otp/Recover/MagicLink/User/Resend). It was reverted to 30. The `/token` limit was
+    raised 150 -> 600. Query to re-derive any of this:
+    `select log_attributes from logs where source='auth_logs' and log_attributes['status']='429'`.
+  - **IT IS A FIVE-MINUTE WINDOW, NOT AN HOURLY BUDGET, AND ONE RUN FITS INSIDE IT.** This is the
+    fact three separate wrong diagnoses in one session all missed, and it is easy to check:
+    bucket `/token` by `toStartOfFiveMinutes` and read the 200s against the 429s. Four
+    CONSECUTIVE five-minute windows at ~40 sign-ins each completed with **zero** rejections. So
+    the suite is not over the ceiling and never was. What fails is **runs repeated inside one
+    five-minute window** -- the ordinary edit-run-rerun loop, or a local run overlapping CI.
+  - **THE DIAGNOSTIC LESSON, worth more than the setting.** The session concluded "structurally
+    over the ceiling" (wrong), retracted it as self-polluted measurement (right about the
+    confound, wrong to treat that as a refutation), re-asserted it after a quiet hour still went
+    red (wrong again -- the quiet hour cleared the wrong window, since the limit refills in five
+    minutes and the run's own burst is what mattered), and only settled it by reading the log
+    rows and bucketing by window. **Hourly aggregates cannot see a five-minute limiter.** Go to
+    `auth_logs` early; every reading before that was a guess dressed as a measurement.
   - **THE FAILURE WEARS A CONVINCING DISGUISE, and this is the part to remember.** The visible
     error was not an auth error at all — it was `completeSprint` returning
     `{ ok: false, error: 'unknown' }` where the test expected `'stale'`. The app layer maps any
