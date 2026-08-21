@@ -102,6 +102,25 @@ async function settled<T>(call: PromiseLike<T>): Promise<T | { data: null; error
   }
 }
 
+/**
+ * Unwraps a fixture write, throwing a NAMED failure rather than letting a null row surface as
+ * a mystifying assertion three tests later. Extracted rather than inlined per call: eleven
+ * `if (x.error) throw` statements in one `beforeAll` put it over T2's cyclomatic limit of 10.
+ */
+function fixtureRow<T>(
+  result: { data: T; error: { message: string } | null },
+  what: string,
+): NonNullable<T> {
+  if (result.error) throw new Error(`Fixture: could not ${what}: ${result.error.message}`)
+  if (result.data === null) throw new Error(`Fixture: ${what} returned no row`)
+  return result.data as NonNullable<T>
+}
+
+/** The same, for a fixture write whose row is not needed. */
+function fixtureOk(result: { error: { message: string } | null }, what: string): void {
+  if (result.error) throw new Error(`Fixture: could not ${what}: ${result.error.message}`)
+}
+
 /** Postgres "insufficient privilege". Always asserted alongside the RLS message -- see above. */
 const INSUFFICIENT_PRIVILEGE = '42501'
 const RLS_REFUSAL = /violates row-level security policy/
@@ -116,6 +135,13 @@ const SELECT_FIELD_NAME = 'Severity'
 const OPTION_LABEL = 'High'
 const OWNER_STATUS_NAME = 'Owner column'
 const OWNER_VALUE = 'Set by the admin'
+/** A field and an option A creates purely to be renamed and then deleted by A. */
+const DOOMED_FIELD_NAME = 'Doomed field'
+const DOOMED_OPTION_LABEL = 'Doomed option'
+const RENAMED_FIELD_NAME = 'Renamed by the admin'
+const RENAMED_OPTION_LABEL = 'Relabelled by the admin'
+/** M's own value row, in M's own project -- the WITH CHECK subject. */
+const M_VALUE = 'Set by M at home'
 
 describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membership', () => {
   const admin = hasServiceRoleKey ? adminClient() : (undefined as never)
@@ -142,6 +168,16 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
   let textFieldId: string
   let selectFieldId: string
   let optionSlug: string
+  /** A's throwaway field and option: renamed, then deleted, as the admin positive controls. */
+  let doomedFieldId: string
+  let doomedOptionSlug: string
+  /**
+   * A ticket, a field and a value row inside M's OWN project. They exist so the WITH CHECK
+   * half of `tfv_member_update` is reachable: M may write this row (member of mProjectId) and
+   * must still be refused when the NEW project_id names a project M does not belong to.
+   */
+  let mTicketId: string
+  let mFieldId: string
   /** A's ticket, holding A's `ticket_field_values` row. Never written by anyone else. */
   let ticketId: string
   /** A second ticket, left free for M's own value row. */
@@ -177,8 +213,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       .insert({ owner_id: input.ownerId, name: input.name, key: runKey() })
       .select('id')
       .single()
-    if (error) throw new Error(`Fixture: could not create "${input.name}": ${error.message}`)
-    return data.id
+    return fixtureRow({ data, error }, `create "${input.name}"`).id
   }
 
   async function ownerTicket(summary: string): Promise<string> {
@@ -187,8 +222,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       .insert(ticketInsertPayload({ project_id: projectId, summary }))
       .select('id')
       .single()
-    if (error) throw new Error(`Fixture: could not create "${summary}": ${error.message}`)
-    return data.id
+    return fixtureRow({ data, error }, `create the ticket "${summary}"`).id
   }
 
   async function seededStatusId(slug: string): Promise<string> {
@@ -198,8 +232,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       .eq('project_id', projectId)
       .eq('slug', slug)
       .single()
-    if (error) throw new Error(`Fixture: no seeded "${slug}" status: ${error.message}`)
-    return data.id
+    return fixtureRow({ data, error }, `find the seeded "${slug}" status`).id
   }
 
   /** The `done` row as the service role sees it -- the read-back for every refused write. */
@@ -241,69 +274,143 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
     // M joins as a plain member, written with the SERVICE-ROLE client on purpose: using A's
     // client would build the fixture out of `members_admin_insert`, a policy a SIBLING suite
     // exists to prove. A fixture must not be built out of the thing under test.
-    const join = await admin
-      .from('project_members')
-      .insert({ project_id: projectId, user_id: mId, role: 'member' })
-    if (join.error) throw new Error(`Fixture: could not add M as a member: ${join.error.message}`)
+    fixtureOk(
+      await admin
+        .from('project_members')
+        .insert({ project_id: projectId, user_id: mId, role: 'member' }),
+      'add M as a member',
+    )
 
     doneStatusId = await seededStatusId('done')
 
-    const ownerStatus = await aClient
-      .from('project_statuses')
-      .insert({
-        project_id: projectId,
-        slug: 'a_extra',
-        name: OWNER_STATUS_NAME,
-        category: 'in_progress',
-        position: 5,
-      })
-      .select('id')
-      .single()
-    if (ownerStatus.error)
-      throw new Error(`Fixture: could not add A's status: ${ownerStatus.error.message}`)
-    ownerStatusId = ownerStatus.data.id
+    ownerStatusId = fixtureRow(
+      await aClient
+        .from('project_statuses')
+        .insert({
+          project_id: projectId,
+          slug: 'a_extra',
+          name: OWNER_STATUS_NAME,
+          category: 'in_progress',
+          position: 5,
+        })
+        .select('id')
+        .single(),
+      "add A's status",
+    ).id
 
-    const textField = await aClient
-      .from('project_fields')
-      .insert({ project_id: projectId, slug: 'customer_ref', name: TEXT_FIELD_NAME, type: 'text' })
-      .select('id')
-      .single()
-    if (textField.error)
-      throw new Error(`Fixture: could not add the text field: ${textField.error.message}`)
-    textFieldId = textField.data.id
+    textFieldId = fixtureRow(
+      await aClient
+        .from('project_fields')
+        .insert({
+          project_id: projectId,
+          slug: 'customer_ref',
+          name: TEXT_FIELD_NAME,
+          type: 'text',
+        })
+        .select('id')
+        .single(),
+      'add the text field',
+    ).id
 
-    const selectField = await aClient
-      .from('project_fields')
-      .insert({ project_id: projectId, slug: 'severity', name: SELECT_FIELD_NAME, type: 'select' })
-      .select('id')
-      .single()
-    if (selectField.error)
-      throw new Error(`Fixture: could not add the select field: ${selectField.error.message}`)
-    selectFieldId = selectField.data.id
+    selectFieldId = fixtureRow(
+      await aClient
+        .from('project_fields')
+        .insert({
+          project_id: projectId,
+          slug: 'severity',
+          name: SELECT_FIELD_NAME,
+          type: 'select',
+        })
+        .select('id')
+        .single(),
+      'add the select field',
+    ).id
 
     optionSlug = 'high'
-    const option = await aClient.from('project_field_options').insert({
-      project_id: projectId,
-      field_id: selectFieldId,
-      slug: optionSlug,
-      label: OPTION_LABEL,
-      position: 1,
-    })
-    if (option.error) throw new Error(`Fixture: could not add the option: ${option.error.message}`)
+    fixtureOk(
+      await aClient.from('project_field_options').insert({
+        project_id: projectId,
+        field_id: selectFieldId,
+        slug: optionSlug,
+        label: OPTION_LABEL,
+        position: 1,
+      }),
+      'add the option',
+    )
+
+    // A's throwaway pair. They exist so the admin's positive RENAME control can write a
+    // genuinely DIFFERENT value (an expected value equal to what the row already holds pins
+    // nothing) and so the admin's positive DELETE control has a row to destroy that no other
+    // assertion depends on.
+    doomedFieldId = fixtureRow(
+      await aClient
+        .from('project_fields')
+        .insert({ project_id: projectId, slug: 'a_doomed', name: DOOMED_FIELD_NAME, type: 'text' })
+        .select('id')
+        .single(),
+      'add the doomed field',
+    ).id
+
+    doomedOptionSlug = 'doomed'
+    fixtureOk(
+      await aClient.from('project_field_options').insert({
+        project_id: projectId,
+        field_id: selectFieldId,
+        slug: doomedOptionSlug,
+        label: DOOMED_OPTION_LABEL,
+        position: 3,
+      }),
+      'add the doomed option',
+    )
 
     ticketId = await ownerTicket("A's ticket")
     memberTicketId = await ownerTicket("M's ticket")
 
     // A's own value row, so the stranger's zero-row UPDATE and DELETE below have a target
     // that exists independently of whether M's own write path works.
-    const value = await aClient.from('ticket_field_values').insert({
-      ticket_id: ticketId,
-      project_id: projectId,
-      field_id: textFieldId,
-      field_type: 'text',
-      value_text: OWNER_VALUE,
-    })
-    if (value.error) throw new Error(`Fixture: could not add A's value: ${value.error.message}`)
+    fixtureOk(
+      await aClient.from('ticket_field_values').insert({
+        ticket_id: ticketId,
+        project_id: projectId,
+        field_id: textFieldId,
+        field_type: 'text',
+        value_text: OWNER_VALUE,
+      }),
+      "add A's value",
+    )
+
+    // M's own ticket, field and value row, all inside M's OWN project, all written by M --
+    // M is that project's admin, seeded by `seed_project_admin`. This is the WITH CHECK
+    // subject: a row M is unambiguously entitled to UPDATE, so a refusal to move it into
+    // another tenant can only come from the new row's value being checked.
+    mTicketId = fixtureRow(
+      await mClient
+        .from('tickets')
+        .insert(ticketInsertPayload({ project_id: mProjectId, summary: "M's own ticket" }))
+        .select('id')
+        .single(),
+      "create M's ticket",
+    ).id
+
+    mFieldId = fixtureRow(
+      await mClient
+        .from('project_fields')
+        .insert({ project_id: mProjectId, slug: 'm_home', name: 'Home field', type: 'text' })
+        .select('id')
+        .single(),
+      "create M's field",
+    ).id
+
+    fixtureOk(
+      await mClient.from('ticket_field_values').insert({
+        ticket_id: mTicketId,
+        project_id: mProjectId,
+        field_id: mFieldId,
+        field_type: 'text',
+        value_text: M_VALUE,
+      }),
+      "add M's value",
+    )
   }, 60_000)
 
   afterAll(async () => {
@@ -358,7 +465,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .eq('project_id', projectId)
       expect(fields.error).toBeNull()
       expect([...(fields.data ?? [])].map((row) => row.name).sort()).toEqual(
-        [TEXT_FIELD_NAME, SELECT_FIELD_NAME].sort(),
+        [TEXT_FIELD_NAME, SELECT_FIELD_NAME, DOOMED_FIELD_NAME].sort(),
       )
 
       const options = await mClient
@@ -366,7 +473,9 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .select('slug, label')
         .eq('project_id', projectId)
       expect(options.error).toBeNull()
-      expect(options.data).toEqual([{ slug: optionSlug, label: OPTION_LABEL }])
+      expect([...(options.data ?? [])].map((row) => row.label).sort()).toEqual(
+        [OPTION_LABEL, DOOMED_OPTION_LABEL].sort(),
+      )
     }, 30_000)
   })
 
@@ -563,21 +672,111 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .single()
       expect(optionIntact.data).toEqual({ label: OPTION_LABEL })
 
-      // POSITIVE CONTROLS on the very same rows and the very same columns.
+      // POSITIVE CONTROLS on the very same COLUMNS, writing a genuinely DIFFERENT value.
+      // They target A's throwaway pair rather than the rows above, for two reasons: an
+      // expected value equal to what the row already holds pins nothing, and the rows above
+      // are the read-back targets of the stranger block further down.
       const asAdminField = await aClient
         .from('project_fields')
-        .update({ name: TEXT_FIELD_NAME })
-        .eq('id', textFieldId)
-        .select('id')
-      expect(asAdminField.data).toEqual([{ id: textFieldId }])
+        .update({ name: RENAMED_FIELD_NAME })
+        .eq('id', doomedFieldId)
+        .select('name')
+      expect(asAdminField.error).toBeNull()
+      expect(asAdminField.data).toEqual([{ name: RENAMED_FIELD_NAME }])
+
+      const fieldRenamed = await admin
+        .from('project_fields')
+        .select('name')
+        .eq('id', doomedFieldId)
+        .single()
+      expect(fieldRenamed.data).toEqual({ name: RENAMED_FIELD_NAME })
 
       const asAdminOption = await aClient
         .from('project_field_options')
-        .update({ label: OPTION_LABEL })
+        .update({ label: RENAMED_OPTION_LABEL })
+        .eq('field_id', selectFieldId)
+        .eq('slug', doomedOptionSlug)
+        .select('label')
+      expect(asAdminOption.error).toBeNull()
+      expect(asAdminOption.data).toEqual([{ label: RENAMED_OPTION_LABEL }])
+
+      const optionRenamed = await admin
+        .from('project_field_options')
+        .select('label')
+        .eq('field_id', selectFieldId)
+        .eq('slug', doomedOptionSlug)
+        .single()
+      expect(optionRenamed.data).toEqual({ label: RENAMED_OPTION_LABEL })
+    }, 30_000)
+
+    /**
+     * THE MEMBER-DELETE HOLE, and it is the one a stranger test cannot cover.
+     *
+     * `authenticated` holds TABLE-WIDE delete on both of these (relacl `rdDxtm`), so
+     * `fields_admin_delete` / `options_admin_delete` are the ONLY control -- and the blast
+     * radius is larger than one row: deleting a field cascades through `tfv_field_fk` to every
+     * ticket_field_values row that used it, and deleting an option cascades through
+     * `tfv_option_fk` to every value pointing at it. Weakening either policy from admin to
+     * membership is invisible to every other test in this file and to
+     * `rls.integration.test.ts`, whose deletes are a STRANGER and are denied either way.
+     *
+     * ORDERING: the two admin positives destroy the throwaway pair created in the fixture and
+     * renamed by the test above, so this case must run after it. Nothing later reads them.
+     */
+    it('changes zero rows deleting a field or an option', async () => {
+      const field = await mClient.from('project_fields').delete().eq('id', textFieldId).select('id')
+      expect(field.error).toBeNull()
+      expect(field.data).toEqual([])
+
+      const option = await mClient
+        .from('project_field_options')
+        .delete()
         .eq('field_id', selectFieldId)
         .eq('slug', optionSlug)
         .select('slug')
-      expect(asAdminOption.data).toEqual([{ slug: optionSlug }])
+      expect(option.error).toBeNull()
+      expect(option.data).toEqual([])
+
+      // Genuinely intact, not merely un-returned -- and the value row that a cascade would
+      // have taken with the field is still there too.
+      const fieldIntact = await admin.from('project_fields').select('name').eq('id', textFieldId)
+      expect(fieldIntact.data).toEqual([{ name: TEXT_FIELD_NAME }])
+
+      const optionIntact = await admin
+        .from('project_field_options')
+        .select('label')
+        .eq('field_id', selectFieldId)
+        .eq('slug', optionSlug)
+      expect(optionIntact.data).toEqual([{ label: OPTION_LABEL }])
+
+      const valueIntact = await admin
+        .from('ticket_field_values')
+        .select('value_text')
+        .eq('ticket_id', ticketId)
+        .eq('field_id', textFieldId)
+      expect(valueIntact.data).toEqual([{ value_text: OWNER_VALUE }])
+
+      // POSITIVE CONTROLS: the admin's identical deletes land, and the rows are gone from the
+      // service-role read as well.
+      const asAdminOption = await aClient
+        .from('project_field_options')
+        .delete()
+        .eq('field_id', selectFieldId)
+        .eq('slug', doomedOptionSlug)
+        .select('slug')
+      expect(asAdminOption.error).toBeNull()
+      expect(asAdminOption.data).toEqual([{ slug: doomedOptionSlug }])
+
+      const asAdminField = await aClient
+        .from('project_fields')
+        .delete()
+        .eq('id', doomedFieldId)
+        .select('id')
+      expect(asAdminField.error).toBeNull()
+      expect(asAdminField.data).toEqual([{ id: doomedFieldId }])
+
+      const gone = await admin.from('project_fields').select('id').eq('id', doomedFieldId)
+      expect(gone.data).toEqual([])
     }, 30_000)
   })
 
@@ -637,6 +836,68 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       expect(error).toBeNull()
       expect(data).toEqual([{ ticket_id: ticketId, value_text: OWNER_VALUE }])
     }, 30_000)
+
+    /**
+     * THE WITH CHECK HALF, which nothing else in this file reaches.
+     *
+     * Every other negative here is refused by USING -- the caller cannot see the row at all.
+     * This one is the opposite: M is a member of `mProjectId` and unambiguously entitled to
+     * write this row, so USING admits them. The refusal can only come from the NEW row being
+     * checked. It is reachable ONLY on this table, because `project_id` is itself
+     * UPDATE-granted here (all seven payload columns are `aw`) and on the other three it is
+     * not granted at all -- so on those the privilege layer would answer first and the test
+     * would measure the grant.
+     *
+     * `otherProjectId` is the destination on purpose: M belongs to neither IT nor its owner.
+     * Moving into `projectId` would be ADMITTED, correctly -- M is a member there.
+     *
+     * WHAT THIS DOES AND DOES NOT KILL, stated because it is easy to overclaim. Postgres uses
+     * the USING expression as the WITH CHECK when none is written, so DELETING the explicit
+     * `with check` from `tfv_member_update` is behaviourally identical and this test would not
+     * notice. What it does pin is the PROPERTY -- a member cannot move a value row out of the
+     * projects they belong to -- which is what breaks if a later story widens USING (a
+     * read-only viewer role is the obvious way in) without re-deriving the write clause.
+     *
+     * Two controls could answer here and they are not interchangeable: the policy (42501,
+     * naming row-level security) or `tfv_ticket_fk`, the composite (ticket_id, project_id) key
+     * (23503). The assertion names the one OBSERVED against the applied migration.
+     */
+    it('is refused a value row moved into a project they do not belong to', async () => {
+      const { data, error } = await mClient
+        .from('ticket_field_values')
+        .update({ project_id: otherProjectId })
+        .eq('ticket_id', mTicketId)
+        .eq('field_id', mFieldId)
+        .select('ticket_id')
+
+      // OBSERVED against the applied migration: RLS answers first. This is the same ordering
+      // the schema records elsewhere -- a WITH CHECK is evaluated before foreign-key
+      // validation -- so the composite fk never gets to speak.
+      expect(data).toBeNull()
+      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(RLS_REFUSAL)
+
+      const intact = await admin
+        .from('ticket_field_values')
+        .select('project_id, value_text')
+        .eq('ticket_id', mTicketId)
+        .eq('field_id', mFieldId)
+        .single()
+      expect(intact.data).toEqual({ project_id: mProjectId, value_text: M_VALUE })
+
+      // POSITIVE CONTROL, and it has to write `project_id` itself: without it, a 42501 raised
+      // by a MISSING UPDATE GRANT on that column would be indistinguishable from the policy
+      // refusal above. Writing the row's own project_id back is admitted, which proves the
+      // column is genuinely writable and the statement genuinely reached the policy.
+      const allowed = await mClient
+        .from('ticket_field_values')
+        .update({ project_id: mProjectId, value_text: 'Rewritten at home' })
+        .eq('ticket_id', mTicketId)
+        .eq('field_id', mFieldId)
+        .select('value_text')
+      expect(allowed.error).toBeNull()
+      expect(allowed.data).toEqual([{ value_text: 'Rewritten at home' }])
+    }, 30_000)
   })
 
   describe('a stranger sees nothing and touches nothing', () => {
@@ -674,6 +935,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .from('project_statuses')
         .select('id')
         .eq('project_id', projectId)
+      expect(asAdmin.error).toBeNull()
       expect(asAdmin.data?.length).toBeGreaterThan(0)
     }, 30_000)
 
@@ -734,6 +996,15 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
       expect(fieldRenamed.error).toBeNull()
       expect(fieldRenamed.data).toEqual([])
 
+      const optionRelabelled = await sClient
+        .from('project_field_options')
+        .update({ label: 'Hijacked' })
+        .eq('field_id', selectFieldId)
+        .eq('slug', optionSlug)
+        .select('slug')
+      expect(optionRelabelled.error).toBeNull()
+      expect(optionRelabelled.data).toEqual([])
+
       const valueEdited = await sClient
         .from('ticket_field_values')
         .update({ value_text: 'Hijacked' })
@@ -750,6 +1021,23 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .select('id')
       expect(statusDeleted.error).toBeNull()
       expect(statusDeleted.data).toEqual([])
+
+      const fieldDeleted = await sClient
+        .from('project_fields')
+        .delete()
+        .eq('id', textFieldId)
+        .select('id')
+      expect(fieldDeleted.error).toBeNull()
+      expect(fieldDeleted.data).toEqual([])
+
+      const optionDeleted = await sClient
+        .from('project_field_options')
+        .delete()
+        .eq('field_id', selectFieldId)
+        .eq('slug', optionSlug)
+        .select('slug')
+      expect(optionDeleted.error).toBeNull()
+      expect(optionDeleted.data).toEqual([])
 
       const valueDeleted = await sClient
         .from('ticket_field_values')
@@ -769,6 +1057,13 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .eq('id', textFieldId)
         .single()
       expect(fieldIntact.data).toEqual({ name: TEXT_FIELD_NAME })
+
+      const optionIntact = await admin
+        .from('project_field_options')
+        .select('label')
+        .eq('field_id', selectFieldId)
+        .eq('slug', optionSlug)
+      expect(optionIntact.data).toEqual([{ label: OPTION_LABEL }])
 
       const valueIntact = await admin
         .from('ticket_field_values')
@@ -834,6 +1129,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .from('project_statuses')
         .select('id')
         .eq('project_id', otherProjectId)
+      expect(asOwner.error).toBeNull()
       expect(asOwner.data?.length).toBeGreaterThan(0)
     }, 30_000)
 
@@ -890,6 +1186,9 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
 
     it('returns zero rows for a member and moves nothing', async () => {
       const before = await slugsByPosition()
+      // Without this the whole block is vacuous: reordering an empty list returns zero rows
+      // for everybody, and both assertions below would hold with no statuses in existence.
+      expect(before.length).toBeGreaterThan(1)
       const { data, error } = await mClient.rpc('reorder_project_statuses', {
         p_project_id: projectId,
         p_slugs: [...before].reverse(),
@@ -904,6 +1203,7 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
 
     it('reorders for an admin', async () => {
       const before = await slugsByPosition()
+      expect(before.length).toBeGreaterThan(1)
       const wanted = [...before].reverse()
       const { data, error } = await aClient.rpc('reorder_project_statuses', {
         p_project_id: projectId,
@@ -966,7 +1266,44 @@ describe.skipIf(!hasServiceRoleKey)('SPRIN-99 config tables resolve to membershi
         .from('project_statuses')
         .select('id')
         .eq('project_id', projectId)
+      expect(asAdmin.error).toBeNull()
       expect(asAdmin.data?.length).toBeGreaterThan(0)
+    }, 30_000)
+
+    /**
+     * THE ONE GRANT THIS MIGRATION DELIBERATELY LEFT IN PLACE.
+     *
+     * `anon` still holds table-level INSERT on `project_statuses` alone (relacl `anon=arDxtm`,
+     * where every other config table reads `anon=rDxtm`). The migration's section 5 keeps it,
+     * on the argument that it is inert twice over -- anon now matches no policy on this table
+     * and is default-denied. That argument was PROSE. This is the executable half: if anyone
+     * ever adds a permissive policy here without a `TO` clause, the grant stops being inert
+     * and this goes red rather than shipping.
+     *
+     * The 42501 is asserted together with the row-level-security MESSAGE precisely because the
+     * grant exists: were it revoked instead, the same code would arrive naming a privilege,
+     * and the message is the only channel that says which control answered.
+     */
+    it('cannot insert a status, even while holding the INSERT grant', async () => {
+      const anon = anonClient()
+
+      const { error } = await anon.from('project_statuses').insert({
+        project_id: projectId,
+        slug: 'anon_planted',
+        name: 'Planted by anon',
+        category: 'todo',
+        position: 94,
+      })
+
+      expect(error?.code).toBe(INSUFFICIENT_PRIVILEGE)
+      expect(error?.message).toMatch(RLS_REFUSAL)
+
+      const after = await admin
+        .from('project_statuses')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('slug', 'anon_planted')
+      expect(after.data).toEqual([])
     }, 30_000)
   })
 })
