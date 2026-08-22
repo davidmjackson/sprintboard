@@ -233,6 +233,17 @@ inside a file cannot observe that the file was not collected — so closing it n
 the collected set, which is a story, not a comment. The **false prose claiming it was closed** has
 been corrected in place. `.prettierignore` is the same class of unpinned lever.
 
+**Five LOWs left unfixed, deliberately, and recorded here rather than dropped.** None is a
+correctness defect; each is a real observation worth not re-deriving. (1) `remove_project_member`
+can return `last_admin` about a user who is a plain member — a false REFUSAL of a legitimate
+removal, which fails in the safe direction. (2) A failure while a session is parked leaves the
+transaction open until the 20s `statement_timeout`, stretching the suite from 3s to 24s and
+surfacing as an unhandled error; test hygiene, not a leak. (3) `tsconfig.app.json` excluding
+`src/test` is not a barrier — `tsc -b` exits 0 when the app entry imports `pg-sessions.ts`, so
+`check-bundle` is the only thing stopping it, which is now true but was luck. (4) A database
+password split out of its URL has no detector at all; the service-role key has three. (5) The
+SQL surface of this story is observable only to the one live suite gated on a third secret.
+
 **State: `verify` green at 90 files / 1762 tests, zero skipped. Advisors unchanged at 4
 security / 8 performance**, `auth_rls_initplan` still zero. A new CI secret, `SUPABASE_DB_URL`,
 is configured — the suite refuses to skip in CI, so a runner without it fails loudly.
