@@ -138,6 +138,38 @@ describe.skipIf(!hasServiceRoleKey || !hasDbUrl)(
       return rows.map((row) => row.user_id)
     }
 
+    /**
+     * SPRIN-107 REVIEW, MEDIUM. `actAs` does two things, and only one of them was defended:
+     * deleting `set_config('request.jwt.claims', ...)` turned the suite red, but deleting
+     * `set local role authenticated` left it GREEN. The connection authenticates as `postgres`,
+     * which holds pg_read_all_data and membership of every application role, so without the role
+     * switch every test here would sail through privilege checks the app is actually subject to —
+     * the SPRIN-102 revoke on direct `project_members` writes, and every EXECUTE grant — and
+     * would keep passing if all of them were wrong.
+     *
+     * This pins both halves at once, and it is deliberately the FIRST test in the file: if the
+     * harness is not faithful, nothing below it means anything.
+     */
+    it('acts as an authenticated user, not as the superuser it connects as', async () => {
+      const asConnected = await observer.query<{ role: string }>('select current_user as role')
+      expect(asConnected[0]?.role).toBe('postgres')
+
+      const impersonated = '00000000-0000-0000-0000-000000000000'
+      await observer.begin()
+      await observer.actAs(impersonated)
+      const inside = await observer.query<{ role: string; uid: string | null }>(
+        'select current_user as role, auth.uid()::text as uid',
+      )
+      await observer.rollback()
+
+      expect(inside[0]?.role).toBe('authenticated')
+      expect(inside[0]?.uid).toBe(impersonated)
+
+      // `set local` means the transaction is the whole lifetime of both settings.
+      const after = await observer.query<{ role: string }>('select current_user as role')
+      expect(after[0]?.role).toBe('postgres')
+    }, 60_000)
+
     it('does not delete a member who becomes the sole admin mid-removal', async () => {
       const { projectId, ownerId, otherId } = await projectWithMember('handover')
 

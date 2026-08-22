@@ -560,10 +560,11 @@ Re-measured **2026-08-20**, after SPRIN-101 added
 SPRIN-99 added `config-membership.integration.test.ts`: **84 vs 72**. Re-measured
 **2026-08-21**, after SPRIN-102 added `member-management.integration.test.ts`:
 **85 vs 72**. Re-measured **2026-08-22**, after SPRIN-107 added
-`member-management-concurrency.integration.test.ts`: **89 vs 75**.
+`member-management-concurrency.integration.test.ts`: **90 vs 76** (89 vs 75 before that story's
+review added `pg-sessions.test.ts`).
 
 **AND THAT LAST RE-MEASUREMENT CAUGHT THE ABSOLUTES DRIFTING, WHICH IS WHY THE GAP IS THE
-TRIPWIRE.** SPRIN-107 adds exactly ONE file, so `main` should have read 88 vs 75 before it —
+TRIPWIRE.** SPRIN-107 adds two files, so `main` should have read 88 vs 75 before it —
 not the 85 vs 72 written above. Both sides were three low, and the error is invisible in the
 subtraction: the gap was correct at 13 throughout. Nobody mis-typed it; three unit-test files
 accreted across stories that had no reason to touch this paragraph, which is exactly the decay
@@ -636,10 +637,13 @@ roles' state from a non-superuser, so an `authenticated` poller waits forever.
   statements and `pg_backend_pid()` stops naming a stable backend. The direct
   `db.<ref>.supabase.co` host would also serve but is **IPv6-only**, and neither WSL2 nor a
   GitHub runner has an IPv6 route — measured, `Network is unreachable`.
-- `vite.config.ts`'s `loadEnv` prefix list is an **allow-list, not documentation**. A
-  variable missing from it never reaches `process.env` at all, and the suite skips locally
-  with a warning that is easy to scroll past. It throws in CI, which is the only reason that
-  is survivable.
+- `vite.config.ts`'s `loadEnv` prefix list governs **`.env.local` only** — and this bullet
+  said something stronger and wrong until the SPRIN-107 review measured it. An **exported**
+  variable reaches the test worker whether or not it is named there, because Vitest merges
+  `test.env` into `process.env` rather than replacing it. So forgetting an entry changes
+  **nothing in CI** (where `verify.yml` exports these) and silently skips the suite
+  **locally**, indefinitely, because CI stays green. `requireOrExplain` does **not** backstop
+  it: that fires on an absent secret, which is a different failure.
 - TLS is **pinned, not disabled**. The pooler's chain is rooted in `Supabase Root 2021 CA`,
   which is not in Node's trust store, so plain strict verification fails with
   `SELF_SIGNED_CERT_IN_CHAIN`. The reflex fix — `rejectUnauthorized: false` — is wrong here:

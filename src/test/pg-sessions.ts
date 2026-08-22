@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
-import { Client, type QueryResultRow } from 'pg'
+import type { ConnectionOptions } from 'node:tls'
+import { Client, type ClientConfig, type QueryResultRow } from 'pg'
 import { requireOrExplain } from './supabase-clients'
 
 /**
@@ -85,6 +86,50 @@ const STATEMENT_TIMEOUT = '20s'
  *  waiting for the wait to become visible in `pg_stat_activity`. */
 const POLL_INTERVAL_MS = 25
 
+/**
+ * sslmode values that weaken or remove server authentication. Anything not on this list is
+ * accepted; `verify-full` and `verify-ca` ask for what the pin already enforces.
+ */
+const WEAK_SSLMODES = new Set(['disable', 'allow', 'prefer', 'require', 'no-verify'])
+
+/**
+ * The pg client options for one session — and the guard that stops the URL overriding the pin.
+ *
+ * SPRIN-107 REVIEW, HIGH. Appending `?sslmode=disable` to `SUPABASE_DB_URL` produced a
+ * CLEARTEXT connection carrying a superuser-class password (`socket.encrypted === false`)
+ * while this file still read `ssl: { rejectUnauthorized: true }`. `?sslmode=no-verify`
+ * likewise connected against a deliberately WRONG CA. node-postgres lets the connection
+ * string's sslmode win, so the explicit option is not the last word and cannot be trusted to
+ * be — which makes the visible pin actively misleading to anyone auditing this file.
+ *
+ * So the URL is rejected rather than quietly corrected. Refusing is the right direction: an
+ * sslmode in this variable is either a mistake or an attempt to weaken transport security on
+ * the repo's most privileged credential, and neither should start a connection. Extracted from
+ * `PgSession.open` purely so `pg-sessions.test.ts` can pin it without a database.
+ */
+export function connectionOptions(
+  url: string,
+  label: string,
+): ClientConfig & { ssl: ConnectionOptions } {
+  // Case-insensitive on the KEY as well as the value: libpq treats parameter names
+  // case-insensitively, so `SSLMODE=DISABLE` is the same instruction as `sslmode=disable`
+  // and a guard that only matched the lowercase spelling would be trivially stepped around.
+  const [, sslmode] =
+    [...new URL(url).searchParams].find(([key]) => key.toLowerCase() === 'sslmode') ?? []
+  if (sslmode !== undefined && WEAK_SSLMODES.has(sslmode.toLowerCase())) {
+    throw new Error(
+      `SUPABASE_DB_URL carries sslmode=${sslmode}, which overrides the pinned-CA verification ` +
+        'in this file and would send a superuser-class password over an unauthenticated ' +
+        'connection. Remove it from the URL.',
+    )
+  }
+  return {
+    connectionString: url,
+    application_name: `sprintboard-test-${label}`,
+    ssl: { ca: SUPABASE_CA, rejectUnauthorized: true },
+  }
+}
+
 export class PgSession {
   // Declared rather than written as constructor parameter properties: `erasableSyntaxOnly`
   // is on, and parameter properties emit runtime code that type stripping cannot erase.
@@ -100,11 +145,7 @@ export class PgSession {
 
   static async open(label: string): Promise<PgSession> {
     if (!DB_URL) throw new Error('No SUPABASE_DB_URL. See .env.example.')
-    const client = new Client({
-      connectionString: DB_URL,
-      application_name: `sprintboard-test-${label}`,
-      ssl: { ca: SUPABASE_CA, rejectUnauthorized: true },
-    })
+    const client = new Client(connectionOptions(DB_URL, label))
     await client.connect()
     await client.query(`set statement_timeout = '${STATEMENT_TIMEOUT}'`)
     const { rows } = await client.query<{ pid: number }>('select pg_backend_pid() as pid')
@@ -169,8 +210,12 @@ export class PgSession {
  * text and state from a non-superuser, so an `authenticated` poller would wait forever on
  * a row it can see but not read.
  */
+export interface LockObserver {
+  query<R extends QueryResultRow>(text: string, params?: unknown[]): Promise<R[]>
+}
+
 export async function waitUntilBlocked(
-  observer: PgSession,
+  observer: LockObserver,
   pid: number,
   timeoutMs = 10_000,
 ): Promise<void> {

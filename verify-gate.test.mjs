@@ -430,8 +430,23 @@ describe('the verify gate is composed of exactly the steps it claims', () => {
  * counting them, because a count moves every time a story adds a test file and a
  * name does not. (This sentence used to say "the seven live suites" and was stale
  * by two the moment SPRIN-105 landed — a number here is the same decay the array
- * itself exists to avoid, so it no longer carries one.) It also requires this file's own presence, which is what closes
- * the self-deletion route.
+ * itself exists to avoid, so it no longer carries one.) It also requires this file's own presence.
+ *
+ * THAT LAST CLAUSE USED TO END "which is what closes the self-deletion route", AND THAT WAS
+ * FALSE. The SPRIN-107 review demonstrated it: adding `'**\/verify-gate.test.mjs'` to
+ * vite.config.ts's `test.exclude` dropped collection 89 -> 88, and `npm run test:unit` reported
+ * 74 files / 1398 tests ALL PASSED, exit 0, with lint and format:check clean. Every assertion in
+ * this file — the T1-T5 boundary pins, the preset probes, the `verify` composition pin, the
+ * LIVE_SUITES registry — vanished in one formatted, lint-clean line, and the GAP tripwire was
+ * blind too (88 vs 74 is still exactly 14). No other file in the repo references this one.
+ *
+ * The reason is structural, not a bug to patch here: an assertion inside a file cannot observe
+ * that the file was not collected. When it can run it trivially passes; when it would matter it
+ * does not run. Closing it needs a check that lives OUTSIDE the collected set — the shape
+ * `scripts/check-bundle.mjs` already uses — which is a story, not a comment. Tracked on
+ * SPRIN-106 (executable guards for prose-only invariants). Until then this file's presence
+ * assertion is worth keeping, because it costs nothing and catches an accidental rename; it is
+ * simply not the control the prose claimed.
  */
 describe('npm test really collects the live integration suites', () => {
   const LIVE_SUITES = [

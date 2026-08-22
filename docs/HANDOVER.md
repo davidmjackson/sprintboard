@@ -192,7 +192,48 @@ watched it fail against the real defect.
 - The pooler's TLS chain is rooted in `Supabase Root 2021 CA`, not a public CA — strict
   verification fails until you pin it.
 
-**State: `verify` green at 89 files / 1719 tests, zero skipped. Advisors unchanged at 4
+**The adversarial review found a HIGH in the fix's OWN new code, and it was worth every token.**
+15 agents, 53 mutations planted, 21 findings, 1.65M subagent tokens (quoted 1.7M — the
+`(lenses x 180k) + (verifiers x 80k)` formula held), ~41 minutes. Six confirmed. What changed as a
+result:
+
+- **`check-bundle`'s new postgres-URI pattern only matched credentials in the URI *userinfo*
+  section, in lowercase.** A reviewer pasted a libpq query-parameter connection string into
+  `src/main.tsx`, ran a real build, and the password shipped into `dist/` with `npm run build`
+  green. Five of the six formats Supabase's own dashboard hands out slipped past it. Now
+  case-insensitive, `+driver`-aware, and backed by a second **proximity** pattern (a password
+  assignment within 300 chars of a postgres marker) — deliberately proximity-based, because a
+  bare `password=` would fire on ordinary code and a guard that cries wolf gets disabled.
+- **`SCANNABLE` was an allow-list, so `dist/config.json`, `dist/notes.txt` and `dist/leak.svg`
+  were never opened.** Inverted to a binary denylist. An allow-list fails OPEN on any format
+  nobody thought of, which is the wrong direction for a credential scanner — the same
+  de-scoping-by-file-extension SPRIN-60 had to undo on the lint glob.
+- **`?sslmode=disable` in `SUPABASE_DB_URL` silently defeated the TLS pin** — a cleartext
+  superuser connection while the source still read `rejectUnauthorized: true`. node-postgres lets
+  the URL win, so the visible pin was actively misleading. The URL is now rejected.
+  **This one was in the CAPPED OVERFLOW, not the confirmed set** — a HIGH that the 10-verifier
+  cap never reached. Returning the overflow rather than dropping it is what saved it.
+- **The harness's two load-bearing guards had no coverage.** Deleting `set local role
+  authenticated` left the suite green (every test would then run as the superuser and prove
+  nothing about grants), and neutering `waitUntilBlocked` degraded the concurrency suite into a
+  sequential one that still passed. Both now pinned, and both mutations verified to go red.
+- **`docs/sprintboard_phase1_schema.sql` still held the PRE-FIX vulnerable function** — and it is
+  a `create or replace`, so re-applying the schema doc would have silently reverted the security
+  fix against a live database. Nothing in the repo couples the doc to the migrations: treat
+  "migration applied" and "schema doc matches" as two separate obligations.
+- **A comment this story added to `vite.config.ts` was factually wrong**, and CLAUDE.md repeated
+  it. Re-measured directly: the `loadEnv` prefix list governs `.env.local` ONLY. An exported
+  variable reaches the worker regardless, so omitting a name changes nothing in CI and silently
+  skips the suite locally — the opposite of the "fails loudly in CI" the comment claimed.
+
+**Deferred deliberately, all recorded on SPRIN-106:** `verify-gate.test.mjs`'s self-deletion route
+is genuinely open (one line in `vite.config.ts`'s `test.exclude` removes all 49 assertions, and
+the GAP tripwire is blind to it because both sides drop by one). That is structural — an assertion
+inside a file cannot observe that the file was not collected — so closing it needs a check outside
+the collected set, which is a story, not a comment. The **false prose claiming it was closed** has
+been corrected in place. `.prettierignore` is the same class of unpinned lever.
+
+**State: `verify` green at 90 files / 1762 tests, zero skipped. Advisors unchanged at 4
 security / 8 performance**, `auth_rls_initplan` still zero. A new CI secret, `SUPABASE_DB_URL`,
 is configured — the suite refuses to skip in CI, so a runner without it fails loudly.
 
