@@ -31,6 +31,17 @@ export default defineConfig(({ mode }) => ({
     // user. It is deliberately NOT VITE_-prefixed, so Vite never inlines it — it
     // exists in the test process (and CI's server-side runner) only, never the
     // browser bundle.
-    env: loadEnv(mode, process.cwd(), ['VITE_', 'RLS_TEST_', 'SUPABASE_SERVICE_ROLE']),
+    // SUPABASE_DB_URL is the SPRIN-107 concurrency suite's direct Postgres connection,
+    // on the same footing and for the same reason. This list is an ALLOW-LIST, not
+    // documentation: a variable missing from it is not merely undocumented, it never
+    // reaches process.env, and the suite that needs it skips locally with a warning that
+    // is easy to scroll past. It fails loudly in CI, which is the only reason that is
+    // survivable — see `requireOrExplain` in src/test/supabase-clients.ts.
+    env: loadEnv(mode, process.cwd(), [
+      'VITE_',
+      'RLS_TEST_',
+      'SUPABASE_SERVICE_ROLE',
+      'SUPABASE_DB_URL',
+    ]),
   },
 }))

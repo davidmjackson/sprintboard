@@ -69,6 +69,18 @@ const TEXT_PATTERNS = [
     pattern: /VITE_RLS_TEST_[A-Z_]+/,
     what: 'an RLS test-user credential (must never be VITE_-prefixed — Vite inlines it into the bundle)',
   },
+  {
+    pattern: /SUPABASE_DB_URL/,
+    what: 'a database connection environment variable (SUPABASE_DB_URL)',
+  },
+  {
+    // Only a URI carrying CREDENTIALS in its authority section. `postgresql://localhost/db`
+    // is not a leak, and a pattern that fired on it would be noise — which is how a guard
+    // ends up disabled rather than fixed. The userinfo half excludes `/` and `@` so the
+    // match cannot run across a path segment into a later `@` and manufacture a hit.
+    pattern: /postgres(?:ql)?:\/\/[^\s"'`/@]+:[^\s"'`/@]+@/,
+    what: 'a postgres connection string with credentials in it',
+  },
 ]
 
 /**

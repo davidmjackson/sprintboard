@@ -123,6 +123,37 @@ describe('findPrivilegedCredentials', () => {
       expect.objectContaining({ what: expect.stringContaining('VITE_') }),
     )
   })
+
+  // SPRIN-107 added a credential STRONGER than the service-role key: a direct Postgres
+  // connection, which bypasses PostgREST as well as RLS. The two entries below cover its
+  // two shapes, and they are genuinely two — the name catches a build that inlined the
+  // variable, the URI catches a connection string pasted in as a literal, and neither
+  // finds the other.
+  it('catches the SUPABASE_DB_URL environment variable name', () => {
+    const violations = findPrivilegedCredentials('const url = process.env.SUPABASE_DB_URL')
+    expect(violations).toContainEqual(
+      expect.objectContaining({ what: expect.stringContaining('database connection') }),
+    )
+  })
+
+  it('catches a postgres connection URI carrying a password', () => {
+    const violations = findPrivilegedCredentials(
+      'const c = "postgresql://postgres.abcdefgh:hunter2@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"',
+    )
+    expect(violations).toContainEqual(
+      expect.objectContaining({ what: expect.stringContaining('connection string') }),
+    )
+  })
+
+  // The counterpart to the two "public by design" tests above. A pattern that fired on any
+  // mention of postgres would be un-shippable: the word appears in ordinary code and in
+  // this repo's own docs, and a guard that cries wolf gets deleted or disabled, which is
+  // how the check-bundle de-scoping in SPRIN-60 happened. Only a URI with CREDENTIALS in
+  // its authority section is a leak.
+  it('does not flag a postgres URI with no password in it', () => {
+    const violations = findPrivilegedCredentials('const c = "postgresql://localhost:5432/postgres"')
+    expect(violations).toEqual([])
+  })
 })
 
 describe('isEntryPoint (the space/percent-encoding and symlink guard bugs)', () => {

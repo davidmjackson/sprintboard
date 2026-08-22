@@ -472,3 +472,22 @@ service-role client — cannot read it. **Dropping all three would leave the ent
 green.** Verify them from the catalog by hand whenever this table's grants are touched,
 and treat any future re-grant of a write verb on `project_members` as requiring that
 check first.
+
+**A FOURTH, added by SPRIN-107, and this one is unobservable because it is UNREACHABLE —
+which is a different claim again, and a stronger one.** `remove_project_member` now retries
+its guard when the DELETE matches zero rows, bounded at three passes, raising `40001` if it
+somehow exhausts them. Nothing can reach that `raise`, and the argument is short enough to
+check: pass one can find the row promoted underneath, but pass two then reads `'admin'` and
+takes `for update` on the project's admin rows — after which the target's role cannot move
+again while this transaction holds it. So the loop terminates on pass two in every
+interleaving anyone has been able to construct. The bound exists because "anyone has been
+able to construct" is not a proof, and an unbounded `loop` in a `SECURITY DEFINER` function
+is a worse failure than a spurious error.
+
+Note what makes this different from the three above: those are guards a test *could* observe
+if the plumbing allowed it. This one is a guard on a state the code's own locking makes
+impossible, so a test that exercised it would be evidence the locking had broken. **The rest
+of that function is emphatically NOT in this category** — `src/test/member-management-
+concurrency.integration.test.ts` reproduces the defect deterministically and went red against
+the pre-migration function. Do not let this paragraph be read as "the SPRIN-107 fix is
+untested". Only the exhaustion arm is.

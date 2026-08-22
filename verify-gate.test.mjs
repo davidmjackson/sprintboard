@@ -480,6 +480,14 @@ describe('npm test really collects the live integration suites', () => {
     // guard. Registered in the SAME commit that created the suite, as SPRIN-101 and
     // SPRIN-99 both were, and as SPRIN-98 and SPRIN-105 both were not.
     'src/test/member-management.integration.test.ts',
+    // SPRIN-107. The last-admin guard under CONCURRENT callers. The first suite here that
+    // does not speak to PostgREST at all: it opens raw Postgres sessions, because the
+    // defect it pins lives between two statements inside one transaction and no number of
+    // concurrent HTTP requests can reach it. It therefore has a THIRD config gate of its
+    // own -- SUPABASE_DB_URL, on top of the anon config and the service-role key -- so a
+    // run missing that secret skips this suite alone while the other twelve still run.
+    // Registered in the same commit that created the suite.
+    'src/test/member-management-concurrency.integration.test.ts',
   ]
 
   const collected = (() => {

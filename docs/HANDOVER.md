@@ -47,10 +47,12 @@ Same parallel-creation race as SPRIN-71 and SPRIN-74. **Build in this order, not
 | 2 | SPRIN-105 | Co-members can see each other (`profiles` widening + `profiles.email`) | **Done** 2026-08-16, two migrations applied |
 | 3 | SPRIN-100 | Board tables governed by membership (`sprints`, `tickets`, `counters`) | **Done** 2026-08-17, two migrations applied |
 | 4 | SPRIN-101 | Projects table governed by membership | **Done** 2026-08-20, two migrations applied |
-| 5 | SPRIN-99 | Config tables: admin-only writes, member reads | To Do |
-| 6 | SPRIN-102 | Add and remove members by email | To Do |
+| 5 | SPRIN-99 | Config tables: admin-only writes, member reads | **Done** 2026-08-21, migration applied |
+| 6 | SPRIN-102 | Add and remove members by email | **Done** 2026-08-21, migration applied |
+| 6b | **SPRIN-107** | Bug: `remove_project_member` could strand a project with ZERO admins | **Done** 2026-08-22, migration applied |
 | 7 | SPRIN-104 | Re-audit app-layer guards for zero-row-write blindness | To Do |
 | 8 | SPRIN-103 | Extend the isolation suite: role-vs-role and removed-member | To Do |
+| 9 | SPRIN-106 | Executable guards for three prose-only invariants | To Do |
 
 Each Jira description carries its own traps. **SPRIN-102's has four concrete ones recorded as a
 comment** — read them before designing it.
@@ -70,10 +72,18 @@ reported success and `pg_default_acl` stayed empty, root cause unestablished. **
 the same migration.** The warning and its verification query are at the head of
 `docs/migrations/sprin-98-project-members.sql`.
 
-⚠ **Reachable since SPRIN-98 landed:** a sole admin can delete their own membership row, leaving a
-project no one can administer — `members_admin_insert` then refuses everyone and `members_read`
-returns nothing. SPRIN-102 owns the guard and must **repair** existing cases, not merely prevent new
-ones. Do **not** implement it as a row trigger counting siblings; that breaks the delete cascade.
+⚠ **CLOSED by SPRIN-102, then RE-OPENED and closed again by SPRIN-107 — both halves kept
+visible.** The original: reachable since SPRIN-98 landed, a sole admin could delete their own
+membership row, leaving a project no one can administer — `members_admin_insert` then refuses
+everyone and `members_read` returns nothing. SPRIN-102 built the last-admin guard (and did
+**not** implement it as a row trigger counting siblings, which breaks the delete cascade).
+
+**But the guard as shipped had a hole, and it is the interesting part.** It decided *whether to
+take its row lock* from an **unlocked** read, and its DELETE carried no `role` predicate, so a
+member promoted to sole admin in that window was deleted straight past it — the same zero-admin
+state, now reached *through* the guard. SPRIN-107 fixed it (2026-08-22, migration applied) and
+proved it with the first concurrency suite in the repo. **The transferable rule: deciding
+whether to lock, from a read that is not itself locked, is not a lock.**
 
 **THE SPRIN-74 STORY KEYS WERE NOT IN BUILD ORDER.** They were created in parallel and the board
 raced — the same trap epic SPRIN-71 hit. Story 2, the heavy one, drew the *highest* key:
@@ -136,6 +146,58 @@ B" and `project_field_options` "migration C"; SPRIN-91's grant file took the nam
 **D**. Go by the filenames in `docs/migrations/`, not by the letters in the epic design.
 
 ## Session log
+
+### Session 77 — SPRIN-107: a real zero-admin hole, reproduced and fixed
+
+**The finding was real, and the process note on its Jira issue is the more valuable half.**
+SPRIN-102's adversarial review found that `remove_project_member` decides *whether to take its
+row lock* from an **unlocked** read, and that its DELETE carries no `role` predicate. The lens
+rated it **LOW because it could not reproduce the race**, the review capped verification by
+severity, and a correct finding about an unrecoverable state therefore fell below the cap and
+was never adversarially checked. **Re-derive severity yourself; do not inherit the reporter's.**
+Read a capped overflow with the same suspicion as a KILLED list.
+
+**It was reproducible all along — the lens was trying to WIN a race.** You do not have to win a
+race you can stop. Session A promotes the target and *does not commit*; its row lock parks
+session B's DELETE at exactly the failing instruction, indefinitely, on every run. Against the
+deployed function the new suite reported the project's admin list as `[]` where it must be
+`[A]`: **zero admins, reached entirely through the three RPCs**, which is the state SPRIN-102's
+migration claims in prose is unreachable. Fixed by re-asserting the role in the DELETE and
+re-running the guard if it moved — no new lock, so no lock-ordering question. The rejected
+alternative (locking the target row on the initial read) inverts acquisition order against
+`set_project_member_role` and trades a race for a deadlock.
+
+**The generalisable rule: deciding whether to lock, from a read that is not itself locked, is
+not a lock.** Worth grepping the schema for that shape whenever a guard is added.
+
+**What this session built beyond the fix** — `src/test/pg-sessions.ts`, the first thing here
+that talks to Postgres without PostgREST. It exists for one class of defect: a window between
+two statements **inside** one transaction, which PostgREST cannot express because it lends the
+caller no transaction handle. CLAUDE.md's new concurrency-harness section carries the three
+wiring traps (session-mode pooler only; `loadEnv`'s prefix list is an allow-list, not
+documentation; TLS **pinned** to Supabase's published CA rather than disabled). It is narrow on
+purpose — not a new default.
+
+**Order of events was real TDD, and only because migrations are hand-applied.** The buggy
+function was still deployed, so the harness went red against production *first*, then green
+after applying. That window closes permanently on apply; a follow-up story could never have
+watched it fail against the real defect.
+
+**Three things measured that the docs had wrong:**
+- **CLAUDE.md's file counts had drifted three low on both sides** (85/72 written, 88/75 actual
+  on `main`). The **gap** — the actual tripwire — was correct at 13 throughout, which is
+  precisely why the gap is the invariant and the absolutes are timestamped observations.
+- `db.<ref>.supabase.co` is **IPv6-only** and WSL2 has no IPv6 route, so the direct connection
+  is unusable here and on GitHub runners. The session-mode pooler is not a preference.
+- The pooler's TLS chain is rooted in `Supabase Root 2021 CA`, not a public CA — strict
+  verification fails until you pin it.
+
+**State: `verify` green at 89 files / 1719 tests, zero skipped. Advisors unchanged at 4
+security / 8 performance**, `auth_rls_initplan` still zero. A new CI secret, `SUPABASE_DB_URL`,
+is configured — the suite refuses to skip in CI, so a runner without it fails loudly.
+
+**Next: SPRIN-104 → SPRIN-103 → SPRIN-106, then close epic SPRIN-75 by hand.** The four other
+UNVERIFIED findings from SPRIN-102's review are on the SPRIN-104 comment.
 
 ### Session 73 — SPRIN-101 reviewed and **SHIPPED** (`dbb7dd3`, PR #116)
 
