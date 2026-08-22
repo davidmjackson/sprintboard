@@ -226,6 +226,18 @@ result:
   variable reaches the worker regardless, so omitting a name changes nothing in CI and silently
   skips the suite locally — the opposite of the "fails loudly in CI" the comment claimed.
 
+**OPEN, AND THE ONE THING THIS STORY DID NOT DO PROPERLY: the fix wave was never independently
+reviewed.** Five of the six confirmed findings were fixed BY HAND in `b2b0884` — new
+`check-bundle` credential patterns, the inverted file filter, and the `connectionOptions` TLS
+guard — and then merged. That wave changed security controls, and the standing rule (agent memory,
+`autopilot-first-run`) is to re-review a fix wave with an AGENT rather than by hand. It was not.
+What exists instead: the original attack reproduced end-to-end against the fixed scanner (the
+build now rejects it), and both harness pins mutation-tested to confirm they go red — but all of
+that was demonstrated by whoever wrote the fixes. A focused pass over `check-bundle`'s patterns,
+`isScannable` and `connectionOptions` is roughly 3 lenses + 6 verifiers, ~1.0M tokens. Nothing
+needs reverting if it finds something: the pre-fix state was strictly worse in every direction, so
+anything found is a follow-up PR on `main`. **David's call, not yet made.**
+
 **Deferred deliberately, all recorded on SPRIN-106:** `verify-gate.test.mjs`'s self-deletion route
 is genuinely open (one line in `vite.config.ts`'s `test.exclude` removes all 49 assertions, and
 the GAP tripwire is blind to it because both sides drop by one). That is structural — an assertion
