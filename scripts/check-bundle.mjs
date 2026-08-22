@@ -17,11 +17,29 @@ import { fileURLToPath } from 'node:url'
 const DIST = 'dist'
 
 /**
- * The only files this check can meaningfully read: text the bundler emits, into
- * which Vite substitutes `VITE_*` values. Everything else under `dist/` —
- * fonts, images, `public/` passthroughs — is opaque binary or copied verbatim.
+ * Genuinely binary assets, which are the ONLY things this check skips.
+ *
+ * SPRIN-107 REVIEW, CONFIRMED. This used to be the opposite — an allow-list of
+ * `js|mjs|cjs|css|html|map`. A reviewer put a live credential URI into
+ * `dist/config.json`, `dist/notes.txt` and `dist/leak.svg`, all three served to
+ * every visitor, and check-bundle printed "3 files scanned, no privileged
+ * credentials found" and exited 0. It had never opened them. The allow-list's own
+ * comment claimed `public/` passthroughs were "opaque binary or copied verbatim",
+ * conflating the two: copied verbatim is precisely how a hand-written config file
+ * reaches `dist/`, and verbatim text is readable.
+ *
+ * Inverted deliberately. An allow-list fails OPEN on any format nobody thought of,
+ * and "fail open on the unknown" is the wrong direction for a credential scanner —
+ * the same de-scoping-by-file-extension that SPRIN-60 had to undo on the lint glob.
+ * A new text format is now scanned by default; only a known binary type is skipped.
  */
-const SCANNABLE = /\.(js|mjs|cjs|css|html|map)$/
+const BINARY_ASSET =
+  /\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|webp|avif|ico|svgz|mp4|webm|ogg|mp3|wav|pdf|zip|gz|br|wasm)$/i
+
+/** Whether this check reads the file at all. Exported so the inversion above is pinned. */
+export function isScannable(path) {
+  return !BINARY_ASSET.test(path)
+}
 
 /**
  * IMPORTANT 9: a `dist/` that exists but is empty — or nearly so — reports
@@ -68,6 +86,53 @@ const TEXT_PATTERNS = [
   {
     pattern: /VITE_RLS_TEST_[A-Z_]+/,
     what: 'an RLS test-user credential (must never be VITE_-prefixed — Vite inlines it into the bundle)',
+  },
+  {
+    pattern: /SUPABASE_DB_URL/,
+    what: 'a database connection environment variable (SUPABASE_DB_URL)',
+  },
+  {
+    // A URI carrying CREDENTIALS in its authority section. `postgresql://localhost/db` is not
+    // a leak, and a pattern that fired on it would be noise — which is how a guard ends up
+    // disabled rather than fixed. The userinfo half excludes `/` and `@` so the match cannot
+    // run across a path segment into a later `@` and manufacture a hit.
+    //
+    // SPRIN-107 REVIEW: `/i` and the `+driver` group are both here because they were MISSES.
+    // `POSTGRESQL://u:p@h` and `postgresql+psycopg2://u:p@h` are parsed to byte-identical
+    // credentials by this repo's own `pg-connection-string`, and both sailed past the first cut.
+    pattern: /postgres(?:ql)?(?:\+[a-z0-9_]+)?:\/\/[^\s"'`/@]+:[^\s"'`/@]+@/i,
+    what: 'a postgres connection string with credentials in it',
+  },
+  {
+    // THE OTHER HALF, and the one the first cut missed entirely: credentials that are NOT in
+    // the userinfo section. Supabase's dashboard hands out six connection-string formats and
+    // only one puts the password before an `@`. The rest — libpq query parameters, JDBC,
+    // Go keyword-value, .NET `Password=`, psycopg2 kwargs — all express it as an assignment.
+    // A reviewer shipped a real password to `dist/` in query-parameter form with `npm run
+    // build` green.
+    //
+    // WHY IT IS PROXIMITY-BASED RATHER THAN A BARE `password=`. A bare one would fire on
+    // ordinary code — a form handler, a zod schema, a minified property assignment — and a
+    // guard that cries wolf gets disabled rather than fixed. So it fires only when a password
+    // assignment sits within 300 characters of a postgres-specific marker, in either order.
+    // Both directions are needed: the marker precedes the password in a URI, and follows it in
+    // keyword-value form. `check-bundle.test.mjs` pins seven credential shapes and five benign
+    // ones, because this pattern's false-positive rate is what determines whether it survives.
+    pattern: new RegExp(
+      [
+        String.raw`(?:postgres(?:ql)?(?:\+[a-z0-9_]+)?:\/\/|pooler\.supabase\.com|\bsslmode\s*=|\bdbname\s*=|\bServer\s*=)`,
+        String.raw`[\s\S]{0,300}?`,
+        String.raw`\b(?:password|pwd)\s*=\s*[^\s"'\`;&]+`,
+      ].join('') +
+        '|' +
+        [
+          String.raw`\b(?:password|pwd)\s*=\s*[^\s"'\`;&]+`,
+          String.raw`[\s\S]{0,300}?`,
+          String.raw`(?:postgres(?:ql)?(?:\+[a-z0-9_]+)?:\/\/|pooler\.supabase\.com|\bsslmode\s*=|\bdbname\s*=|\bServer\s*=)`,
+        ].join(''),
+      'i',
+    ),
+    what: 'a postgres connection string with credentials in it (password assignment)',
   },
 ]
 
@@ -184,7 +249,7 @@ function rejectForViolations(violations) {
 }
 
 function main() {
-  const scannable = listBundleFiles().filter((file) => SCANNABLE.test(file))
+  const scannable = listBundleFiles().filter(isScannable)
   assertScannedEnough(scannable)
 
   const violations = collectViolations(scannable)

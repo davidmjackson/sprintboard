@@ -31,6 +31,26 @@ export default defineConfig(({ mode }) => ({
     // user. It is deliberately NOT VITE_-prefixed, so Vite never inlines it — it
     // exists in the test process (and CI's server-side runner) only, never the
     // browser bundle.
-    env: loadEnv(mode, process.cwd(), ['VITE_', 'RLS_TEST_', 'SUPABASE_SERVICE_ROLE']),
+    // SUPABASE_DB_URL is the SPRIN-107 concurrency suite's direct Postgres connection,
+    // on the same footing and for the same reason.
+    //
+    // WHAT THIS LIST ACTUALLY GOVERNS, corrected after the SPRIN-107 review measured it. It
+    // decides what `loadEnv` lifts out of `.env.local` — and NOTHING ELSE. A variable that is
+    // genuinely EXPORTED reaches the test worker whether or not it is named here, because
+    // Vitest merges `test.env` into `process.env` rather than replacing it. Measured both ways
+    // with the entry deleted: exported -> visible; `.env.local` only -> not visible.
+    //
+    // So the consequence of forgetting an entry is asymmetric, and the first draft of this
+    // comment had it backwards. In CI, where verify.yml supplies these as step-level `env:`,
+    // omitting a name changes NOTHING and the suite still runs. LOCALLY it silently skips, with
+    // a console.warn that is easy to scroll past, and it skips indefinitely because CI stays
+    // green. `requireOrExplain` does not backstop this: it fires on an ABSENT SECRET, which is
+    // a different failure from an absent allow-list entry.
+    env: loadEnv(mode, process.cwd(), [
+      'VITE_',
+      'RLS_TEST_',
+      'SUPABASE_SERVICE_ROLE',
+      'SUPABASE_DB_URL',
+    ]),
   },
 }))

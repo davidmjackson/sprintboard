@@ -10,3 +10,6 @@ package-lock.json
 
 # Subagent-driven-development scratch (gitignored)
 .superpowers/
+
+# A PEM certificate, not source. Prettier has no parser for it and would fail format:check.
+src/test/supabase-root-2021-ca.crt

@@ -167,6 +167,22 @@ write path. So `members_read` (SELECT, membership) is the only one of its four p
 anything can still reach: `members_admin_insert`, `members_admin_update` and
 `members_admin_delete` all sit behind a privilege check that refuses first, and are kept purely
 so that re-granting a verb later cannot silently reopen a row-level hole at the same moment.
+**SPRIN-107 fixed a real hole in that write path, and the shape of the mistake generalises.**
+`remove_project_member` decided *whether to take its row lock* from an **unlocked** read, and
+its DELETE carried no `role` predicate — so removing a plain member took no lock at all, and a
+member promoted to sole admin in that window was deleted straight past the last-admin guard,
+leaving the project with **zero admins**: unadministerable and, since SPRIN-101 routed
+`projects_admin_delete` through `app_auth.is_project_admin` too, undeletable by any
+authenticated user. SPRIN-102's migration asserted in prose that no path through the three
+functions could empty a project; that was false for exactly this one. The fix re-asserts the
+role in the DELETE and re-runs the guard if it moved, which takes **no new lock** and so raises
+no lock-ordering question — the rejected alternative, locking the target row on the initial
+read, inverts acquisition order against `set_project_member_role` and trades a race for a
+deadlock. Its authorisation check sits **outside** the retry loop on purpose: in the very
+interleaving that motivates it, the caller's own admin row is removed while they are parked,
+so re-checking would turn a correct `last_admin` into a spurious 42501. **The rule to carry:
+deciding whether to lock, from a read that is not itself locked, is not a lock.**
+
 **Reading `pg_policies` for this table will therefore tell you something true and useless** —
 the policies describe a control that is no longer the one operating. Check `relacl` too. Two
 consequences worth carrying: a refused write here earns `permission denied for table
@@ -496,6 +512,13 @@ Defined in `docs/sprintboard_phase1_schema.sql`. Preserve these mechanics exactl
   `adminClient()` in `src/test/supabase-clients.ts` is the only consumer and app code
   must never import it. `check-bundle.mjs` fails the build if any privileged key ever
   reaches `dist/`.
+- **There is now a SECOND test-side credential, and it is the stronger one.**
+  `SUPABASE_DB_URL` (SPRIN-107) is a direct Postgres connection that bypasses RLS *and*
+  PostgREST. Same containment and the same one reason it holds — no `VITE_` prefix — with
+  `src/test/pg-sessions.ts` its only consumer. `check-bundle.mjs` scans for its variable
+  name *and* for any postgres URI carrying credentials, and both patterns have tests
+  including a negative one, so it cannot fire on `postgresql://localhost/db`. See the
+  concurrency-harness section for why it exists and why it is not a precedent to widen.
 - Every table has RLS. Do not add a table without a policy.
 - Validate at both edges: zod on the client, constraints and checks in the database.
 - Guard hooks (SECRET FILE, DANGEROUS COMMAND, REMOTE WRITE, MCP WRITE) are
@@ -521,9 +544,10 @@ run that collects only the unit-test file count means exactly that, and must be 
 as a failure.
 
 **The tripwire is the GAP, not the absolute counts.** `npm test` collects exactly
-**thirteen more files** than `test:unit` — the thirteen `*.integration.test.ts` suites: RLS,
+**fourteen more files** than `test:unit` — the fourteen `*.integration.test.ts` suites: RLS,
 keepalive, signup, login, project, project-members, profiles, board-membership,
-projects-membership, config, member-management, and the cross-tenant write paths. That difference is what stays put. The
+projects-membership, config, member-management, member-management-concurrency, and the
+cross-tenant write paths. That difference is what stays put. The
 absolute numbers do not:
 every story that adds
 a unit-test file moves both, and they have been wrong in this file twice in a single session
@@ -535,7 +559,17 @@ Re-measured **2026-08-20**, after SPRIN-101 added
 `projects-membership.integration.test.ts`: **83 vs 72**. Re-measured **2026-08-21**, after
 SPRIN-99 added `config-membership.integration.test.ts`: **84 vs 72**. Re-measured
 **2026-08-21**, after SPRIN-102 added `member-management.integration.test.ts`:
-**85 vs 72**.
+**85 vs 72**. Re-measured **2026-08-22**, after SPRIN-107 added
+`member-management-concurrency.integration.test.ts`: **90 vs 76** (89 vs 75 before that story's
+review added `pg-sessions.test.ts`).
+
+**AND THAT LAST RE-MEASUREMENT CAUGHT THE ABSOLUTES DRIFTING, WHICH IS WHY THE GAP IS THE
+TRIPWIRE.** SPRIN-107 adds two files, so `main` should have read 88 vs 75 before it —
+not the 85 vs 72 written above. Both sides were three low, and the error is invisible in the
+subtraction: the gap was correct at 13 throughout. Nobody mis-typed it; three unit-test files
+accreted across stories that had no reason to touch this paragraph, which is exactly the decay
+the sentence below predicts. **Do not "fix" the historical figures** — they are timestamped
+observations and the older ones may have been right when written.
 Treat every one of these
 as a timestamped observation, not a constant, and re-derive it with
 `npx vitest list --filesOnly | wc -l` (all files) and the same command with
@@ -548,11 +582,13 @@ seven to eight, SPRIN-105 took it from eight to nine with
 took it to eleven with `projects-membership.integration.test.ts` for the
 `projects` table itself, SPRIN-99 took it to twelve with
 `config-membership.integration.test.ts` for the four config tables — the last tables in
-`public` still owner-scoped before that story — and SPRIN-102 has just taken it to
-**thirteen** with `member-management.integration.test.ts`. That last one is the first live
-suite here whose subject is **not a policy**: `project_members`' write policies still exist
+`public` still owner-scoped before that story — SPRIN-102 took it to
+**thirteen** with `member-management.integration.test.ts`, the first live
+suite here whose subject is **not a policy** (`project_members`' write policies still exist
 but sit unreachable behind the revoke, so what it pins is the three RPCs' contract and the
-last-admin guard. That is not a
+last-admin guard) — and SPRIN-107 has just taken it to **fourteen** with
+`member-management-concurrency.integration.test.ts`, which is the first that does not speak
+to PostgREST at all. See the concurrency-harness section below. That is not a
 contradiction of the rule above: the invariant is that the gap equals the number of live
 suites, so a story adding one owes this line an update in the same commit — this is that
 update. A gap that has silently *shrunk* is the failure this tripwire exists for.
@@ -561,12 +597,67 @@ update. A gap that has silently *shrunk* is the failure this tripwire exists for
 the executable half, and SPRIN-105 updated this paragraph while leaving that array at eight —
 so its own suite was collectable-but-unregistered for a whole story, which is precisely the
 state the array exists to make impossible. SPRIN-100 registered both, SPRIN-101 registered
-both in the same commit that created the suite, and SPRIN-99 does the same for
-`config-membership.integration.test.ts`. Update the array in the same commit as this
+both in the same commit that created the suite, and SPRIN-99, SPRIN-102 and SPRIN-107 all do
+the same. Update the array in the same commit as this
 line, every time.
 
 If a CI run's file count equals the `test:unit` count — i.e. the gap is **zero** — the
 live suites silently skipped and the run is a failure however green it looks.
+
+## The concurrency harness: two raw Postgres sessions (SPRIN-107)
+
+**`src/test/pg-sessions.ts` is the only thing in this repo that talks to Postgres without
+going through PostgREST, and that is deliberate, narrow, and not a precedent to widen.**
+Everything else drives the shipped path on purpose. This exists for one class of defect the
+shipped path cannot express: **a window between two statements INSIDE one transaction.**
+PostgREST wraps every request in its own transaction and lends the caller no handle on it,
+so no number of concurrent HTTP requests can park a caller mid-function. Reach for it only
+when the property under test is genuinely intra-transaction; for anything else the
+PostgREST clients in `supabase-clients.ts` are still correct.
+
+**Nothing in it races, and that is the whole design.** The interleaving is pinned open by an
+**uncommitted** write: session A updates a row and holds its transaction, so session B blocks
+on that row lock indefinitely, parked at the exact instruction under test. `waitUntilBlocked`
+polls `pg_stat_activity` so "B has reached the lock" is an *observed fact*, not a sleep — and
+it **throws** if the interleaving never establishes, so a run that quietly degraded into a
+sequential one reports as an error and never as a pass. Do not replace it with a sleep.
+
+**`actAs(userId)` is what makes a raw session faithful**, and both halves matter. It sets
+`request.jwt.claims` — which is the entirety of what `auth.uid()` reads, so every policy and
+every `app_auth` predicate behaves exactly as it would for a signed-in caller — *and*
+`set local role authenticated`, because the membership RPCs' EXECUTE grants and SPRIN-102's
+revoke on direct `project_members` writes are role-scoped. Left as `postgres` a test sails
+through privilege checks the app cannot and proves nothing. Both are `local`, so call it
+after `begin()`. The observer session must **not** call it: `pg_stat_activity` hides other
+roles' state from a non-superuser, so an `authenticated` poller waits forever.
+
+**It needs a third secret, `SUPABASE_DB_URL`, and there are three traps in wiring it.**
+- It must be the **session-mode** pooler (port 5432). Transaction mode (6543) returns the
+  server connection to the pool at every COMMIT, so a transaction cannot be parked across
+  statements and `pg_backend_pid()` stops naming a stable backend. The direct
+  `db.<ref>.supabase.co` host would also serve but is **IPv6-only**, and neither WSL2 nor a
+  GitHub runner has an IPv6 route — measured, `Network is unreachable`.
+- `vite.config.ts`'s `loadEnv` prefix list governs **`.env.local` only** — and this bullet
+  said something stronger and wrong until the SPRIN-107 review measured it. An **exported**
+  variable reaches the test worker whether or not it is named there, because Vitest merges
+  `test.env` into `process.env` rather than replacing it. So forgetting an entry changes
+  **nothing in CI** (where `verify.yml` exports these) and silently skips the suite
+  **locally**, indefinitely, because CI stays green. `requireOrExplain` does **not** backstop
+  it: that fires on an absent secret, which is a different failure.
+- TLS is **pinned, not disabled**. The pooler's chain is rooted in `Supabase Root 2021 CA`,
+  which is not in Node's trust store, so plain strict verification fails with
+  `SELF_SIGNED_CERT_IN_CHAIN`. The reflex fix — `rejectUnauthorized: false` — is wrong here:
+  this connection carries a superuser-class password. `src/test/supabase-root-2021-ca.crt`
+  is Supabase's published (public) certificate, and pinning it accepts exactly one issuer,
+  which is *stronger* than the default trust store. It expires **2031-04-26** and will then
+  fail closed.
+
+**Treat `SUPABASE_DB_URL` as the most privileged credential in the repo.** It bypasses RLS
+*and* PostgREST, so it is strictly stronger than the service-role key, which at least still
+passes through schema exposure. Containment rests on the same single fact — no `VITE_`
+prefix, so Vite never inlines it — and `check-bundle.mjs` now fails the build on both its
+variable name and on any postgres URI carrying credentials. Application code must never
+import `pg-sessions.ts`.
 
 ## The live-suite auth rate-limit flake
 

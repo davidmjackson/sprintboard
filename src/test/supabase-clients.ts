@@ -44,7 +44,7 @@ export function supabaseConfig(): { url: string; anonKey: string } {
  * refuse to run at all, because a silently-skipped check reports safety — or
  * liveness — it has not established.
  */
-function requireOrExplain(ok: boolean, suite: string, message: string): void {
+export function requireOrExplain(ok: boolean, suite: string, message: string): void {
   if (ok) return
   if (process.env.CI) throw new Error(`${message}\nRefusing to skip in CI.`)
   console.warn(`\n  SKIPPING ${suite}.\n  ${message}\n`)

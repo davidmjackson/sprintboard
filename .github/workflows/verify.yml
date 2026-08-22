@@ -80,3 +80,8 @@ jobs:
           # Test-only admin key for the S2.1 signup suite. Server-side only, never
           # VITE_-prefixed, so it is never inlined into the browser bundle.
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Test-only direct Postgres connection for the SPRIN-107 concurrency suite, which
+          # needs two real sessions and therefore cannot go through PostgREST. Session-mode
+          # pooler (5432). Superuser-class and never VITE_-prefixed; check-bundle.mjs fails
+          # the build if it, or a connection string shaped like it, reaches dist/.
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}

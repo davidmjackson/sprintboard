@@ -12,7 +12,12 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { MIN_SCANNED_FILES, findPrivilegedCredentials, isEntryPoint } from './check-bundle.mjs'
+import {
+  MIN_SCANNED_FILES,
+  findPrivilegedCredentials,
+  isEntryPoint,
+  isScannable,
+} from './check-bundle.mjs'
 
 /** Realistic Supabase-shaped JWT header, base64url-encoded, shared by every token below. */
 const HEADER = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
@@ -122,6 +127,116 @@ describe('findPrivilegedCredentials', () => {
     expect(violations).toContainEqual(
       expect.objectContaining({ what: expect.stringContaining('VITE_') }),
     )
+  })
+
+  // SPRIN-107 added a credential STRONGER than the service-role key: a direct Postgres
+  // connection, which bypasses PostgREST as well as RLS. The two entries below cover its
+  // two shapes, and they are genuinely two — the name catches a build that inlined the
+  // variable, the URI catches a connection string pasted in as a literal, and neither
+  // finds the other.
+  it('catches the SUPABASE_DB_URL environment variable name', () => {
+    const violations = findPrivilegedCredentials('const url = process.env.SUPABASE_DB_URL')
+    expect(violations).toContainEqual(
+      expect.objectContaining({ what: expect.stringContaining('database connection') }),
+    )
+  })
+
+  it('catches a postgres connection URI carrying a password', () => {
+    const violations = findPrivilegedCredentials(
+      'const c = "postgresql://postgres.abcdefgh:hunter2@aws-0-eu-west-1.pooler.supabase.com:5432/postgres"',
+    )
+    expect(violations).toContainEqual(
+      expect.objectContaining({ what: expect.stringContaining('connection string') }),
+    )
+  })
+
+  // The counterpart to the two "public by design" tests above. A pattern that fired on any
+  // mention of postgres would be un-shippable: the word appears in ordinary code and in
+  // this repo's own docs, and a guard that cries wolf gets deleted or disabled, which is
+  // how the check-bundle de-scoping in SPRIN-60 happened. Only a URI with CREDENTIALS in
+  // its authority section is a leak.
+  it('does not flag a postgres URI with no password in it', () => {
+    const violations = findPrivilegedCredentials('const c = "postgresql://localhost:5432/postgres"')
+    expect(violations).toEqual([])
+  })
+
+  // SPRIN-107 REVIEW, CONFIRMED HIGH. The first cut of the URI pattern matched only
+  // credentials in the URI *userinfo* section, in lowercase. Five of the six connection-string
+  // formats Supabase's own dashboard hands out slipped past it, and a reviewer shipped a real
+  // password into dist/ with `npm run build` fully green. The pattern is the ONLY net for a
+  // leak that does not carry the literal string SUPABASE_DB_URL — a pasted literal, or a
+  // renamed variable — so a miss here serves a superuser-class connection to every visitor
+  // while the required check reports success. Each format below was cross-checked against the
+  // repo's own `pg-connection-string` parser: they are working credentials, not typos.
+  const CREDENTIALLED = {
+    'an uppercase scheme':
+      'POSTGRESQL://postgres.abc:hunter2@aws-0-eu-west-1.pooler.supabase.com:5432/db',
+    'a mixed-case scheme': 'Postgresql://postgres.abc:hunter2@db.example.com:5432/postgres',
+    'a SQLAlchemy driver suffix':
+      'postgresql+psycopg2://postgres.abc:hunter2@db.example.com/postgres',
+    'libpq query parameters':
+      'postgresql://aws-0-eu-west-1.pooler.supabase.com:5432/postgres?user=postgres.abc&password=hunter2&sslmode=require',
+    'JDBC query parameters':
+      'jdbc:postgresql://db.example.com:5432/postgres?user=postgres&password=hunter2',
+    'Go/libpq keyword-value':
+      'host=db.example.com user=postgres password=hunter2 dbname=postgres sslmode=require',
+    'a .NET connection string':
+      'Server=db.example.com;Port=5432;Database=postgres;User Id=postgres;Password=hunter2;',
+  }
+
+  it.each(Object.entries(CREDENTIALLED))('catches %s', (_label, connectionString) => {
+    const violations = findPrivilegedCredentials(`const c = ${JSON.stringify(connectionString)}`)
+    expect(violations.length).toBeGreaterThan(0)
+  })
+
+  // The other half of the same control, and the half that keeps it alive. A guard that fires on
+  // ordinary code gets disabled rather than fixed — which is how this repo's check-bundle got
+  // de-scoped once already. A password-adjacent pattern is the risky kind, so it is pinned
+  // against the shapes a real bundle contains.
+  const BENIGN = {
+    'a form field assignment': 'function submit(e){const password=e.target.value;send({password})}',
+    'a minified object property': 'x.password=n,x.email=r,t(x)',
+    'a zod schema': 'const schema=z.object({password:z.string().min(8)})',
+    'an unrelated localhost URI': 'const c = "postgresql://localhost:5432/postgres"',
+    'the word postgres in prose':
+      'throw new Error("Could not reach postgres. Check your password and retry.")',
+  }
+
+  it.each(Object.entries(BENIGN))('does not flag %s', (_label, source) => {
+    expect(findPrivilegedCredentials(source)).toEqual([])
+  })
+})
+
+// SPRIN-107 REVIEW, CONFIRMED MEDIUM. `dist/config.json`, `dist/notes.txt` and `dist/leak.svg`
+// each carrying a live credential URI were served to every visitor while check-bundle printed
+// "3 files scanned, no privileged credentials found" — it never opened them. The old allow-list
+// of js/mjs/cjs/css/html/map cannot cover `public/` passthroughs, which are copied verbatim into
+// dist/ and are exactly where a hand-written config file would sit. Inverted to a denylist of
+// genuinely binary extensions, so a new text format is scanned by default rather than ignored by
+// default. Fail open on an unknown extension is the wrong direction for a credential scanner.
+describe('isScannable', () => {
+  it.each([
+    'dist/assets/index-abc.js',
+    'dist/index.html',
+    'dist/assets/index-abc.css',
+    'dist/assets/index-abc.js.map',
+    'dist/config.json',
+    'dist/notes.txt',
+    'dist/leak.svg',
+    'dist/manifest.webmanifest',
+    'dist/some-file-with-no-extension',
+  ])('reads %s', (path) => {
+    expect(isScannable(path)).toBe(true)
+  })
+
+  it.each([
+    'dist/assets/geist-latin-wght-normal-abc.woff2',
+    'dist/assets/logo.png',
+    'dist/favicon.ico',
+    'dist/hero.jpg',
+    'dist/video.mp4',
+  ])('skips the binary asset %s', (path) => {
+    expect(isScannable(path)).toBe(false)
   })
 })
 
@@ -399,10 +514,18 @@ describe('main() as a real subprocess (pins that the entry-point guard actually 
 
     const assets = {}
     for (let i = 0; i < 7; i++) assets[`asset-${i}.woff2`] = 'binary-ish'
-    assets['logo.svg'] = '<svg/>'
     const withAssets = runAgainstDist({ ...bundle, ...assets })
     expect(withAssets.status).toBe(0)
     expect(withAssets.stdout).toMatch(/check-bundle: 2 files scanned/)
+
+    // An SVG is TEXT, and after the SPRIN-107 review it is read rather than skipped — a
+    // reviewer shipped a live credential URI in `dist/leak.svg` and this check reported a
+    // clean scan of 3 files it had never opened. So it moves the count to 3 on purpose. The
+    // property under test is unchanged and is the one that reddened CI on a legitimate diff:
+    // BINARY churn (the seven font subsets above) must not move it.
+    const withText = runAgainstDist({ ...bundle, ...assets, 'logo.svg': '<svg/>' })
+    expect(withText.status).toBe(0)
+    expect(withText.stdout).toMatch(/check-bundle: 3 files scanned/)
   })
 
   /**

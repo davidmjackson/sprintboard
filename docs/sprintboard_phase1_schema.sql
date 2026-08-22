@@ -2288,28 +2288,57 @@ $$;
 -- 3. remove_project_member. Removing YOURSELF is permitted and is the ordinary way an
 -- admin hands over: promote a second admin, then remove your own row. It is refused only
 -- when you are the last admin -- the same rule applied to everyone, not a special case.
+--
+-- SPRIN-107 REWROTE THIS BODY, and the version below is the fixed one. The original decided
+-- WHETHER to take its row lock from an UNLOCKED read, and its DELETE carried no role
+-- predicate -- so removing a plain member took no lock at all, and a member promoted to sole
+-- admin in that window was deleted straight past the guard, leaving the project with ZERO
+-- admins. That state is unrecoverable: projects_admin_update, projects_admin_delete and all
+-- three of these RPCs resolve through app_auth.is_project_admin, so nobody can administer or
+-- even delete the project afterwards.
+--
+-- THIS FILE HELD THE VULNERABLE BODY FOR THE LENGTH OF ONE STORY, and that is worth a line
+-- rather than a silent overwrite. SPRIN-107 updated docs/migrations/ and forgot this file;
+-- an adversarial review found it. Because the body is `create or replace`, re-applying the
+-- schema doc would have SILENTLY REVERTED the security fix against a live database -- no
+-- error, no lint, no red test, with pg_get_functiondef the only witness. Nothing in the repo
+-- reads these function bodies: domain.test.ts's drift matchers cover only `projects` grants
+-- and `sprints` check constraints. Treat "the migration is applied" and "the schema doc
+-- matches it" as two separate obligations, because no check couples them.
 create or replace function public.remove_project_member(
   p_project_id uuid, p_user_id uuid
 ) returns text language plpgsql security definer set search_path = ''
 as $$
-declare v_current text; v_admin_rows int;
+declare v_current text; v_admin_rows int; v_attempts int := 0;
 begin
+  -- Authorisation FIRST, and deliberately OUTSIDE the loop: in the interleaving this guard
+  -- exists for, the caller's own admin row is removed while they are parked, so re-checking
+  -- per pass would turn a correct 'last_admin' into a spurious 42501.
   if not app_auth.is_project_admin(p_project_id) then
     raise exception 'Only a project admin may remove members' using errcode = '42501';
   end if;
-  select m.role into v_current from public.project_members m
-   where m.project_id = p_project_id and m.user_id = p_user_id;
-  if v_current is null then return 'not_a_member'; end if;
-  if v_current = 'admin' then
-    perform 1 from public.project_members m
-     where m.project_id = p_project_id and m.role = 'admin' for update;
-    select count(*) into v_admin_rows from public.project_members m
-     where m.project_id = p_project_id and m.role = 'admin';
-    if v_admin_rows <= 1 then return 'last_admin'; end if;
-  end if;
-  delete from public.project_members m
-   where m.project_id = p_project_id and m.user_id = p_user_id;
-  return 'removed';
+  loop
+    v_attempts := v_attempts + 1;
+    select m.role into v_current from public.project_members m
+     where m.project_id = p_project_id and m.user_id = p_user_id;
+    if v_current is null then return 'not_a_member'; end if;
+    if v_current = 'admin' then
+      perform 1 from public.project_members m
+       where m.project_id = p_project_id and m.role = 'admin' for update;
+      select count(*) into v_admin_rows from public.project_members m
+       where m.project_id = p_project_id and m.role = 'admin';
+      if v_admin_rows <= 1 then return 'last_admin'; end if;
+    end if;
+    -- THE FIX IS THE THIRD PREDICATE. Without `m.role = v_current` this DELETE removes the
+    -- row whatever its role has become since the read above, which is the whole defect.
+    delete from public.project_members m
+     where m.project_id = p_project_id and m.user_id = p_user_id and m.role = v_current;
+    if found then return 'removed'; end if;
+    if v_attempts >= 3 then
+      raise exception 'Could not remove member: the role changed repeatedly during removal'
+        using errcode = '40001';
+    end if;
+  end loop;
 end;
 $$;
 
