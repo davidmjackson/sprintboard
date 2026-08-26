@@ -1,8 +1,227 @@
 # Sprintboard
 
+> ## START HERE, 2026-08-25. Do this before anything else, then DELETE this block.
+>
+> A desktop session left **uncommitted changes that have never been executed**.
+> Claude desktop cannot run commands on this machine, so nothing here is verified.
+>
+> **1. Run the gate. This is the one thing that must happen first.**
+>
+> ```
+> npm run verify
+> ```
+>
+> **2. If it is red on `complexity` or `verify-gate`:** the cause is a coupled T2
+> change across `eslint.config.js` and `verify-gate.test.mjs`. Read
+> `docs/2026-08-25-session-record.md` before touching either. Revert both together
+> or neither.
+>
+> **3. If it is green:** commit the change set. It is ADR 0007 plus the two coupled
+> files, plus documentation (`CLAUDE.md`, `README.md`, the prose-reduction brief,
+> ADR 0011). Suggested message:
+> `chore: freeze scope, raise T2 to 15 per ADR 0007, add README`
+>
+> **4. Then delete the scaffolding:** `docs/2026-08-25-session-record.md`. It is a
+> rollback aid, not a permanent document, which is why it is dated in the filename.
+> Delete this block in the same commit.
+>
+> **Needs David, not code.** Do not decide these alone: ADR 0011 (coverage, status
+> PROPOSED, run `npx vitest run --coverage` before choosing); whether
+> `src/test/project-type-immutability.test.ts` is removed; whether T2 becomes 15
+> globally. All four are detailed in the session record.
+>
+> **The largest piece of work waiting** is Task 0 in
+> `docs/2026-08-24-prose-reduction-brief.md`: this file is 75 KB against a 12 KB
+> ceiling. Do not start it until the gate above is green and committed.
+>
+> ## What to look at next, in this order
+>
+> Read `docs/OVER-ENGINEERING-ANALYSIS.md` first. It carries the measured evidence
+> and a three-tier removal plan. **Only Tier 1 is recommended**, and it removes
+> nothing a user can see: every item is a comment-only or test-only diff.
+>
+> | # | Task | Size | Where |
+> |---|---|---:|---|
+> | 1 | Prune this file, 75 KB toward 12 KB | ~63 KB | Brief, Task 0 |
+> | 2 | Delete `src/test/project-type-single-expression.test.ts` | 21 KB | Brief, Task A |
+> | 3 | Comment reduction in `domain.ts`, `project-statuses.ts`, `ticket-field-values.ts` | ~60 KB | Brief, Task D |
+> | 4 | Comment reduction in `docs/sprintboard_phase1_schema.sql` | ~65 KB | Brief, Task E |
+>
+> **Do them in that order**, one commit each, `npm run verify` green between each.
+> Task 1 is the largest, the simplest, and the only one paid on every session.
+>
+> **Do NOT remove any of the six out-of-brief features** (custom fields, teams and
+> roles, cadence, WIP limits, epics, search). They work, they are tested, they are
+> shipped, and the cost is sunk. Removing them means new migrations, data-loss risk
+> and re-testing, to make a metric look better. They are CLOSED, not paused.
+>
+> **Do NOT touch the RLS integration suites.** No backend means the database is the
+> entire authorisation layer, and a mocked-client test cannot see a policy. That is
+> the one place here where the weight matches the risk.
+
 Scrum delivery board, part of the Sprint Suite. The goal is a credible Jira-style
 board — enough of Jira's core to stand in for it, and no more. Parity with Jira is
 not the goal, and neither is anything beyond it: a tight working slice is the point.
+
+---
+
+## SCOPE IS FROZEN. READ THIS BEFORE PROPOSING ANY WORK.
+
+Set by David on 2026-08-24 after an over-engineering review. **Sprintboard is
+feature-complete.** The brief was a Jira MVP, and the MVP is these six things:
+
+1. Scrum and Kanban boards
+2. Backlog
+3. Create, edit and delete tickets
+4. Statuses
+5. Tickets traverse the board by status
+6. Drag and drop on the board
+
+**All six ship today.** Everything still open is hardening, not scope.
+
+### The stop condition
+
+**Done means those six behaviours work for two users on one project without data
+loss. Anything else is a new project.**
+
+That sentence is the gate. A proposal that does not make one of the six work
+better is out of scope, however good it is, and the correct response is to say so
+and stop rather than to design it.
+
+### What is CLOSED, not paused
+
+These shipped and are done. Do not extend, refine or generalise them:
+custom statuses, Kanban project type, custom fields, sprint cadence, WIP limits,
+blocked flags, ticket search, teams and roles. Four of these were never in the
+brief. They are kept because they exist and work, not because they were needed.
+
+### What is REFUSED
+
+The AI layer stays parked (see below). So does anything shaped like Jira parity:
+workflow transition rules, permission schemes, dashboards, reporting, boards
+spanning projects, comments, attachments, notifications, an activity feed.
+
+### The three known gaps, and why they stay open
+
+Named here so nobody re-derives them as new work:
+
+- **No persisted rank.** Cards order by `number`, so drag within a column does
+  not persist. It is a real gap in item 6 and is the ONLY one of the three that
+  is in scope to fix.
+- **No change history table.** Out of scope. Jira has one; the MVP does not.
+- **No subtask level.** Out of scope.
+
+### The lesson this section exists to prevent
+
+Six weeks were spent, and roughly 60 percent of that went on work outside the
+brief. It was not wasted on bad code, which is good throughout. It was spent
+because nothing in this file ever said *enough*. Now it does.
+
+---
+
+## HOW TO WORK ON THIS REPO
+
+Set by David on 2026-08-24, from the over-engineering review. Nine rules. They
+are short on purpose: a long section here would be the same failure it exists to
+prevent.
+
+The review's finding, stated plainly so the rules make sense: **the code is good.
+The volume around it is not.** Six weeks produced roughly 600 KB of production
+source, 1,640 KB of tests, and files that run 70 percent comment. Nothing here is
+about writing better code. It is about writing less around it.
+
+### 1. Default to closing, not opening
+
+When asked what is next, the first candidate answer is **"nothing, it ships"**.
+Offer scope only if it makes one of the six MVP behaviours work better. If it does
+not, say so and stop. Do not design it anyway to show willing.
+
+Every story states, in one line, which of the six it serves. A story that cannot
+name one is out of scope by definition.
+
+### 2. A comment says what a reader needs NOW
+
+Not how the code got here. **Corrections replace, they never accumulate.** When a
+claim turns out wrong, rewrite it. Do not leave the wrong version visible with a
+note beside it, and do not write "an earlier draft of this paragraph".
+
+Delete on sight: story keys as narrative, review-round references, rejected
+alternatives, measurement stories, and any justification for satisfying a lint
+threshold.
+
+**If the reasoning runs past about ten lines, it is an ADR, not a docblock.** Write
+the ADR and reference it in one line.
+
+Budget: **under 25 percent comment in `src/lib`.**
+
+### 3. David cannot read the code, so justify it somewhere it does not live forever
+
+This is the root cause of everything above and it deserves naming. The exhaustive
+docblocks were a rational response to a real constraint: David reviews what he
+cannot write, so the agent explained itself in the only place he was certain to
+look. That worked, and then it compounded, because each session's prose became the
+next session's context.
+
+**The fix is not less explanation. It is explanation with an expiry.**
+
+Every session ends with a plain-English paragraph for David: what changed, why,
+and what would break if it were undone. That goes in the PR description and the
+handover. **It does not go in the source.** Source carries only what the next
+person editing that file needs.
+
+### 4. One control per rule
+
+Two guards on the same property mean neither can be proven, because removing
+either leaves the suite green. Before adding a control, answer both:
+
+- What does it catch that nothing else catches?
+- How does it fail, and does it fail open or closed?
+
+A control that cannot answer the second question is not a control.
+
+### 5. No controls on controls without a recorded miss
+
+`verify-gate.test.mjs` earns its place because two live suites really were dropped
+from collection, at SPRIN-98 and SPRIN-105, and it now catches that. That is the
+bar: **a real failure that really happened.** A meta-test written against a
+failure nobody has had is ceremony.
+
+### 6. Thresholds measure. They do not design.
+
+If a function is split, a variable hoisted, or a call rewritten to satisfy a lint
+rule, **that is a finding about the rule, not about the code.** Raise it as one.
+ADR 0007 is what that looks like.
+
+Never write a comment explaining that code is shaped a certain way to keep the
+gate green. If the shape needs that defence, the gate is wrong.
+
+### 7. A review finding gets a fix or a note, never both
+
+The pattern that inflated this repo: a reviewer finds something, the fix lands,
+AND a paragraph about the finding lands beside it. Pick one.
+
+Severity-gate it too. On a feature that works, **Minor findings are logged, not
+fixed.** Only Blocker and Major reopen shipped code.
+
+### 8. `HANDOVER.md` gets pruned, not appended
+
+It says where the project is, not everywhere it has been. Anything older than the
+current epic moves out or goes. A file that only grows stops being read, and an
+unread handover is worse than none because it looks like context.
+
+`CLAUDE.md` holds standing rules. `docs/adr/` holds decisions. `HANDOVER.md` holds
+the current position. Never let one do another's job.
+
+### 9. Some of this repo is right. Do not level it.
+
+The rules above are about volume, and they have a boundary. **The live RLS
+integration suites stay exactly as they are.** There is no backend, so the database
+is the entire authorisation layer, and a mocked-client test cannot see a policy.
+That is the one place where the weight is proportionate to the risk.
+
+Also keep: reads that throw rather than resolve to `[]`, tagged write results, no
+Postgres enums, domain rules out of components, acceptance criteria before code.
+Those were good calls and the review said so.
 
 ---
 

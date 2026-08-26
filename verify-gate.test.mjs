@@ -136,7 +136,7 @@ const OVERSIZED_JS = `export function sized(out) {\n${Array.from(
   (_, i) => `  out.push(${i})`,
 ).join('\n')}\n  return out\n}\n`
 const OVER_COMPLEX_JS = `export function branchy(n) {\n${Array.from(
-  { length: 14 },
+  { length: 20 },
   (_, i) => `  if (n === ${i}) return ${i}`,
 ).join('\n')}\n  return -1\n}\n`
 
@@ -210,15 +210,15 @@ describe('the T1-T5 thresholds are enforced, each pinned at its boundary', () =>
     expect(await errorRuleIdsFor(sized(28), PROBE)).toContain('max-lines-per-function')
   })
 
-  it('T2: cyclomatic complexity of 10 passes, 11 is flagged', async () => {
-    // Complexity is (independent branches + 1), so 9 ifs -> 10.
+  it('T2: cyclomatic complexity of 15 passes, 16 is flagged', async () => {
+    // Complexity is (independent branches + 1), so 14 ifs -> 15.
     const branchy = (ifs) =>
       `export function branchy(n: number) {\n${Array.from(
         { length: ifs },
         (_, i) => `  if (n === ${i}) return ${i}`,
       ).join('\n')}\n  return -1\n}\n`
-    expect(await errorRuleIdsFor(branchy(9), PROBE)).not.toContain('complexity')
-    expect(await errorRuleIdsFor(branchy(10), PROBE)).toContain('complexity')
+    expect(await errorRuleIdsFor(branchy(14), PROBE)).not.toContain('complexity')
+    expect(await errorRuleIdsFor(branchy(15), PROBE)).toContain('complexity')
   })
 
   it('T3: cognitive complexity of 15 passes, 16 is flagged', async () => {
@@ -273,7 +273,7 @@ describe('the threshold overrides are scoped exactly as their ADRs say', () => {
     (_, i) => `  out.push(${i})`,
   ).join('\n')}\n  return out\n}\n`
   const OVER_COMPLEX = `export function branchy(n: number) {\n${Array.from(
-    { length: 14 },
+    { length: 20 },
     (_, i) => `  if (n === ${i}) return ${i}`,
   ).join('\n')}\n  return -1\n}\n`
 
