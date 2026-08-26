@@ -44,6 +44,12 @@ here where the weight matches the risk.
   is already immutable at the privilege layer, but security-adjacent.
 - **Whether T2 becomes 15 globally** in `CodingStandards/core/THRESHOLDS.md`, or stays a
   per-repo ADR override. Evidence is one repo, so probably stays.
+- **Three dated docs look spent and are archiving candidates.** Measured inbound references:
+  `docs/phase1-status-audit-2026-08-01.md` (0), `docs/sprin-79-status-schema-design.md` (0),
+  `docs/sprin-92-review-findings.md` (1, and that one is from a *historical* Session-62
+  narrative in this file). **Keep** `docs/standards-audit-2026-07-25.md` (10 refs, and
+  `CLAUDE.md` names two still-live sections in it), the prose-reduction brief (3) and
+  `OVER-ENGINEERING-ANALYSIS.md`.
 
 ---
 
