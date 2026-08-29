@@ -239,6 +239,11 @@ Claude Code owns the `SPRIN` board through the **Composio** MCP connector. **The
 source of truth for what is left to build** — query it (`statusCategory != Done`) rather than a
 document, and move each issue as work progresses. Details: `docs/TESTING-NOTES.md`.
 
+**This file sits ~2.6 KB over the 12,288 B budget the Stop hook checks, by David's
+decision on 2026-08-29.** The warning is accurate and expected; what remains is standing
+rules, not history. **Do not trim the nine rules to silence it** — that is rule 6 applied
+to this file. Reasoning: `docs/2026-08-24-prose-reduction-brief.md`.
+
 ## Key files
 
 - `docs/HANDOVER.md` — current position, open follow-ups, settled non-issues. **Read before

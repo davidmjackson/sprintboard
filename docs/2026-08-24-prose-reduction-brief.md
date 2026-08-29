@@ -44,10 +44,25 @@ and `.claude/settings.json` now calls it on Stop. It warns; it never fails.
 **Do this first.** It is cheaper than Task D, it is pure markdown with no
 executable risk, and it is the single largest per-session cost in the repo.
 
-### Target
+### Target, and the outcome
 
-**Under 12,288 B.** Print `wc -c CLAUDE.md` before and after in the commit
-message. Expect to remove roughly 60KB.
+**Target was under 12,288 B. Executed 2026-08-29: 75,118 B -> 14,945 B, an 80.1%
+cut.** That stops 2,657 B short of the ceiling, **by David's decision on
+2026-08-29, and the shortfall is closed — do not reopen it.**
+
+Everything remaining is a standing rule rather than history: the scope freeze and
+the nine ways-of-working rules are ~4,600 B by themselves, and both are on the
+"what stays" list below. Closing the last 2,657 B means cutting normative rules,
+which is rule 6 — *thresholds measure, they do not design* — applied to this file.
+The Stop hook warns on every session and that warning is **accurate and expected**.
+
+**So: a future session that sees `CLAUDE.md is 14,945 B, over the 12,288 B ceiling`
+has found the known state, not a task.** Trimming the nine rules to silence it is
+the specific mistake this paragraph exists to prevent. The two alternatives were
+priced and rejected: raising the ceiling by ADR (weakens the budget's teeth for a
+number nobody is enforcing), and pushing the data-model invariants out to ADR 0008
+(makes `CLAUDE.md` stop stating the ENUM, ticket-key and blocked-flag rules
+directly, so an agent must follow a pointer to find them).
 
 ### What stays (this is the short list, and it is genuinely short)
 
