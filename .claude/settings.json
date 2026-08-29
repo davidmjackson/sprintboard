@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /var/www/CodingStandards/hooks/dispatch.sh budget",
+            "timeout": 10,
+            "statusMessage": "Checking the CLAUDE.md byte budget"
+          }
+        ]
+      }
+    ]
+  }
+}

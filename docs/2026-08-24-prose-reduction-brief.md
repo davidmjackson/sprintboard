@@ -31,8 +31,15 @@ over, and it is paid **in full, at the start of every single session**, before
 
 That file already recorded this exact failure on 2026-08-04, when `CLAUDE.md` was
 34,257 B and it noted the file had "no cap protecting it". **It more than doubled
-in the twenty-one days since**, because nothing measured it. `hooks/dispatch.sh`
-now warns on Stop, which is the trigger that was missing.
+in the twenty-one days since**, because nothing measured it.
+
+**The trigger is now wired, and it was not when this line first claimed it was.**
+`hooks/dispatch.sh` held `check_claude_md_budget` but nothing in this repo invoked
+it: there was no `.claude/settings.json` at all, and the dispatcher's only Stop
+entry point ran the *full* gate — which would have re-imposed `jscpd` this repo
+deliberately deleted and run the live suites on every Stop. A `budget` mode was
+added to the dispatcher so the shared implementation is invoked rather than copied,
+and `.claude/settings.json` now calls it on Stop. It warns; it never fails.
 
 **Do this first.** It is cheaper than Task D, it is pure markdown with no
 executable risk, and it is the single largest per-session cost in the repo.
@@ -83,6 +90,11 @@ new ADRs, each short, each referenced from `CLAUDE.md` in one line:
 - `docs/adr/0010-member-writes-go-through-rpcs.md` — the GRANT-shaped control,
   the three RPCs, the last-admin guard, and SPRIN-107's lesson that deciding
   whether to lock from an unlocked read is not a lock.
+
+**All three are written.** Task 0 landed them, along with `docs/TESTING-NOTES.md`
+for the operational material that is read on demand rather than every session:
+live-suite flake signatures, the concurrency harness, jsdom accessible names, the
+E2E suite, the keepalive contract, the Jira board, and review depth.
 
 ### Constraint
 
@@ -196,11 +208,14 @@ docblocks; that is fine and expected.
 
 Not the bin, for the genuinely load-bearing parts. Three new ADRs, each short:
 
-- `docs/adr/0008-read-failures-throw.md` — why reads reject rather than resolve
+**These numbers were 0008-0010 when the brief was written, colliding with Task 0's
+three. Task 0 claimed those, so Task D takes the next free block:**
+
+- `docs/adr/0012-read-failures-throw.md` — why reads reject rather than resolve
   to `[]`, and the S4.6 defect that caused it.
-- `docs/adr/0009-no-postgres-enums.md` — text plus check, never enum, and the
+- `docs/adr/0013-no-postgres-enums.md` — text plus check, never enum, and the
   composite fk on `ticket.status`.
-- `docs/adr/0010-writes-return-tagged-results.md` — the `{ ok, error }` shape, the
+- `docs/adr/0014-writes-return-tagged-results.md` — the `{ ok, error }` shape, the
   `stale` versus `duplicate` versus `unknown` vocabulary, and why RLS filtering a
   write to zero rows must be checked explicitly rather than trusted.
 

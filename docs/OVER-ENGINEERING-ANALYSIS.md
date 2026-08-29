@@ -37,11 +37,16 @@ against your six-item brief:
 **Out-of-brief share of all code: 29 percent.** Production code 31 percent, test
 code 28 percent.
 
-A second, independent proxy agrees. Of 13 tables in the schema, **4 are
-out-of-brief** (`project_fields`, `project_field_options`, `ticket_field_values`,
-`project_members`): **31 percent**.
+A second, independent proxy puts it higher. `public` holds **10** tables, of which
+**4 are out-of-brief** (`project_fields`, `project_field_options`,
+`ticket_field_values`, `project_members`): **40 percent**. The count is verified two
+ways — `create table` in `docs/sprintboard_phase1_schema.sql`, and a live
+`list_tables`.
 
-**Two measures, converging on ~30 percent. Not 60.**
+**Two measures bracketing 30 to 40 percent. Not 60.** They do not converge, and
+saying they did would be the same unmeasured confidence this document exists to
+correct: the KB measure reads 29, the table proxy reads 40, and the KB measure is
+the one derived from counted bytes.
 
 ### My judgement, stated separately
 
@@ -49,7 +54,7 @@ out-of-brief** (`project_fields`, `project_field_options`, `ticket_field_values`
 reasons effort exceeds surviving code:
 
 1. **A new table costs far more than its KB.** Each brought a migration, RLS
-   policies, and live integration coverage. Custom fields added 3 of 13 tables.
+   policies, and live integration coverage. Custom fields added 3 of the 10 tables.
 2. **SPRIN-75 rewrote RLS across all 10 tables**, not just the one it added. That
    cost is spread through files I classified as in-brief, so it counts as zero here.
 3. **The AI layer was built and then deleted.** It cost real weeks and leaves zero
