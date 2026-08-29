@@ -10,6 +10,49 @@ decisions live in `docs/adr/`; designs live in `docs/superpowers/specs/`.
 
 ---
 
+## Next up: the Tier 1 prose reduction
+
+Read `docs/OVER-ENGINEERING-ANALYSIS.md` first — it carries the measured evidence and a
+three-tier removal plan. **Only Tier 1 is recommended.** Every item is a comment-only or
+test-only diff; nothing a user can see changes.
+
+| # | Task | Size | Where |
+|---|---|---:|---|
+| 1 | Prune `CLAUDE.md`, 75 KB toward 12 KB | ~63 KB | Brief, Task 0 |
+| 2 | Delete `src/test/project-type-single-expression.test.ts` | 21 KB | Brief, Task A |
+| 3 | Comment reduction in `domain.ts`, `project-statuses.ts`, `ticket-field-values.ts` | ~60 KB | Brief, Task D |
+| 4 | Comment reduction in `docs/sprintboard_phase1_schema.sql` | ~65 KB | Brief, Task E |
+
+"Brief" is `docs/2026-08-24-prose-reduction-brief.md`. Do them in that order, one commit
+each, `npm run verify` green between each. Task 1 is the largest, the simplest, and the
+only one paid on every session.
+
+**Do NOT remove any of the six out-of-brief features** (custom fields, teams and roles,
+cadence, WIP limits, epics, search). They work, they are tested, they are shipped, and the
+cost is sunk. Removing them means new migrations, data-loss risk and re-testing, to make a
+metric look better. They are CLOSED, not paused.
+
+**Do NOT touch the RLS integration suites.** No backend means the database is the entire
+authorisation layer, and a mocked-client test cannot see a policy. That is the one place
+here where the weight matches the risk.
+
+### Waiting on David, not on code
+
+- **ADR 0011 (coverage) is PROPOSED.** Run `npx vitest run --coverage` and give him the
+  number before he chooses; the ADR says not to decide without it.
+- **`src/test/project-type-immutability.test.ts` (39 KB)** — redundant, since `project_type`
+  is already immutable at the privilege layer, but security-adjacent.
+- **Whether T2 becomes 15 globally** in `CodingStandards/core/THRESHOLDS.md`, or stays a
+  per-repo ADR override. Evidence is one repo, so probably stays.
+- **Three dated docs look spent and are archiving candidates.** Measured inbound references:
+  `docs/phase1-status-audit-2026-08-01.md` (0), `docs/sprin-79-status-schema-design.md` (0),
+  `docs/sprin-92-review-findings.md` (1, and that one is from a *historical* Session-62
+  narrative in this file). **Keep** `docs/standards-audit-2026-07-25.md` (10 refs, and
+  `CLAUDE.md` names two still-live sections in it), the prose-reduction brief (3) and
+  `OVER-ENGINEERING-ANALYSIS.md`.
+
+---
+
 ## Where the project is
 
 **Rung 1 (Phase 1) shipped** 2026-07-20. **Rung 3 in progress** since 2026-07-31, in this order:

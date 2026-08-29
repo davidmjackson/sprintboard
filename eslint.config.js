@@ -57,8 +57,11 @@ export default tseslint.config(
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
       // T1 Function length.
       'max-lines-per-function': ['error', { max: 30, skipBlankLines: true, skipComments: true }],
-      // T2 Cyclomatic complexity.
-      complexity: ['error', { max: 10 }],
+      // T2 Cyclomatic complexity. Raised 10 -> 15 on 2026-08-24: at 10, several
+      // functions were split to satisfy the gate rather than for clarity, and said
+      // so in their own docblocks. The boundary pin in verify-gate.test.mjs moves
+      // with this number, or the suite goes red.
+      complexity: ['error', { max: 15 }],
       // T3 Cognitive complexity.
       'sonarjs/cognitive-complexity': ['error', 15],
       // T4 Parameters.
